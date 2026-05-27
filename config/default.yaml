@@ -1,0 +1,48 @@
+# Paramètres physiques (électrochimie)
+physics:
+  T: 298.0          # K
+  F: 96485.0        # C/mol
+  R: 8.314          # J/mol/K
+  n: 1              # électrons échangés
+  C0: 0.02          # M — concentration médiateur Fe(CN)6
+  D_FeIII: 7.2e-10  # m^2/s
+  D_FeII: 6.5e-10   # m^2/s
+
+# Géométrie microfluidique
+geometry:
+  xe: 30.0e-6       # m — largeur électrode WE
+  h: 60.0e-6        # m — hauteur canal
+  d: 300.0e-6       # m — largeur canal
+  S_WE: 9.0e-9      # m^2 — surface active
+
+# Conditions opératoires
+conditions:
+  Fv: 5.0e-10       # m^3/s (= 0.5 µL/s)
+
+# Paramètres de fit
+fit:
+  alpha_noise: 0.001
+  n_freqs_parasites: [50.0, 100.0]
+  tol_parasites: 3.0
+  max_iter: 10000
+  n_monte_carlo: 1000
+  bounds_randles_full:
+    Re:       [100.0,   100000.0]
+    Re_prime: [1.0,     100000.0]
+    Cb:       [1.0e-12, 1.0e-4]
+    Rct:      [100.0,   1.0e9]
+    Qdl:      [1.0e-12, 1.0e-4]
+    alpha:    [0.6,     1.0]
+    ZD0:      [10.0,    1.0e6]
+    D_eff:    [1.0e-11, 1.0e-8]
+  drt:
+    n_tau: 50
+    tau_min: 1.0e-5
+    tau_max: 100.0
+    lambda_auto: true
+
+# Export
+export:
+  dpi: 150
+  fig_width: 1200
+  fig_height: 800
