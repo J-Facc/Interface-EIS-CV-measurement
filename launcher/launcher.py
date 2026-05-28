@@ -4,6 +4,7 @@ Mise à jour via téléchargement ZIP depuis l'API GitHub.
 """
 import os
 import sys
+import ssl
 import socket
 import subprocess
 import time
@@ -33,6 +34,11 @@ TIMEOUT_START = 30   # secondes max pour attendre Streamlit
 ZIP_URL    = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/zipball/{BRANCH}"
 COMMIT_URL = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/commits/{BRANCH}"
 
+# Contexte SSL sans vérification — nécessaire sur certains réseaux d'entreprise
+SSL_CTX = ssl.create_default_context()
+SSL_CTX.check_hostname = False
+SSL_CTX.verify_mode = ssl.CERT_NONE
+
 
 def show_error_and_exit(msg: str):
     """Affiche une boîte d'erreur tkinter et quitte proprement."""
@@ -54,17 +60,13 @@ def update_status(msg: str):
 
 def is_online() -> bool:
     """Vérifie la connectivité en tentant de joindre l'API GitHub directement."""
-    urls = [
-        "https://api.github.com",
-        "https://github.com",
-    ]
+    urls = ["https://api.github.com", "https://github.com"]
     for url in urls:
         try:
             req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "EIS-Analyzer-Launcher"}
+                url, headers={"User-Agent": "EIS-Analyzer-Launcher"}
             )
-            urllib.request.urlopen(req, timeout=5)
+            urllib.request.urlopen(req, timeout=5, context=SSL_CTX)
             return True
         except Exception:
             continue
@@ -79,7 +81,7 @@ def get_remote_sha() -> str | None:
             headers={"Accept": "application/vnd.github.v3+json",
                      "User-Agent": "EIS-Analyzer-Launcher"}
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5, context=SSL_CTX) as resp:
             data = json.loads(resp.read().decode())
             return data["sha"]
     except Exception as e:
@@ -105,7 +107,7 @@ def download_and_extract_zip():
         headers={"Accept": "application/vnd.github.v3+json",
                  "User-Agent": "EIS-Analyzer-Launcher"}
     )
-    with urllib.request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as f:
+    with urllib.request.urlopen(req, timeout=60, context=SSL_CTX) as resp, open(zip_path, "wb") as f:
         shutil.copyfileobj(resp, f)
 
     update_status("Extraction...")
