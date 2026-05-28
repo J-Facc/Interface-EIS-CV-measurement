@@ -109,11 +109,20 @@ def download_and_extract_zip():
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(tmp_dir)
 
-    # Le ZIP GitHub crée un sous-dossier nommé "user-repo-sha/"
+    # Trouver le sous-dossier racine du repo (GitHub crée toujours 1 sous-dossier)
     extracted_dirs = [d for d in tmp_dir.iterdir() if d.is_dir()]
     if not extracted_dirs:
         raise RuntimeError("ZIP vide ou structure inattendue.")
     extracted_root = extracted_dirs[0]
+
+    # Vérifier que app.py existe bien dans extracted_root
+    if not (extracted_root / "app.py").exists():
+        # Chercher app.py récursivement dans les sous-niveaux
+        matches = list(extracted_root.rglob("app.py"))
+        if not matches:
+            raise RuntimeError(f"app.py introuvable dans le ZIP. Contenu : {list(extracted_root.iterdir())}")
+        # Prendre le dossier parent du premier app.py trouvé
+        extracted_root = matches[0].parent
 
     # Remplacer APP_DIR par le contenu extrait
     if APP_DIR.exists():
@@ -224,6 +233,11 @@ def main():
         check_and_update()
     else:
         update_status("Hors ligne — utilisation de la version locale.")
+
+    # Debug : lister le contenu de APP_DIR si elle existe
+    if APP_DIR.exists():
+        contents = [str(p.name) for p in APP_DIR.iterdir()]
+        update_status(f"Contenu eis_app/ : {contents[:10]}")
 
     # 2. Vérifier que l'app existe
     if not APP_ENTRY.exists():
