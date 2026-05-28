@@ -1,7 +1,4 @@
-"""
-EIS Analyzer Launcher — sans Git
-Mise à jour via téléchargement ZIP depuis l'API GitHub.
-"""
+"""\nEIS Analyzer Launcher — sans Git\nMise à jour via téléchargement ZIP depuis l'API GitHub.\n"""
 import os
 import sys
 import ssl
@@ -22,11 +19,19 @@ from pathlib import Path
 GITHUB_USER   = "J-Facc"
 GITHUB_REPO   = "Interface-EIS-CV-measurement"
 BRANCH        = "main"
-BASE_DIR      = Path(__file__).parent
-APP_DIR       = BASE_DIR / "eis_app"
-VENV_DIR      = BASE_DIR / ".venv"
-VERSION_FILE  = BASE_DIR / ".version_hash"   # stocke le SHA du dernier commit connu
-APP_ENTRY     = APP_DIR / "app.py"
+
+# Dossier réel du .exe (ou du script en dev)
+if getattr(sys, 'frozen', False):
+    # Mode .exe PyInstaller — dossier contenant le .exe
+    BASE_DIR = Path(sys.executable).parent
+else:
+    # Mode script Python normal
+    BASE_DIR = Path(__file__).parent
+
+APP_DIR      = BASE_DIR / "eis_app"
+VENV_DIR     = BASE_DIR / ".venv"
+VERSION_FILE = BASE_DIR / ".version_hash"
+APP_ENTRY    = APP_DIR / "app.py"
 PORT          = 8501
 TIMEOUT_START = 30   # secondes max pour attendre Streamlit
 # ───────────────────────────────────────────────────────────────────────────────
