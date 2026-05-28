@@ -3,11 +3,17 @@ name: Build EIS_Analyzer.exe
 on:
   push:
     branches: [main]
-  workflow_dispatch:   # permet de déclencher manuellement depuis GitHub
+  workflow_dispatch:
+
+permissions:
+  contents: write        # ← correction de l'erreur principale
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # ← correction du warning Node.js
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026             # ← adresse le notice windows-latest
 
     steps:
       - name: Checkout repo
@@ -19,14 +25,14 @@ jobs:
           python-version: "3.11"
 
       - name: Install PyInstaller
-        run: pip install -r launcher/requirements_launcher.txt
+        run: pip install pyinstaller
 
       - name: Build .exe
         run: |
           cd launcher
           pyinstaller --onefile --noconsole --name EIS_Analyzer --add-data "splash.py;." launcher.py
 
-      - name: Upload artifact (pour vérification)
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: EIS_Analyzer
@@ -39,7 +45,7 @@ jobs:
           tag_name: latest
           name: "EIS Analyzer — dernière version"
           body: |
-            Build automatique depuis le commit ${{ github.sha }}
+            Build automatique — commit ${{ github.sha }}
             Date : ${{ github.event.head_commit.timestamp }}
           files: launcher/dist/EIS_Analyzer.exe
           make_latest: true
