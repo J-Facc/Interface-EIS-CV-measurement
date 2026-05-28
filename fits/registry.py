@@ -1,61 +1,69 @@
-"""Fit model registry: auto-discover and instantiate models by name.
+"""Auto-discovery and registration of fit models from the fits/ package."""
 
-To add a new model, create a file in fits/ that defines a class
-decorated with @register. No other file needs modification.
-"""
+import importlib
+import pkgutil
+from typing import List
 
+import fits
 from fits.base import BaseFitModel
-from typing import Type
 
-_REGISTRY: dict = {}
+_registry: dict = {}
 
 
-def register(cls: Type[BaseFitModel]) -> Type[BaseFitModel]:
-    """Class decorator that registers a BaseFitModel subclass.
+def _discover() -> None:
+    """Import all submodules in fits/ and register BaseFitModel subclasses."""
+    if _registry:
+        return
 
-    Args:
-        cls: BaseFitModel subclass with a non-empty .name attribute.
+    skip = {"base", "physics", "registry"}
+
+    for _finder, mod_name, _ispkg in pkgutil.iter_modules(fits.__path__):
+        if mod_name in skip or mod_name.startswith("_"):
+            continue
+        full_name = f"fits.{mod_name}"
+        try:
+            module = importlib.import_module(full_name)
+        except Exception:
+            continue
+
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if (
+                isinstance(attr, type)
+                and issubclass(attr, BaseFitModel)
+                and attr is not BaseFitModel
+                and getattr(attr, "name", "")
+            ):
+                instance = attr()
+                _registry[instance.name] = instance
+
+
+def all_models() -> List[BaseFitModel]:
+    """Return all registered fit model instances.
 
     Returns:
-        The same class (unchanged).
+        List of BaseFitModel instances sorted by name.
     """
-    _REGISTRY[cls.name] = cls
-    return cls
+    _discover()
+    return list(_registry.values())
 
 
 def get_model(name: str) -> BaseFitModel:
-    """Instantiate a registered fit model by its short name.
+    """Get a fit model instance by short name.
 
     Args:
-        name: Model identifier (e.g. 'circular').
+        name: Model name string (e.g. 'randles_full').
 
     Returns:
-        Fresh instance of the model.
+        BaseFitModel instance.
 
     Raises:
-        KeyError: If name is not in the registry.
+        KeyError: If the model name is not registered.
     """
-    if name not in _REGISTRY:
-        raise KeyError(f"Fit model '{name}' not found. Available: {list(_REGISTRY)}")
-    return _REGISTRY[name]()
-
-
-def list_models() -> list:
-    """Return all registered model name strings."""
-    return list(_REGISTRY.keys())
-
-
-def all_models() -> list:
-    """Return one fresh instance of each registered model."""
-    return [cls() for cls in _REGISTRY.values()]
-
-
-def _auto_discover() -> None:
-    """Import fit modules so their @register decorators execute."""
-    import fits.circular_fit  # noqa: F401
-    import fits.randles_constrained  # noqa: F401
-    import fits.randles_full  # noqa: F401
-    import fits.drt_tikhonov  # noqa: F401
-
-
-_auto_discover()
+    _discover()
+    if name not in _registry:
+        raise KeyError(
+            f"Fit model '{name}' not found. "
+            f"Available: {sorted(_registry.keys())}"
+        )
+    return _registry[name]

@@ -1,86 +1,81 @@
-"""Shared electrochemical physics functions.
+"""Shared electrochemical physics functions for EIS fit models.
 
-References:
-  Poujouly 2022 (Doc 2), Deslouis (Doc 11).
+All formulas follow Poujouly (2022) and Deslouis et al. for convection-diffusion
+impedance in a rectangular microchannel with laminar flow.
 """
 
 import numpy as np
 
 
 def alpha_h(Fv: float, h: float, d: float) -> float:
-    """Wall velocity gradient for rectangular channel flow.
-
-    alpha_h = 6 * Fv / (h^2 * d)
+    """Compute wall shear gradient for a rectangular microchannel.
 
     Args:
-        Fv: Volumetric flow rate (m^3/s).
+        Fv: Volumetric flow rate (m³/s).
         h: Channel height (m).
         d: Channel width (m).
 
     Returns:
-        Wall velocity gradient (s^-1).
+        alpha_h (m⁻¹·s⁻¹).
     """
     return 6.0 * Fv / (h ** 2 * d)
 
 
-def sigma_reduced(omega: float, xe: float, D: float, ah: float) -> float:
-    """Dimensionless reduced frequency for convective-diffusion impedance.
-
-    sigma = omega * (xe^2 / (D * ah^2))^(1/3)
+def sigma_reduced(omega: np.ndarray, xe: float, D: float, ah: float) -> np.ndarray:
+    """Compute dimensionless reduced frequency sigma.
 
     Args:
-        omega: Angular frequency (rad/s).
-        xe: Electrode half-width (m).
-        D: Diffusion coefficient (m^2/s).
-        ah: Wall velocity gradient alpha_h (s^-1).
+        omega: Angular frequency array (rad/s).
+        xe: Electrode width (m).
+        D: Diffusion coefficient (m²/s).
+        ah: Wall shear gradient alpha_h (m⁻¹·s⁻¹).
 
     Returns:
-        Reduced frequency (dimensionless).
+        sigma (dimensionless).
     """
     return omega * (xe ** 2 / (D * ah ** 2)) ** (1.0 / 3.0)
 
 
-def ZD_modulus_LF(sigma: float, ZD0: float) -> float:
-    """Low-frequency modulus approximation of the convective-diffusion impedance.
+def ZD_modulus_LF(sigma: np.ndarray, ZD0: float) -> np.ndarray:
+    """Low-frequency modulus of convection-diffusion impedance.
 
-    |ZD| = ZD0 * (1 + 0.433*sigma^2 - 0.0084*sigma^4)^(-1/2)
+    Valid for sigma < 1.
 
     Args:
-        sigma: Reduced frequency.
-        ZD0: DC diffusion resistance (Ω).
+        sigma: Reduced frequency (dimensionless).
+        ZD0: DC impedance limit (Ω).
 
     Returns:
-        |Z_D| at low frequency (Ω).
+        |Z_D| (Ω).
     """
-    val = 1.0 + 0.433 * sigma ** 2 - 0.0084 * sigma ** 4
-    return ZD0 * max(val, 1e-12) ** (-0.5)
+    denom = 1.0 + 0.433 * sigma ** 2 - 0.0084 * sigma ** 4
+    denom = np.maximum(denom, 1e-12)
+    return ZD0 / np.sqrt(denom)
 
 
-def ZD_phase_LF(sigma: float) -> float:
-    """Low-frequency phase of the convective-diffusion impedance (radians).
-
-    arg(ZD) = -arctan(0.5527*sigma*(1 - 0.071*sigma^2 + 0.0023*sigma^4))
+def ZD_phase_LF(sigma: np.ndarray) -> np.ndarray:
+    """Low-frequency phase of convection-diffusion impedance.
 
     Args:
-        sigma: Reduced frequency.
+        sigma: Reduced frequency (dimensionless).
 
     Returns:
-        Phase in radians.
+        arg(Z_D) in radians (negative — capacitive behaviour).
     """
     return -np.arctan(0.5527 * sigma * (1.0 - 0.071 * sigma ** 2 + 0.0023 * sigma ** 4))
 
 
-def ZD_modulus_HF(sigma: float, ZD0: float) -> float:
-    """High-frequency modulus approximation of the convective-diffusion impedance.
+def ZD_modulus_HF(sigma: np.ndarray, ZD0: float) -> np.ndarray:
+    """High-frequency modulus of convection-diffusion impedance.
 
-    |ZD| = ZD0 * (0.80755 / sigma^0.5) * (1 + 0.1768 / sigma^1.5)
+    Valid for sigma >= 1 (Warburg-like regime).
 
     Args:
-        sigma: Reduced frequency.
-        ZD0: DC diffusion resistance (Ω).
+        sigma: Reduced frequency (dimensionless).
+        ZD0: DC impedance limit (Ω).
 
     Returns:
-        |Z_D| at high frequency (Ω).
+        |Z_D| (Ω).
     """
     return ZD0 * (0.80755 / sigma ** 0.5) * (1.0 + 0.1768 / sigma ** 1.5)
 
@@ -94,16 +89,17 @@ def ZD_complex(
     h: float,
     d: float,
 ) -> np.ndarray:
-    """Complex convective-diffusion impedance Z_D(omega), unified LF/HF regime.
+    """Complex convection-diffusion impedance Z_D(omega), unified LF/HF regime.
 
-    Switches between LF polynomial and HF asymptotic at sigma = 2.0.
+    Switches from LF expansion (sigma < 1) to HF Warburg-like expansion
+    (sigma >= 1) to avoid divergence of the polynomial LF formula.
 
     Args:
         omega: Angular frequency array (rad/s).
-        ZD0: DC diffusion resistance (Ω).
-        xe: Electrode half-width (m).
-        D: Diffusion coefficient (m^2/s).
-        Fv: Volumetric flow rate (m^3/s).
+        ZD0: DC impedance limit (Ω).
+        xe: Electrode width (m).
+        D: Diffusion coefficient (m²/s).
+        Fv: Volumetric flow rate (m³/s).
         h: Channel height (m).
         d: Channel width (m).
 
@@ -111,22 +107,25 @@ def ZD_complex(
         Complex impedance array Z_D (Ω).
     """
     ah = alpha_h(Fv, h, d)
-    ZD = np.zeros(len(omega), dtype=complex)
+    sigma = sigma_reduced(omega, xe, D, ah)
 
-    for i, w in enumerate(omega):
-        if w == 0.0:
-            ZD[i] = ZD0 + 0j
-            continue
-        sig = sigma_reduced(w, xe, D, ah)
-        if sig < 2.0:
-            mod = ZD_modulus_LF(sig, ZD0)
-            phi = ZD_phase_LF(sig)
-        else:
-            mod = ZD_modulus_HF(sig, ZD0)
-            phi = -np.pi / 4.0 * (1.0 - 0.5 / max(sig, 1e-6))
-        ZD[i] = mod * np.exp(1j * phi)
+    Z = np.zeros(len(omega), dtype=complex)
 
-    return ZD
+    lf = sigma < 1.0
+    hf = ~lf
+
+    if np.any(lf):
+        mod = ZD_modulus_LF(sigma[lf], ZD0)
+        phase = ZD_phase_LF(sigma[lf])
+        Z[lf] = mod * np.exp(1j * phase)
+
+    if np.any(hf):
+        mod = ZD_modulus_HF(sigma[hf], ZD0)
+        # HF asymptote: phase → -45° (Warburg), with small correction at intermediate sigma
+        phase_hf = -np.pi / 4.0 * np.ones(np.sum(hf))
+        Z[hf] = mod * np.exp(1j * phase_hf)
+
+    return Z
 
 
 def Z_randles_full(
@@ -144,86 +143,86 @@ def Z_randles_full(
     h: float,
     d: float,
 ) -> np.ndarray:
-    """Full Randles circuit impedance: Re - [R'e // Cb] - [Rct // CPE] - ZD.
+    """Full Randles circuit: Re — [R'e // Cb] — [Rct // CPE(Qdl,alpha)] — ZD.
 
     Args:
-        omega: Angular frequencies (rad/s).
-        Re: Electrolyte resistance (Ω).
-        Re_prime: Secondary electrolyte resistance (Ω).
-        Cb: Bypass capacitance (F).
+        omega: Angular frequency array (rad/s).
+        Re: Solution resistance (Ω).
+        Re_prime: Parallel branch resistance (Ω).
+        Cb: Blocking capacitance (F).
         Rct: Charge transfer resistance (Ω).
-        Qdl: CPE coefficient (F·s^(alpha-1)).
-        alpha: CPE exponent (0.5 to 1.0).
-        ZD0: DC diffusion resistance (Ω).
-        xe: Electrode half-width (m).
-        D: Diffusion coefficient (m^2/s).
-        Fv: Volumetric flow rate (m^3/s).
+        Qdl: CPE pre-factor (S·sᵅ).
+        alpha: CPE exponent (0.6–1.0, dimensionless).
+        ZD0: DC diffusion impedance (Ω).
+        xe: Electrode width (m).
+        D: Effective diffusion coefficient (m²/s).
+        Fv: Volumetric flow rate (m³/s).
         h: Channel height (m).
         d: Channel width (m).
 
     Returns:
-        Complex impedance array (Ω).
+        Complex total impedance Z (Ω), shape = (len(omega),).
     """
-    j_omega = 1j * omega
-    ZD = ZD_complex(omega, ZD0, xe, D, Fv, h, d)
-    Z_CPE = 1.0 / (Qdl * j_omega ** alpha)
-    Z_faradaic = 1.0 / (1.0 / Rct + 1.0 / Z_CPE) + ZD
-    # R'e parallel with Cb
-    if Re_prime > 0 and Cb > 0:
-        Z_Rprime_Cb = Re_prime / (1.0 + j_omega * Cb * Re_prime)
-    else:
-        Z_Rprime_Cb = np.zeros_like(omega, dtype=complex)
-    return Re + Z_Rprime_Cb + Z_faradaic
+    jw = 1j * omega
+
+    # Parallel R'e // Cb branch
+    Z_Cb = 1.0 / (jw * Cb)
+    Z_branch1 = (Re_prime * Z_Cb) / (Re_prime + Z_Cb)
+
+    # CPE element: 1 / (Qdl * (jω)^alpha)
+    Z_CPE = 1.0 / (Qdl * (jw) ** alpha)
+
+    # Diffusion-convection element
+    Z_D = ZD_complex(omega, ZD0, xe, D, Fv, h, d)
+
+    # Rct // CPE, then series with ZD
+    Z_interface = (Rct * Z_CPE) / (Rct + Z_CPE) + Z_D
+
+    return Re + Z_branch1 + Z_interface
 
 
 def Rct_bare_theory(T: float, S: float, k0: float, C0: float) -> float:
-    """Theoretical charge transfer resistance for a bare electrode.
-
-    Rct_bare = RT / (F^2 * S * k0 * C0)
+    """Theoretical bare electrode Rct from Butler-Volmer kinetics.
 
     Args:
         T: Temperature (K).
-        S: Active electrode surface area (m^2).
-        k0: Standard heterogeneous rate constant (m/s).
-        C0: Mediator bulk concentration (mol/m^3).
+        S: Active electrode area (m²).
+        k0: Standard rate constant (m/s).
+        C0: Mediator concentration (mol/m³).
 
     Returns:
-        Rct_bare (Ω).
+        Rct (Ω).
     """
-    F_const = 96485.0
-    R_const = 8.314
-    return (R_const * T) / (F_const ** 2 * S * k0 * C0)
+    R_gas = 8.314
+    F = 96485.0
+    n = 1
+    return (R_gas * T) / (F ** 2 * n * S * k0 * C0)
 
 
 def Cdl_brug(Qdl: float, alpha: float, Re: float, Re_prime: float, Rct: float) -> float:
-    """Effective double-layer capacitance via the Brug formula.
-
-    Cdl_eq = [Qdl * (1/(Re + R'e) + 1/Rct)^(alpha - 1)]^(1/alpha)
+    """Effective double-layer capacitance via Brug formula.
 
     Args:
-        Qdl: CPE coefficient (F·s^(alpha-1)).
-        alpha: CPE exponent.
-        Re: Electrolyte resistance (Ω).
-        Re_prime: Secondary electrolyte resistance (Ω).
+        Qdl: CPE pre-factor (S·sᵅ).
+        alpha: CPE exponent (dimensionless).
+        Re: Solution resistance (Ω).
+        Re_prime: Series resistance (Ω).
         Rct: Charge transfer resistance (Ω).
 
     Returns:
-        Effective double-layer capacitance (F).
+        Cdl_eq (F).
     """
-    R_sum = Re + Re_prime
-    return (Qdl * (1.0 / R_sum + 1.0 / Rct) ** (alpha - 1.0)) ** (1.0 / alpha)
+    return (Qdl * (1.0 / (Re + Re_prime) + 1.0 / Rct) ** (alpha - 1.0)) ** (1.0 / alpha)
 
 
 def theta_EIS(Rct_bare: float, Rct_ap: float) -> float:
-    """Surface coverage estimated from EIS charge transfer resistances.
-
-    theta = 1 - Rct_bare / Rct_ap
+    """Surface coverage rate from EIS Rct ratio.
 
     Args:
         Rct_bare: Bare electrode Rct (Ω).
-        Rct_ap: Apparent Rct after surface modification (Ω).
+        Rct_ap: Apparent Rct after hybridisation (Ω).
 
     Returns:
-        Surface coverage fraction [0, 1].
+        theta: Coverage rate (0 to 1).
     """
     return 1.0 - Rct_bare / Rct_ap

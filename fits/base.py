@@ -5,12 +5,10 @@ from core.models import EISSpectrum, FitResult
 
 
 class BaseFitModel(ABC):
-    """Interface every fit model must implement.
+    """Interface that every fit model must implement.
 
-    Class attributes:
-        name: Short identifier used as dict key (e.g. 'randles_full').
-        label: Human-readable name shown in the UI.
-        description: Tooltip help text.
+    To add a new model: create a file in fits/, subclass BaseFitModel,
+    and it will be auto-discovered by FitRegistry without touching other files.
     """
 
     name: str = ""
@@ -19,38 +17,35 @@ class BaseFitModel(ABC):
 
     @abstractmethod
     def fit(self, spectrum: EISSpectrum, config: dict) -> FitResult:
-        """Run the optimisation and return a FitResult.
+        """Fit the model to the spectrum.
 
         Args:
-            spectrum: EIS data to fit.
-            config: App config dict from AppSettings.model_dump().
+            spectrum: EIS spectrum to fit.
+            config: App config dict (from config_to_dict).
 
         Returns:
-            FitResult with fitted parameters and reconstructed impedance.
+            FitResult with parameters, fitted impedance, and diagnostics.
         """
-        ...
 
     @abstractmethod
     def initial_guess(self, spectrum: EISSpectrum, config: dict) -> dict:
-        """Return initial parameter guesses as {param_name: value}.
+        """Estimate initial parameter values from spectrum features.
 
         Args:
-            spectrum: EIS data (used for heuristic guessing).
+            spectrum: EIS spectrum.
             config: App config dict.
 
         Returns:
-            Dict of parameter names to initial float values.
+            Dict {param_name: initial_value}.
         """
-        ...
 
     @abstractmethod
     def bounds(self, config: dict) -> tuple:
-        """Return (lower_bounds, upper_bounds) as dicts {param_name: value}.
+        """Return lower and upper parameter bounds.
 
         Args:
             config: App config dict.
 
         Returns:
-            Tuple (lower_dict, upper_dict).
+            Tuple (lower_dict, upper_dict) with same keys as initial_guess.
         """
-        ...

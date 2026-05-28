@@ -1,147 +1,167 @@
-"""Full Randles circuit fit: 8 free parameters, modulus weighting, lmfit.
-
-Circuit topology: Re - [R'e // Cb] - [Rct // CPE(Qdl, alpha)] - ZD
-Free parameters: Re, Re_prime, Cb, Rct, Qdl, alpha, ZD0, D_eff
-"""
+"""Full Randles circuit fit: 8 free parameters with modulus weighting."""
 
 import numpy as np
-import lmfit
+from scipy.optimize import least_squares
 
-from core.models import EISSpectrum, FitResult
 from fits.base import BaseFitModel
 from fits.physics import Z_randles_full
-from fits.registry import register
-from core.logger import get_logger
+from core.models import EISSpectrum, FitResult
 
-log = get_logger("randles_full")
+_PARAM_NAMES = ["Re", "Re_prime", "Cb", "Rct", "Qdl", "alpha", "ZD0", "D_eff"]
 
 
-@register
-class RandlesFull(BaseFitModel):
+class RandlesFullModel(BaseFitModel):
+    """Full Randles fit with 8 free parameters.
+
+    Parameters: Re, R'e, Cb, Rct, Qdl, α, ZD0, D_eff.
+    Weighting: Modulus weighting w = 1 / (alpha_noise · |Z|).
+    Optimiser: scipy.optimize.least_squares with TRF algorithm.
+    """
+
     name = "randles_full"
     label = "Randles complet"
     description = (
-        "Circuit Randles complet: Re, R’e, Cb, Rct, CPE(Qdl, alpha), ZD0, D_eff. "
-        "8 paramètres libres, pondération Modulus."
+        "Circuit Randles complet avec 8 paramètres libres "
+        "(Re, R'e, Cb, Rct, Qdl, α, ZD0, D_eff). Pondération Modulus."
     )
 
     def initial_guess(self, spectrum: EISSpectrum, config: dict) -> dict:
-        Zre = spectrum.Zre
-        Re_est = max(float(Zre[0]), 100.0)
-        Rct_est = max(2.0 * (float(np.max(Zre)) - Re_est), 500.0)
-        ZD0_est = max(float(np.max(Zre) - np.min(Zre)), 100.0)
-        phys = config.get("physics", {})
-        D_est = (phys.get("D_FeIII", 7.2e-10) + phys.get("D_FeII", 6.5e-10)) / 2.0
-        return {
-            "Re": Re_est,
-            "Re_prime": 10.0,
-            "Cb": 1e-9,
-            "Rct": Rct_est,
-            "Qdl": 1e-6,
-            "alpha": 0.8,
-            "ZD0": ZD0_est,
-            "D_eff": D_est,
-        }
-
-    def bounds(self, config: dict) -> tuple:
-        b = config.get("fit", {}).get("bounds_randles_full", {})
-        defaults = {
-            "Re":       [100.0,   100000.0],
-            "Re_prime": [1.0,     100000.0],
-            "Cb":       [1e-12,   1e-4],
-            "Rct":      [100.0,   1e9],
-            "Qdl":      [1e-12,   1e-4],
-            "alpha":    [0.6,     1.0],
-            "ZD0":      [10.0,    1e6],
-            "D_eff":    [1e-11,   1e-8],
-        }
-        lower = {k: b.get(k, v)[0] for k, v in defaults.items()}
-        upper = {k: b.get(k, v)[1] for k, v in defaults.items()}
-        return lower, upper
-
-    def fit(self, spectrum: EISSpectrum, config: dict) -> FitResult:
-        """Fit the full Randles model with modulus weighting via lmfit.
+        """Estimate initial values from spectrum extrema and config defaults.
 
         Args:
-            spectrum: EIS data.
+            spectrum: EIS spectrum.
             config: App config dict.
 
         Returns:
-            FitResult with 8 fitted parameters and reconstructed impedance.
+            Dict {param_name: initial_value}.
+        """
+        Re_est = max(float(np.min(spectrum.Zre)), 100.0)
+        Rct_est = max(float(np.max(spectrum.Zre)) - Re_est, 500.0)
+        D = float(config.get("physics", {}).get("D_FeIII", 7.2e-10))
+        return {
+            "Re": Re_est,
+            "Re_prime": max(Re_est * 0.05, 1.0),
+            "Cb": 1e-9,
+            "Rct": Rct_est,
+            "Qdl": 1e-6,
+            "alpha": 0.85,
+            "ZD0": 500.0,
+            "D_eff": D,
+        }
+
+    def bounds(self, config: dict) -> tuple:
+        """Return per-parameter bounds from config YAML.
+
+        Args:
+            config: App config dict.
+
+        Returns:
+            (lower_dict, upper_dict).
+        """
+        b = config.get("fit", {}).get("bounds_randles_full", {})
+        defaults_lo = {
+            "Re": 100.0, "Re_prime": 1.0, "Cb": 1e-12,
+            "Rct": 100.0, "Qdl": 1e-12, "alpha": 0.6,
+            "ZD0": 10.0, "D_eff": 1e-11,
+        }
+        defaults_hi = {
+            "Re": 1e5, "Re_prime": 1e5, "Cb": 1e-4,
+            "Rct": 1e9, "Qdl": 1e-4, "alpha": 1.0,
+            "ZD0": 1e6, "D_eff": 1e-8,
+        }
+
+        lo, hi = {}, {}
+        for k in _PARAM_NAMES:
+            v = b.get(k, None)
+            lo[k] = v[0] if v else defaults_lo[k]
+            hi[k] = v[1] if v else defaults_hi[k]
+        return lo, hi
+
+    def fit(self, spectrum: EISSpectrum, config: dict) -> FitResult:
+        """Optimise full Randles model against spectrum using TRF least-squares.
+
+        Args:
+            spectrum: EIS spectrum.
+            config: App config dict.
+
+        Returns:
+            FitResult with 8 parameters and approximate standard deviations.
         """
         omega = 2.0 * np.pi * spectrum.f
-        Zre = spectrum.Zre
-        Zim = spectrum.Zim
-        Z_obs = Zre + 1j * Zim
 
         geom = config.get("geometry", {})
         cond = config.get("conditions", {})
-        fit_cfg = config.get("fit", {})
 
-        xe = geom.get("xe", 30e-6)
-        h = geom.get("h", 60e-6)
-        d = geom.get("d", 300e-6)
-        Fv = cond.get("Fv", 5e-10)
-        alpha_noise = fit_cfg.get("alpha_noise", 0.001)
-        max_iter = fit_cfg.get("max_iter", 10000)
+        xe = float(geom.get("xe", 30e-6))
+        h = float(geom.get("h", 60e-6))
+        d = float(geom.get("d", 300e-6))
+        Fv = float(cond.get("Fv", 5e-10))
 
-        g0 = self.initial_guess(spectrum, config)
-        lower, upper = self.bounds(config)
+        guess = self.initial_guess(spectrum, config)
+        lo, hi = self.bounds(config)
 
-        params = lmfit.Parameters()
-        for pname, val in g0.items():
-            params.add(pname, value=val, min=lower[pname], max=upper[pname])
+        x0 = [guess[k] for k in _PARAM_NAMES]
+        blo = [lo[k] for k in _PARAM_NAMES]
+        bhi = [hi[k] for k in _PARAM_NAMES]
 
-        weights = 1.0 / (alpha_noise * np.abs(Z_obs) + 1.0)
+        alpha_noise = float(config.get("fit", {}).get("alpha_noise", 0.001))
+        Z_data = spectrum.Zre + 1j * spectrum.Zim
+        weight = 1.0 / np.maximum(alpha_noise * np.abs(Z_data), 1.0)
 
-        def residuals(p):
-            Z_model = Z_randles_full(
-                omega,
-                p["Re"], p["Re_prime"], p["Cb"],
-                p["Rct"], p["Qdl"], p["alpha"],
-                p["ZD0"], xe, p["D_eff"], Fv, h, d,
-            )
-            dre = (Zre - Z_model.real) * weights
-            dim = (Zim - Z_model.imag) * weights
-            return np.concatenate([dre, dim])
+        def residuals(x):
+            Re, Re_p, Cb, Rct, Qdl, alpha_p, ZD0, D_eff = x
+            Z = Z_randles_full(omega, Re, Re_p, Cb, Rct, Qdl, alpha_p,
+                               ZD0, xe, D_eff, Fv, h, d)
+            return np.concatenate([
+                (Z.real - spectrum.Zre) * weight,
+                (Z.imag - spectrum.Zim) * weight,
+            ])
 
-        converged = False
-        result = None
+        max_iter = int(config.get("fit", {}).get("max_iter", 10000))
+
         try:
-            result = lmfit.minimize(residuals, params, method="leastsq", max_nfev=max_iter)
-            converged = result.success or bool(result.errorbars)
-        except Exception as e:
-            log.warning(f"Full Randles fit failed: {e}")
+            result = least_squares(
+                residuals, x0, bounds=(blo, bhi),
+                max_nfev=max_iter, method="trf",
+                ftol=1e-10, xtol=1e-10,
+            )
+            converged = result.success
+            x_fit = result.x
 
-        if result is not None and converged:
-            p_opt = result.params
-            p_err = {k: (float(result.params[k].stderr) if result.params[k].stderr else np.inf) for k in g0}
-        else:
-            p_opt = params
-            p_err = {k: np.inf for k in g0}
+            # Approximate parameter covariance from Jacobian
+            J = result.jac
+            try:
+                cov = np.linalg.inv(J.T @ J) * (result.cost / max(2 * len(spectrum.f) - len(_PARAM_NAMES), 1))
+                std = np.sqrt(np.abs(np.diag(cov)))
+            except np.linalg.LinAlgError:
+                std = np.zeros(len(_PARAM_NAMES))
 
-        Z_fit = Z_randles_full(
-            omega,
-            float(p_opt["Re"]), float(p_opt["Re_prime"]), float(p_opt["Cb"]),
-            float(p_opt["Rct"]), float(p_opt["Qdl"]), float(p_opt["alpha"]),
-            float(p_opt["ZD0"]), xe, float(p_opt["D_eff"]), Fv, h, d,
-        )
+        except Exception:
+            x_fit = x0
+            std = np.zeros(len(_PARAM_NAMES))
+            converged = False
 
-        res_re = Zre - Z_fit.real
-        res_im = Zim - Z_fit.imag
+        params = dict(zip(_PARAM_NAMES, x_fit))
+        params_std = dict(zip(_PARAM_NAMES, std))
+
+        Re, Re_p, Cb, Rct, Qdl, alpha_p, ZD0, D_eff = x_fit
+        Z_fit = Z_randles_full(omega, Re, Re_p, Cb, Rct, Qdl, alpha_p,
+                               ZD0, xe, D_eff, Fv, h, d)
+
+        res_re = spectrum.Zre - Z_fit.real
+        res_im = spectrum.Zim - Z_fit.imag
         chi2 = float(np.mean(res_re ** 2 + res_im ** 2))
-        params_out = {k: float(p_opt[k]) for k in g0}
 
         return FitResult(
             model_name=self.name,
-            params=params_out,
-            params_std=p_err,
+            params=params,
+            params_std=params_std,
             Zfit_re=Z_fit.real,
             Zfit_im=Z_fit.imag,
             chi2=chi2,
             residuals_re=res_re,
             residuals_im=res_im,
-            Rct=float(p_opt["Rct"]),
-            Rct_std=p_err.get("Rct", np.inf),
+            Rct=float(Rct),
+            Rct_std=float(params_std.get("Rct", 0.0)),
             converged=converged,
         )

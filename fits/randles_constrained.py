@@ -1,155 +1,160 @@
-"""Constrained Randles fit: Re fixed from Nyquist HF intercept, 3 free parameters.
+"""Constrained Randles fit: Re fixed to HF intercept, ZD0 scaled by Fv^(-1/3).
 
-Free parameters: Rct, Qdl, alpha.
-Re is pinned to the HF real-axis intercept; ZD0 is estimated from the
-impedance range (max Zre - Re).
+Free parameters: Rct, Qdl, alpha (3 degrees of freedom).
 """
 
 import numpy as np
-from scipy.optimize import curve_fit
+from scipy.optimize import least_squares
 
-from core.models import EISSpectrum, FitResult
 from fits.base import BaseFitModel
 from fits.physics import Z_randles_full
-from fits.registry import register
-from core.logger import get_logger
-
-log = get_logger("randles_constrained")
+from core.models import EISSpectrum, FitResult
 
 
-def _estimate_Re(Zre: np.ndarray, Zim: np.ndarray) -> float:
-    """Estimate electrolyte resistance as the HF Nyquist real-axis intercept.
+def _estimate_re(spectrum: EISSpectrum) -> float:
+    """Estimate Re as the minimum Zre in the HF region (first 5 points)."""
+    n_hf = min(5, len(spectrum.f))
+    return float(np.min(spectrum.Zre[:n_hf]))
 
-    Uses the point with the smallest |Zim| in the first fifth of data (HF region).
 
-    Args:
-        Zre: Real impedance array (Ω), sorted HF→BF.
-        Zim: Imaginary impedance array (Ω).
+class RandlesConstrainedModel(BaseFitModel):
+    """Randles fit with Re fixed and ZD0 scaled to Fv^(-1/3).
 
-    Returns:
-        Estimated Re (Ω).
+    Re is pinned to the HF Nyquist intercept. ZD0 is estimated from the
+    flow-rate scaling law. Only Rct, Qdl, and alpha are optimised.
     """
-    n_hf = max(3, len(Zre) // 5)
-    idx = int(np.argmin(np.abs(Zim[:n_hf])))
-    return float(Zre[idx])
 
-
-@register
-class RandlesConstrained(BaseFitModel):
     name = "randles_constrained"
     label = "Randles contraint"
     description = (
-        "Randles avec Re fixé (lecture Nyquist HF). "
-        "3 paramètres libres: Rct, Qdl, alpha. "
-        "ZD0 estimé depuis la plage d'impédance."
+        "Randles avec Re fixé sur l'axe réel HF et ZD0 ∝ Fv^(−1/3). "
+        "3 paramètres libres : Rct, Qdl, α."
     )
 
     def initial_guess(self, spectrum: EISSpectrum, config: dict) -> dict:
-        Re = _estimate_Re(spectrum.Zre, spectrum.Zim)
-        Rct_est = max(2.0 * (float(np.max(spectrum.Zre)) - Re), 500.0)
-        return {"Re": Re, "Rct": Rct_est, "Qdl": 1e-6, "alpha": 0.8}
+        """Estimate Rct from Nyquist diameter, Qdl and alpha from defaults.
+
+        Args:
+            spectrum: EIS spectrum.
+            config: App config dict.
+
+        Returns:
+            Dict with keys Rct, Qdl, alpha.
+        """
+        Re = _estimate_re(spectrum)
+        Rct_est = max(float(np.max(spectrum.Zre)) - Re, 100.0)
+        return {"Rct": Rct_est, "Qdl": 1e-6, "alpha": 0.85}
 
     def bounds(self, config: dict) -> tuple:
+        """Return bounds from config for the 3 free parameters.
+
+        Args:
+            config: App config dict.
+
+        Returns:
+            (lower_dict, upper_dict).
+        """
         b = config.get("fit", {}).get("bounds_randles_full", {})
-        lower = {
+        lo = {
             "Rct": b.get("Rct", [100.0, 1e9])[0],
             "Qdl": b.get("Qdl", [1e-12, 1e-4])[0],
             "alpha": b.get("alpha", [0.6, 1.0])[0],
         }
-        upper = {
+        hi = {
             "Rct": b.get("Rct", [100.0, 1e9])[1],
             "Qdl": b.get("Qdl", [1e-12, 1e-4])[1],
             "alpha": b.get("alpha", [0.6, 1.0])[1],
         }
-        return lower, upper
+        return lo, hi
 
     def fit(self, spectrum: EISSpectrum, config: dict) -> FitResult:
-        """Fit constrained Randles with Re fixed from HF Nyquist intercept.
+        """Fit constrained Randles model.
+
+        Re is fixed; ZD0 is scaled to Fv^(-1/3); Rct, Qdl, alpha are optimised.
 
         Args:
-            spectrum: EIS data.
-            config: App config dict.
+            spectrum: EIS spectrum.
+            config: App config dict (must include geometry and conditions).
 
         Returns:
-            FitResult with converged Rct, Qdl, alpha.
+            FitResult with all Randles parameters (fixed ones included in params).
         """
         omega = 2.0 * np.pi * spectrum.f
-        Zre = spectrum.Zre
-        Zim = spectrum.Zim
-        Z_obs = Zre + 1j * Zim
 
-        g = self.initial_guess(spectrum, config)
-        Re_fixed = g["Re"]
-
+        Re = _estimate_re(spectrum)
         geom = config.get("geometry", {})
         cond = config.get("conditions", {})
         phys = config.get("physics", {})
-        fit_cfg = config.get("fit", {})
 
-        xe = geom.get("xe", 30e-6)
-        h = geom.get("h", 60e-6)
-        d = geom.get("d", 300e-6)
-        Fv = cond.get("Fv", 5e-10)
-        D = phys.get("D_FeII", 6.5e-10)
-        alpha_noise = fit_cfg.get("alpha_noise", 0.001)
-        max_iter = fit_cfg.get("max_iter", 10000)
+        xe = float(geom.get("xe", 30e-6))
+        h = float(geom.get("h", 60e-6))
+        d = float(geom.get("d", 300e-6))
+        Fv = float(cond.get("Fv", 5e-10))
+        D = float(phys.get("D_FeIII", 7.2e-10))
 
-        ZD0_est = max(float(np.max(Zre)) - Re_fixed, 50.0)
-        weights = 1.0 / (alpha_noise * np.abs(Z_obs) + 1.0)
+        # ZD0 baseline at Fv_ref = 5e-10 m³/s, scaled by Fv^(-1/3)
+        Fv_ref = 5e-10
+        ZD0 = 500.0 * (Fv_ref / Fv) ** (1.0 / 3.0)
 
-        lower, upper = self.bounds(config)
-        p0 = [g["Rct"], g["Qdl"], g["alpha"]]
-        lb = [lower["Rct"], lower["Qdl"], lower["alpha"]]
-        ub = [upper["Rct"], upper["Qdl"], upper["alpha"]]
+        Re_prime = Re * 0.05
+        Cb = 1e-9
 
-        def model_fn(omega_arr, Rct, Qdl, alpha):
-            Z = Z_randles_full(
-                omega_arr, Re_fixed, 0.0, 0.0,
-                Rct, Qdl, alpha, ZD0_est,
-                xe, D, Fv, h, d,
-            )
-            return np.concatenate([Z.real, Z.imag])
+        guess = self.initial_guess(spectrum, config)
+        lo, hi = self.bounds(config)
 
-        Z_data = np.concatenate([Zre, Zim])
-        sigma_w = np.concatenate([1.0 / (weights + 1e-12), 1.0 / (weights + 1e-12)])
+        x0 = [guess["Rct"], guess["Qdl"], guess["alpha"]]
+        blo = [lo["Rct"], lo["Qdl"], lo["alpha"]]
+        bhi = [hi["Rct"], hi["Qdl"], hi["alpha"]]
 
-        converged = False
-        perr = [np.inf, np.inf, np.inf]
+        alpha_noise = float(config.get("fit", {}).get("alpha_noise", 0.001))
+        Z_data = spectrum.Zre + 1j * spectrum.Zim
+        weight = 1.0 / np.maximum(alpha_noise * np.abs(Z_data), 1.0)
+
+        def residuals(x):
+            Rct, Qdl, alpha_p = x
+            Z = Z_randles_full(omega, Re, Re_prime, Cb, Rct, Qdl, alpha_p,
+                               ZD0, xe, D, Fv, h, d)
+            return np.concatenate([
+                (Z.real - spectrum.Zre) * weight,
+                (Z.imag - spectrum.Zim) * weight,
+            ])
+
+        max_iter = int(config.get("fit", {}).get("max_iter", 10000))
+
         try:
-            popt, pcov = curve_fit(
-                model_fn, omega, Z_data,
-                p0=p0, bounds=(lb, ub),
-                sigma=sigma_w, absolute_sigma=True,
+            result = least_squares(
+                residuals, x0, bounds=(blo, bhi),
                 max_nfev=max_iter, method="trf",
             )
-            perr_raw = np.sqrt(np.diag(pcov))
-            perr = [float(e) if np.isfinite(e) else np.inf for e in perr_raw]
-            converged = True
-        except Exception as e:
-            log.warning(f"Constrained Randles did not converge: {e}")
-            popt = p0
+            converged = result.success or result.cost < 1.0
+            Rct_fit, Qdl_fit, alpha_fit = result.x
+        except Exception:
+            Rct_fit, Qdl_fit, alpha_fit = x0
+            converged = False
 
-        Rct_fit, Qdl_fit, alpha_fit = popt
-        Z_fit = Z_randles_full(
-            omega, Re_fixed, 0.0, 0.0,
-            Rct_fit, Qdl_fit, alpha_fit, ZD0_est,
-            xe, D, Fv, h, d,
-        )
+        Z_fit = Z_randles_full(omega, Re, Re_prime, Cb, Rct_fit, Qdl_fit,
+                               alpha_fit, ZD0, xe, D, Fv, h, d)
 
-        res_re = Zre - Z_fit.real
-        res_im = Zim - Z_fit.imag
+        res_re = spectrum.Zre - Z_fit.real
+        res_im = spectrum.Zim - Z_fit.imag
         chi2 = float(np.mean(res_re ** 2 + res_im ** 2))
+
+        params = {
+            "Re": Re, "Re_prime": Re_prime, "Cb": Cb,
+            "Rct": Rct_fit, "Qdl": Qdl_fit, "alpha": alpha_fit,
+            "ZD0": ZD0, "D_eff": D,
+        }
 
         return FitResult(
             model_name=self.name,
-            params={"Re": Re_fixed, "Rct": float(Rct_fit), "Qdl": float(Qdl_fit), "alpha": float(alpha_fit)},
-            params_std={"Re": 0.0, "Rct": perr[0], "Qdl": perr[1], "alpha": perr[2]},
+            params=params,
+            params_std={k: 0.0 for k in params},
             Zfit_re=Z_fit.real,
             Zfit_im=Z_fit.imag,
             chi2=chi2,
             residuals_re=res_re,
             residuals_im=res_im,
             Rct=float(Rct_fit),
-            Rct_std=perr[0],
+            Rct_std=0.0,
             converged=converged,
         )
