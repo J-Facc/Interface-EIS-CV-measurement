@@ -109,30 +109,28 @@ def download_and_extract_zip():
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(tmp_dir)
 
-    # Trouver le sous-dossier racine du repo (GitHub crée toujours 1 sous-dossier)
-    extracted_dirs = [d for d in tmp_dir.iterdir() if d.is_dir()]
-    if not extracted_dirs:
-        raise RuntimeError("ZIP vide ou structure inattendue.")
-    extracted_root = extracted_dirs[0]
+    # GitHub ZIP crée toujours 1 sous-dossier : "user-repo-sha/"
+    # On cherche app.py récursivement pour trouver la vraie racine
+    app_candidates = list(tmp_dir.rglob("app.py"))
+    if not app_candidates:
+        all_files = [str(p.relative_to(tmp_dir)) for p in tmp_dir.rglob("*")]
+        raise RuntimeError(
+            "app.py introuvable dans le ZIP.\nContenu :\n" + "\n".join(all_files[:30])
+        )
 
-    # Vérifier que app.py existe bien dans extracted_root
-    if not (extracted_root / "app.py").exists():
-        # Chercher app.py récursivement dans les sous-niveaux
-        matches = list(extracted_root.rglob("app.py"))
-        if not matches:
-            raise RuntimeError(f"app.py introuvable dans le ZIP. Contenu : {list(extracted_root.iterdir())}")
-        # Prendre le dossier parent du premier app.py trouvé
-        extracted_root = matches[0].parent
+    # La racine du repo = dossier parent de app.py
+    repo_root = app_candidates[0].parent
+    update_status(f"Racine du repo détectée : {repo_root.name}")
 
-    # Remplacer APP_DIR par le contenu extrait
+    # Remplacer APP_DIR
     if APP_DIR.exists():
         shutil.rmtree(APP_DIR)
-    shutil.copytree(extracted_root, APP_DIR)
+    shutil.copytree(repo_root, APP_DIR)
 
     # Nettoyage
     zip_path.unlink(missing_ok=True)
     shutil.rmtree(tmp_dir, ignore_errors=True)
-    update_status("Mise à jour appliquée.")
+    update_status(f"Mise à jour appliquée depuis {repo_root.name}.")
 
 
 def check_and_update():
@@ -234,14 +232,22 @@ def main():
     else:
         update_status("Hors ligne — utilisation de la version locale.")
 
-    # Debug : lister le contenu de APP_DIR si elle existe
+    # Debug : lister le contenu de APP_DIR
     if APP_DIR.exists():
         contents = [str(p.name) for p in APP_DIR.iterdir()]
         update_status(f"Contenu eis_app/ : {contents[:10]}")
 
     # 2. Vérifier que l'app existe
     if not APP_ENTRY.exists():
-        show_error_and_exit("ERREUR : application introuvable. Connectez-vous à internet pour le premier lancement.")
+        if APP_DIR.exists():
+            py_files = [str(p.relative_to(APP_DIR)) for p in APP_DIR.rglob("*.py")]
+            detail = "Fichiers .py trouvés :\n" + "\n".join(py_files[:20])
+        else:
+            detail = "Le dossier eis_app/ n'existe pas."
+        show_error_and_exit(
+            f"Application introuvable : {APP_ENTRY}\n\n{detail}\n\n"
+            "Vérifiez votre connexion internet."
+        )
 
     # 3. Environnement Python + dépendances
     ensure_venv()
