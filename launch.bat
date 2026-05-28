@@ -82,8 +82,8 @@ if not exist "%VENV_DIR%\Scripts\streamlit.exe" (
     "%VENV_DIR%\Scripts\pip.exe" install streamlit --quiet --disable-pip-version-check
 )
 if exist "%APP_DIR%\requirements.txt" (
-    "%VENV_DIR%\Scripts\pip.exe" install -r "%APP_DIR%\requirements.txt" --quiet --disable-pip-version-check
-)
+    cd /d "%APP_DIR%"
+    "%VENV_DIR%\Scripts\streamlit.exe" run app.py --server.port %PORT% --browser.gatherUsageStats false
 
 :: 5. Verifier app.py et lancer
 echo [5/5] Lancement...
