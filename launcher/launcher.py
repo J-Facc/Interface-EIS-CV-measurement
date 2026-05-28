@@ -11,7 +11,6 @@ import webbrowser
 import zipfile
 import shutil
 import json
-import hashlib
 import urllib.request
 import urllib.error
 import tkinter as tk
@@ -31,14 +30,14 @@ PORT          = 8501
 TIMEOUT_START = 30   # secondes max pour attendre Streamlit
 # ───────────────────────────────────────────────────────────────────────────────
 
-ZIP_URL     = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/zipball/{BRANCH}"
-COMMIT_URL  = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/commits/{BRANCH}"
+ZIP_URL    = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/zipball/{BRANCH}"
+COMMIT_URL = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/commits/{BRANCH}"
 
 
 def show_error_and_exit(msg: str):
     """Affiche une boîte d'erreur tkinter et quitte proprement."""
     root = tk.Tk()
-    root.withdraw()   # cache la fenêtre principale
+    root.withdraw()
     messagebox.showerror("EIS Analyzer — Erreur", msg)
     root.destroy()
     sys.exit(1)
@@ -53,15 +52,23 @@ def update_status(msg: str):
         pass
 
 
-def is_online(host="8.8.8.8", port=53, timeout=3) -> bool:
-    try:
-        socket.setdefaulttimeout(timeout)
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((host, port))
-        s.close()
-        return True
-    except OSError:
-        return False
+def is_online() -> bool:
+    """Vérifie la connectivité en tentant de joindre l'API GitHub directement."""
+    urls = [
+        "https://api.github.com",
+        "https://github.com",
+    ]
+    for url in urls:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "EIS-Analyzer-Launcher"}
+            )
+            urllib.request.urlopen(req, timeout=5)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def get_remote_sha() -> str | None:
@@ -110,7 +117,7 @@ def download_and_extract_zip():
         zf.extractall(tmp_dir)
 
     # GitHub ZIP crée toujours 1 sous-dossier : "user-repo-sha/"
-    # On cherche app.py récursivement pour trouver la vraie racine
+    # rglob pour trouver app.py quelle que soit la profondeur
     app_candidates = list(tmp_dir.rglob("app.py"))
     if not app_candidates:
         all_files = [str(p.relative_to(tmp_dir)) for p in tmp_dir.rglob("*")]
@@ -118,45 +125,58 @@ def download_and_extract_zip():
             "app.py introuvable dans le ZIP.\nContenu :\n" + "\n".join(all_files[:30])
         )
 
-    # La racine du repo = dossier parent de app.py
     repo_root = app_candidates[0].parent
-    update_status(f"Racine du repo détectée : {repo_root.name}")
+    update_status(f"Racine détectée : {repo_root.name}")
 
-    # Remplacer APP_DIR
     if APP_DIR.exists():
         shutil.rmtree(APP_DIR)
     shutil.copytree(repo_root, APP_DIR)
 
-    # Nettoyage
     zip_path.unlink(missing_ok=True)
     shutil.rmtree(tmp_dir, ignore_errors=True)
-    update_status(f"Mise à jour appliquée depuis {repo_root.name}.")
+    update_status(f"eis_app/ créé : {APP_DIR.exists()} — app.py : {APP_ENTRY.exists()}")
 
 
 def check_and_update():
     """Compare les SHA local et distant, télécharge si nécessaire."""
+    update_status("Vérification de la connexion...")
+    online = is_online()
+    update_status(f"Connexion : {'OK' if online else 'hors ligne'}")
+
+    if not online:
+        update_status("Hors ligne — utilisation de la version locale.")
+        return
+
+    update_status("Vérification de la version distante...")
     remote_sha = get_remote_sha()
+    update_status(f"SHA distant : {remote_sha[:8] if remote_sha else 'inconnu'}")
+
     if remote_sha is None:
         update_status("Impossible de vérifier — utilisation version locale.")
         return
 
     local_sha = get_local_sha()
+    update_status(f"SHA local : {local_sha[:8] if local_sha else 'aucun'}")
+
     if local_sha == remote_sha and APP_DIR.exists():
         update_status("Application déjà à jour.")
         return
 
     if not APP_DIR.exists():
-        update_status("Première utilisation — téléchargement de l'application...")
+        update_status("Première utilisation — téléchargement...")
     else:
-        update_status("Nouvelle version disponible — mise à jour...")
+        update_status("Nouvelle version — mise à jour...")
 
     try:
         download_and_extract_zip()
         VERSION_FILE.write_text(remote_sha)
     except Exception as e:
-        update_status(f"Mise à jour échouée : {e}")
+        update_status(f"Erreur téléchargement : {e}")
         if not APP_DIR.exists():
-            show_error_and_exit("ERREUR FATALE : aucune version locale disponible.")
+            show_error_and_exit(
+                f"Impossible de télécharger l'application.\n\nErreur : {e}\n\n"
+                "Vérifiez votre connexion internet et réessayez."
+            )
 
 
 def python_exe() -> Path:
@@ -227,10 +247,21 @@ def main():
     update_status("Démarrage de EIS Analyzer...")
 
     # 1. Mise à jour si en ligne
-    if is_online():
-        check_and_update()
-    else:
-        update_status("Hors ligne — utilisation de la version locale.")
+    check_and_update()
+
+    # Sécurité : si eis_app/ absent malgré tout, retenter le téléchargement
+    if not APP_DIR.exists():
+        update_status("eis_app/ absent — nouvelle tentative de téléchargement...")
+        try:
+            download_and_extract_zip()
+            remote_sha = get_remote_sha()
+            if remote_sha:
+                VERSION_FILE.write_text(remote_sha)
+        except Exception as e:
+            show_error_and_exit(
+                f"Impossible de créer eis_app/.\n\nErreur : {e}\n\n"
+                "Vérifiez votre connexion internet."
+            )
 
     # Debug : lister le contenu de APP_DIR
     if APP_DIR.exists():
