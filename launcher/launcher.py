@@ -14,6 +14,8 @@ import json
 import hashlib
 import urllib.request
 import urllib.error
+import tkinter as tk
+from tkinter import messagebox
 from pathlib import Path
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -31,6 +33,15 @@ TIMEOUT_START = 30   # secondes max pour attendre Streamlit
 
 ZIP_URL     = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/zipball/{BRANCH}"
 COMMIT_URL  = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/commits/{BRANCH}"
+
+
+def show_error_and_exit(msg: str):
+    """Affiche une boîte d'erreur tkinter et quitte proprement."""
+    root = tk.Tk()
+    root.withdraw()   # cache la fenêtre principale
+    messagebox.showerror("EIS Analyzer — Erreur", msg)
+    root.destroy()
+    sys.exit(1)
 
 
 def update_status(msg: str):
@@ -138,9 +149,7 @@ def check_and_update():
     except Exception as e:
         update_status(f"Mise à jour échouée : {e}")
         if not APP_DIR.exists():
-            update_status("ERREUR FATALE : aucune version locale disponible.")
-            input("Appuyez sur Entrée pour quitter.")
-            sys.exit(1)
+            show_error_and_exit("ERREUR FATALE : aucune version locale disponible.")
 
 
 def python_exe() -> Path:
@@ -218,9 +227,7 @@ def main():
 
     # 2. Vérifier que l'app existe
     if not APP_ENTRY.exists():
-        update_status("ERREUR : application introuvable. Connectez-vous à internet pour le premier lancement.")
-        input("Appuyez sur Entrée pour quitter.")
-        sys.exit(1)
+        show_error_and_exit("ERREUR : application introuvable. Connectez-vous à internet pour le premier lancement.")
 
     # 3. Environnement Python + dépendances
     ensure_venv()
