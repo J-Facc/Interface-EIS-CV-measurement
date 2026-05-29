@@ -61,17 +61,21 @@ echo [3/5] Extraction...
 if exist "%APP_DIR%" rmdir /s /q "%APP_DIR%"
 if exist "%TEMP%\eis_tmp" rmdir /s /q "%TEMP%\eis_tmp"
 powershell -Command "Expand-Archive -Path '%ZIP_FILE%' -DestinationPath '%TEMP%\eis_tmp' -Force"
+echo Resultat extraction : %errorlevel%
 for /d %%i in (%TEMP%\eis_tmp\*) do (
+    echo Dossier trouve : %%i
     move "%%i" "%APP_DIR%" >nul
     goto EXTRACTED
 )
+echo ERREUR : aucun dossier trouve dans le ZIP
+pause
 :EXTRACTED
 del "%ZIP_FILE%" 2>nul
 if exist "%TEMP%\eis_tmp" rmdir /s /q "%TEMP%\eis_tmp"
-
-:: Sauvegarder le SHA local
+echo Sauvegarder SHA...
 echo %REMOTE_SHA%>"%VERSION_FILE%"
 echo Mise a jour appliquee.
+pause
 
 :: 4. Installer les dependances si necessaire
 :INSTALL
