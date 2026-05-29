@@ -1,4 +1,8 @@
 @echo off
+if "%1"=="nopause" goto START
+cmd /k "%~f0" nopause
+exit
+:START
 setlocal
 
 :: ── Configuration ──────────────────────────────────────────────
