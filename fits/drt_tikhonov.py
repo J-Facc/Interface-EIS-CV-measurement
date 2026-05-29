@@ -156,7 +156,7 @@ class DRTTikhonovModel(BaseFitModel):
             converged = False
 
         Zfit_re = Re_est + A_re @ gamma
-        Zfit_im = A_im @ gamma
+        Zfit_im = -(A_im @ gamma)
 
         res_re = spectrum.Zre - Zfit_re
         res_im = spectrum.Zim - Zfit_im
