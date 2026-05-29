@@ -101,13 +101,19 @@ if not exist "%APP_DIR%\app.py" (
     exit /b 1
 )
 
+set STREAMLIT_EXE=%VENV_DIR%\Scripts\streamlit.exe
+echo Streamlit : %STREAMLIT_EXE%
+
+if not exist "%STREAMLIT_EXE%" (
+    echo ERREUR : streamlit.exe introuvable dans le venv.
+    pause
+    exit /b 1
+)
+
 echo.
 echo Interface disponible sur http://localhost:%PORT%
 echo Fermez cette fenetre pour arreter l'application.
 echo.
 start "" "http://localhost:%PORT%"
 cd /d "%APP_DIR%"
-"%VENV_DIR%\Scripts\streamlit.exe" run app.py --server.port %PORT% --browser.gatherUsageStats false
-pause
-
-endlocal
+"%STREAMLIT_EXE%" run app.py --server.port %PORT% --browser.gatherUsageStats false
