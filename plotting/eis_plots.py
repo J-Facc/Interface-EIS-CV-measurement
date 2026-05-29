@@ -126,29 +126,184 @@ def bode_figure(session: EISSession) -> go.Figure:
 
 # ── DRT ────────────────────────────────────────────────────────────────────────
 
-def drt_figure(session: EISSession) -> go.Figure:
+def drt_figure(session: EISSession, log_y: bool = True) -> go.Figure:
+    """Distribution des temps de relaxation.
+
+    Axe X : ln(τ)  [τ = 1/(2π f)] — convention Bissessur (2026).
+    Axe Y : ln(γ(τ)) si log_y=True (défaut), γ(τ) sinon.
+
+    Inclut bare, probe ET groupes de concentration.
+    Marqueurs diamant sur les pics détectés (utiles pour l'analyse MAD).
+    Panneau de diagnostic λ accessible via drt_lambda_diag_figure().
+    """
     theme = get_theme("light")
     colors = theme["colors"]
     fig = go.Figure()
-    for ci, grp in enumerate(session.groups):
+
+    # ── Collecte de tous les spectres ──
+    all_items: list = []   # (label, FitResult, color_idx)
+    ci = 0
+    for sp in (session.bare, session.probe):
+        if sp is not None:
+            fr = sp.fit_results.get("drt_tikhonov")
+            if fr is not None:
+                all_items.append((_spectrum_label(sp), fr, ci))
+            ci += 1
+    for grp in session.groups:
         fr = grp.fit_results.get("drt_tikhonov")
-        if fr is None:
-            continue
-        tau = np.array(fr.params.get("tau", []))
+        if fr is not None:
+            all_items.append((_spectrum_label(grp.spectrum), fr, ci))
+        ci += 1
+
+    if not all_items:
+        fig.add_annotation(
+            text="Aucune DRT disponible — lancez l'analyse.",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=13),
+        )
+        apply_theme_to_figure(fig, "light")
+        return fig
+
+    for lbl, fr, color_idx in all_items:
+        color = colors[color_idx % len(colors)]
+
+        # Priorité aux champs v2 (ln_tau), fallback sur tau v1
+        if "ln_tau" in fr.params and len(fr.params["ln_tau"]) > 0:
+            x_vals = np.array(fr.params["ln_tau"])
+            x_title = "ln(τ)   [τ = 1/(2πf), s]"
+        else:
+            x_vals = np.log(np.array(fr.params.get("tau", [])) + 1e-30)
+            x_title = "ln(τ)  (s)"
+
         gamma = np.array(fr.params.get("gamma", []))
-        if len(tau) == 0:
+        if len(x_vals) == 0 or len(gamma) == 0:
             continue
-        lbl = _spectrum_label(grp.spectrum)
-        color = colors[ci % len(colors)]
+
+        if log_y:
+            y_vals  = np.log(np.clip(gamma, 1e-30, None))
+            y_title = "ln γ(τ)  [Ω]"
+        else:
+            y_vals  = gamma
+            y_title = "γ(τ)  [Ω]"
+
         fig.add_trace(go.Scatter(
-            x=tau, y=gamma, mode="lines", name=lbl,
+            x=x_vals, y=y_vals, mode="lines", name=lbl,
             line=dict(color=color, width=2),
+            hovertemplate=(
+                f"<b>{lbl}</b><br>"
+                "ln(τ) = %{x:.3f}<br>"
+                f"{y_title} = %{{y:.4f}}<extra></extra>"
+            ),
         ))
+
+        # ── Marqueurs de pics ──
+        tau_peaks = fr.params.get("tau_peaks", [])
+        if tau_peaks:
+            ln_peaks = np.log(np.array(tau_peaks))
+            g_peaks  = np.interp(ln_peaks, x_vals, gamma)
+            y_peaks  = np.log(np.clip(g_peaks, 1e-30, None)) if log_y else g_peaks
+            fig.add_trace(go.Scatter(
+                x=ln_peaks, y=y_peaks, mode="markers",
+                name=f"{lbl} pics",
+                marker=dict(symbol="diamond", size=9, color=color,
+                            line=dict(width=1.5, color="white")),
+                hovertemplate=(
+                    f"<b>Pic · {lbl}</b><br>"
+                    "τ = %{customdata:.3e} s<br>"
+                    f"{y_title} = %{{y:.4f}}<extra></extra>"
+                ),
+                customdata=tau_peaks,
+            ))
+
+    lam_label = ""
+    if all_items:
+        lm = all_items[-1][1].params.get("lambda_method", "")
+        lam_val = all_items[-1][1].params.get("lambda", None)
+        if lam_val is not None:
+            lam_label = f" — λ={lam_val:.2e} ({lm})"
+
     fig.update_layout(
-        title="Distribution des temps de relaxation (DRT)",
-        xaxis=dict(type="log", title_text="τ (s)"),
-        yaxis_title="γ(τ) (Ω)",
+        title=f"Distribution des temps de relaxation (DRT){lam_label}",
+        xaxis_title=x_title,
+        yaxis_title=y_title,
+        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+        hovermode="closest",
     )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
+def drt_lambda_diag_figure(fit_result, label: str = "") -> go.Figure:
+    """Panneau de diagnostic λ (L-curve + GCV) pour un spectre donné.
+
+    À appeler depuis ui/tabs.py dans l'onglet DRT sur le spectre sélectionné.
+    """
+    params = fit_result.params
+    lc_lams  = np.array(params.get("_lc_lambdas",  []))
+    lc_rho   = np.array(params.get("_lc_rho",      []))
+    lc_eta   = np.array(params.get("_lc_eta",      []))
+    gcv_lams = np.array(params.get("_gcv_lambdas", []))
+    gcv_sc   = np.array(params.get("_gcv_scores",  []))
+    lam_lc   = params.get("lambda_lcurve", params.get("lambda"))
+    lam_gcv  = params.get("lambda_gcv",    params.get("lambda"))
+
+    if len(lc_lams) == 0 and len(gcv_lams) == 0:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Diagnostic λ non disponible (mode fixe ou données manquantes).",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=12),
+        )
+        apply_theme_to_figure(fig, "light")
+        return fig
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=["L-curve", "Score GCV vs λ"],
+        horizontal_spacing=0.12,
+    )
+
+    # L-curve
+    if len(lc_lams) > 0:
+        fig.add_trace(go.Scatter(
+            x=lc_rho, y=lc_eta, mode="lines+markers",
+            name="L-curve",
+            line=dict(color="#c2410c", width=2),
+            marker=dict(size=4),
+            customdata=lc_lams,
+            hovertemplate="λ=%{customdata:.2e}<br>‖résidu‖=%{x:.3e}<br>‖solution‖=%{y:.3e}<extra></extra>",
+        ), row=1, col=1)
+        if lam_lc is not None:
+            r_lc = float(np.interp(lam_lc, lc_lams, lc_rho))
+            e_lc = float(np.interp(lam_lc, lc_lams, lc_eta))
+            fig.add_trace(go.Scatter(
+                x=[r_lc], y=[e_lc], mode="markers",
+                name=f"λ_Lcurve={lam_lc:.2e}",
+                marker=dict(symbol="star", size=14, color="#dc2626"),
+            ), row=1, col=1)
+        fig.update_xaxes(title_text="‖Aγ − b‖₂", type="log", row=1, col=1)
+        fig.update_yaxes(title_text="‖Lγ‖₂",      type="log", row=1, col=1)
+
+    # GCV
+    if len(gcv_lams) > 0:
+        fig.add_trace(go.Scatter(
+            x=gcv_lams, y=gcv_sc, mode="lines",
+            name="GCV",
+            line=dict(color="#1a56db", width=2),
+            hovertemplate="λ=%{x:.2e}<br>GCV=%{y:.3e}<extra></extra>",
+        ), row=1, col=2)
+        if lam_gcv is not None:
+            gcv_best = float(np.interp(lam_gcv, gcv_lams, gcv_sc))
+            fig.add_trace(go.Scatter(
+                x=[lam_gcv], y=[gcv_best], mode="markers",
+                name=f"λ_GCV={lam_gcv:.2e}",
+                marker=dict(symbol="star", size=14, color="#7c3aed"),
+            ), row=1, col=2)
+        fig.update_xaxes(title_text="λ", type="log", row=1, col=2)
+        fig.update_yaxes(title_text="Score GCV", type="log", row=1, col=2)
+
+    title = f"Diagnostic sélection λ — {label}" if label else "Diagnostic sélection λ"
+    fig.update_layout(title=title, legend=dict(orientation="h", y=-0.2))
     apply_theme_to_figure(fig, "light")
     return fig
 
