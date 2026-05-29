@@ -44,7 +44,7 @@ def _merge_overrides(base: dict, overrides: dict) -> dict:
 
 
 def main() -> None:
-    file_assignments, active_models, run_clicked, phys_overrides = render_sidebar()
+    file_assignments, active_models, run_clicked, theme_mode, phys_overrides = render_sidebar()
 
     cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
 
