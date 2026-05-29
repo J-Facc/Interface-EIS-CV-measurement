@@ -36,16 +36,8 @@ def _spectrum_label(sp: EISSpectrum) -> str:
 def nyquist_figure(session: EISSession) -> go.Figure:
     """Build interactive Nyquist plot with experimental data and fit overlays.
 
-    Legend:
-    - One entry per experimental spectrum: "<label> — exp"
-    - One entry per fit curve: "<label> — <model>"
-    Same colour per spectrum; line style varies per model.
-
-    Args:
-        session: EISSession with spectra and fit_results.
-
-    Returns:
-        Plotly Figure.
+    Convention: X = Re(Z), Y = -Im(Z) (positive values, upper-right quadrant).
+    The loader already corrects Zim to positive values; no sign flip needed here.
     """
     theme = get_theme("light")
     colors = theme["colors"]
@@ -53,7 +45,6 @@ def nyquist_figure(session: EISSession) -> go.Figure:
 
     fig = go.Figure()
 
-    # Collect all spectra in display order
     all_spectra: list = []
     if session.bare:
         all_spectra.append(session.bare)
@@ -76,7 +67,8 @@ def nyquist_figure(session: EISSession) -> go.Figure:
             customdata=sp.f,
             hovertemplate=(
                 f"<b>{lbl}</b><br>"
-                "Re(Z) = %{x:.1f} Ω<br>"\n                "−Im(Z) = %{y:.1f} Ω<br>"
+                "Re(Z) = %{x:.1f} Ω<br>"
+                "−Im(Z) = %{y:.1f} Ω<br>"
                 "f = %{customdata:.3e} Hz<extra></extra>"
             ),
         ))
@@ -97,16 +89,15 @@ def nyquist_figure(session: EISSession) -> go.Figure:
                 line=dict(color=color, dash=dash, width=2),
                 hovertemplate=(
                     f"<b>{lbl} — {model_name}</b><br>"
-                    "Re(Z) = %{x:.1f} Ω<br>"\n                    "−Im(Z) = %{y:.1f} Ω<extra></extra>"
+                    "Re(Z) = %{x:.1f} Ω<br>"
+                    "−Im(Z) = %{y:.1f} Ω<extra></extra>"
                 ),
             ))
 
     fig.update_layout(
         title="Diagramme de Nyquist",
-        xaxis_title="Re(Z) (Ω)",
-        yaxis_title="−Im(Z) (Ω)",
-        xaxis=dict(rangemode="tozero"),
-        yaxis=dict(rangemode="tozero"),
+        xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
+        yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"),
         legend=dict(
             orientation="v",
             x=1.02, xanchor="left",
@@ -121,14 +112,7 @@ def nyquist_figure(session: EISSession) -> go.Figure:
 # ── Bode ───────────────────────────────────────────────────────────────────────
 
 def bode_figure(session: EISSession) -> go.Figure:
-    """Build Bode plot: |Z| and phase vs frequency.
-
-    Args:
-        session: EISSession.
-
-    Returns:
-        Plotly Figure with two vertically stacked subplots.
-    """
+    """Build Bode plot: |Z| and phase vs frequency."""
     theme = get_theme("light")
     colors = theme["colors"]
 
@@ -179,14 +163,7 @@ def bode_figure(session: EISSession) -> go.Figure:
 # ── DRT ────────────────────────────────────────────────────────────────────────
 
 def drt_figure(session: EISSession) -> go.Figure:
-    """Plot DRT gamma(tau) spectra for all concentration groups.
-
-    Args:
-        session: EISSession.
-
-    Returns:
-        Plotly Figure.
-    """
+    """Plot DRT gamma(tau) spectra for all concentration groups (lines only)."""
     theme = get_theme("light")
     colors = theme["colors"]
 
@@ -224,21 +201,12 @@ def drt_figure(session: EISSession) -> go.Figure:
 # ── Parameters table ───────────────────────────────────────────────────────────
 
 def params_table_figure(session: EISSession) -> go.Figure:
-    """Build a Plotly table showing Rct for each step and fit model.
-
-    Args:
-        session: EISSession.
-
-    Returns:
-        Plotly Figure with a single Table trace.
-    """
-    # Collect all model names present in the session
-    model_names: list[str] = []
+    """Build a Plotly table showing Rct for each step and fit model."""
+    model_names: list = []
     for grp in session.groups:
         for m in grp.fit_results:
             if m not in model_names:
                 model_names.append(m)
-    # Also check bare/probe if they have fit_results
     for sp in (session.bare, session.probe):
         if sp is not None and hasattr(sp, "fit_results"):
             for m in sp.fit_results:
@@ -259,26 +227,22 @@ def params_table_figure(session: EISSession) -> go.Figure:
             return "—"
         return f"{fr.Rct:.1f} Ω"
 
-    # Build rows: [Étape, model1, model2, ...]
     header_values = ["Étape"] + model_names
-    step_col: list[str] = []
-    model_cols: list[list[str]] = [[] for _ in model_names]
+    step_col: list = []
+    model_cols: list = [[] for _ in model_names]
 
-    # Bare row
     if session.bare is not None:
         step_col.append("Bare")
         bare_fr = getattr(session.bare, "fit_results", {})
         for i, m in enumerate(model_names):
             model_cols[i].append(_rct_str(bare_fr, m))
 
-    # Probe row
     if session.probe is not None:
         step_col.append("Probe")
         probe_fr = getattr(session.probe, "fit_results", {})
         for i, m in enumerate(model_names):
             model_cols[i].append(_rct_str(probe_fr, m))
 
-    # Concentration rows
     for grp in session.groups:
         step_col.append(f"{grp.concentration:.2e} M")
         for i, m in enumerate(model_names):
@@ -286,7 +250,6 @@ def params_table_figure(session: EISSession) -> go.Figure:
 
     n_rows = len(step_col)
     row_colors = ["#EEF0F8" if i % 2 == 0 else "#FFFFFF" for i in range(n_rows)]
-
     cell_values = [step_col] + model_cols
 
     fig = go.Figure(data=[go.Table(
@@ -310,24 +273,16 @@ def params_table_figure(session: EISSession) -> go.Figure:
 # ── Calibration ────────────────────────────────────────────────────────────────
 
 def calibration_figure(session: EISSession) -> go.Figure:
-    """Build calibration curve: normalized Rct signal vs log([concentration]).
+    """Calibration curve: normalized Rct signal vs log([concentration]).
 
     signal_norm = |Rct_probe - Rct_conc| / |Rct_probe|
-
-    Selects the fit model with the best R² on the log-linear regression.
-
-    Args:
-        session: EISSession.
-
-    Returns:
-        Plotly Figure.
+    Selects the model with best R² on the regression.
     """
     theme = get_theme("light")
     colors = theme["colors"]
 
     fig = go.Figure()
 
-    # Require probe with fit_results
     probe_fr = getattr(session.probe, "fit_results", None) if session.probe else None
     if not probe_fr:
         fig.add_annotation(
@@ -337,7 +292,6 @@ def calibration_figure(session: EISSession) -> go.Figure:
         apply_theme_to_figure(fig, "light")
         return fig
 
-    # Collect all model names available in both probe and concentration groups
     candidate_models = list(probe_fr.keys())
 
     best_r2 = -np.inf
@@ -348,9 +302,10 @@ def calibration_figure(session: EISSession) -> go.Figure:
     best_intercept = 0.0
 
     for model in candidate_models:
-        probe_rct = probe_fr[model].Rct if probe_fr.get(model) else None
-        if probe_rct is None or probe_rct <= 0:
+        probe_fit = probe_fr.get(model)
+        if probe_fit is None or probe_fit.Rct <= 0:
             continue
+        probe_rct = probe_fit.Rct
 
         concs: list = []
         signals: list = []
