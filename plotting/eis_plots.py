@@ -32,7 +32,7 @@ def _spectrum_label(sp: EISSpectrum) -> str:
 
 # ── Nyquist ────────────────────────────────────────────────────────────────────
 
-def nyquist_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
+def nyquist_figure(session: EISSession) -> go.Figure:
     """Build interactive Nyquist plot with experimental data and fit overlays.
 
     Legend:
@@ -42,12 +42,11 @@ def nyquist_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
 
     Args:
         session: EISSession with spectra and fit_results.
-        theme_mode: 'light' or 'dark'.
 
     Returns:
         Plotly Figure.
     """
-    theme = get_theme(theme_mode)
+    theme = get_theme("light")
     colors = theme["colors"]
     dashes = theme["fit_dash"]
 
@@ -114,23 +113,22 @@ def nyquist_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
         ),
         hovermode="closest",
     )
-    apply_theme_to_figure(fig, theme_mode)
+    apply_theme_to_figure(fig, "light")
     return fig
 
 
 # ── Bode ───────────────────────────────────────────────────────────────────────
 
-def bode_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
+def bode_figure(session: EISSession) -> go.Figure:
     """Build Bode plot: |Z| and phase vs frequency.
 
     Args:
         session: EISSession.
-        theme_mode: 'light' or 'dark'.
 
     Returns:
         Plotly Figure with two vertically stacked subplots.
     """
-    theme = get_theme(theme_mode)
+    theme = get_theme("light")
     colors = theme["colors"]
 
     fig = make_subplots(
@@ -173,23 +171,22 @@ def bode_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
     fig.update_yaxes(title_text="Phase (°)", row=2, col=1)
 
     fig.update_layout(title="Diagramme de Bode")
-    apply_theme_to_figure(fig, theme_mode)
+    apply_theme_to_figure(fig, "light")
     return fig
 
 
 # ── DRT ────────────────────────────────────────────────────────────────────────
 
-def drt_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
+def drt_figure(session: EISSession) -> go.Figure:
     """Plot DRT gamma(tau) spectra for all concentration groups.
 
     Args:
         session: EISSession.
-        theme_mode: 'light' or 'dark'.
 
     Returns:
         Plotly Figure.
     """
-    theme = get_theme(theme_mode)
+    theme = get_theme("light")
     colors = theme["colors"]
 
     fig = go.Figure()
@@ -222,7 +219,7 @@ def drt_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
         xaxis=dict(type="log", title_text="τ (s)"),
         yaxis_title="γ(τ) (Ω)",
     )
-    apply_theme_to_figure(fig, theme_mode)
+    apply_theme_to_figure(fig, "light")
     return fig
 
 
@@ -284,7 +281,7 @@ def params_table_figure(session: EISSession) -> go.Figure:
 
 # ── Calibration ────────────────────────────────────────────────────────────────
 
-def calibration_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
+def calibration_figure(session: EISSession) -> go.Figure:
     """Build calibration curve: log(Rct) vs log([concentration]).
 
     Uses the first available fit model for each concentration group.
@@ -292,12 +289,11 @@ def calibration_figure(session: EISSession, theme_mode: str = "light") -> go.Fig
 
     Args:
         session: EISSession.
-        theme_mode: 'light' or 'dark'.
 
     Returns:
         Plotly Figure.
     """
-    theme = get_theme(theme_mode)
+    theme = get_theme("light")
     colors = theme["colors"]
 
     fig = go.Figure()
@@ -321,7 +317,7 @@ def calibration_figure(session: EISSession, theme_mode: str = "light") -> go.Fig
             text="Pas assez de points (min. 2 concentrations positives).",
             showarrow=False, font=dict(size=13),
         )
-        apply_theme_to_figure(fig, theme_mode)
+        apply_theme_to_figure(fig, "light")
         return fig
 
     log_c = np.log10(concs)
@@ -360,5 +356,5 @@ def calibration_figure(session: EISSession, theme_mode: str = "light") -> go.Fig
         xaxis_title="log([c] / M)",
         yaxis_title="log(Rct / Ω)",
     )
-    apply_theme_to_figure(fig, theme_mode)
+    apply_theme_to_figure(fig, "light")
     return fig

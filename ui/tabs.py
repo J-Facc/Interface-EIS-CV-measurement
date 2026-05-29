@@ -19,18 +19,13 @@ from exports.exporter import (
 )
 
 
-def render_tabs(session: EISSession, theme_mode: str, config: dict) -> None:
+def render_tabs(session: EISSession, config: dict) -> None:
     """Render all six analysis tabs.
 
     Args:
         session: EISSession with loaded spectra and fit results.
-        theme_mode: 'light' or 'dark' (ignored — live value read from session_state).
         config: App config dict (used by export functions).
     """
-    # Read live value so every Streamlit re-run triggered by the radio widget
-    # picks up the current theme instead of a potentially stale argument.
-    theme_mode = st.session_state.get("theme_mode", "light")
-
     tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export = st.tabs([
         "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export",
     ])
@@ -38,13 +33,13 @@ def render_tabs(session: EISSession, theme_mode: str, config: dict) -> None:
     # ── Nyquist ─────────────────────────────────────────────────────────────
     with tab_nyq:
         st.subheader("Diagramme de Nyquist")
-        fig = nyquist_figure(session, theme_mode)
+        fig = nyquist_figure(session)
         st.plotly_chart(fig, use_container_width=True)
 
     # ── Bode ─────────────────────────────────────────────────────────────────
     with tab_bode:
         st.subheader("Diagramme de Bode")
-        fig = bode_figure(session, theme_mode)
+        fig = bode_figure(session)
         st.plotly_chart(fig, use_container_width=True)
 
     # ── DRT ──────────────────────────────────────────────────────────────────
@@ -55,7 +50,7 @@ def render_tabs(session: EISSession, theme_mode: str, config: dict) -> None:
             for grp in session.groups
         )
         if has_drt:
-            fig = drt_figure(session, theme_mode)
+            fig = drt_figure(session)
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info(
@@ -74,7 +69,7 @@ def render_tabs(session: EISSession, theme_mode: str, config: dict) -> None:
         st.subheader("Courbe de calibration log(Rct) vs log([c])")
         has_hyb = sum(1 for g in session.groups if g.concentration > 0) >= 2
         if has_hyb:
-            fig = calibration_figure(session, theme_mode)
+            fig = calibration_figure(session)
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info(
@@ -110,7 +105,7 @@ def render_tabs(session: EISSession, theme_mode: str, config: dict) -> None:
                 mime="text/yaml",
             )
 
-            nyq_fig = nyquist_figure(session, theme_mode)
+            nyq_fig = nyquist_figure(session)
             st.download_button(
                 label="🌐 Nyquist HTML",
                 data=export_figure_html(nyq_fig),
