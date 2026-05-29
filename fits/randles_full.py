@@ -149,7 +149,7 @@ class RandlesFullModel(BaseFitModel):
                                ZD0, xe, D_eff, Fv, h, d)
 
         res_re = spectrum.Zre - Z_fit.real
-        res_im = spectrum.Zim - Z_fit.imag
+        res_im = spectrum.Zim + Z_fit.imag
         chi2 = float(np.mean(res_re ** 2 + res_im ** 2))
 
         return FitResult(
@@ -157,7 +157,7 @@ class RandlesFullModel(BaseFitModel):
             params=params,
             params_std=params_std,
             Zfit_re=Z_fit.real,
-            Zfit_im=Z_fit.imag,
+            Zfit_im=-Z_fit.imag,
             chi2=chi2,
             residuals_re=res_re,
             residuals_im=res_im,
