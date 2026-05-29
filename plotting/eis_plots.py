@@ -283,10 +283,10 @@ def calibration_figure(session: EISSession) -> go.Figure:
 
     # Build figure: scatter subplot + table subplot
     fig = make_subplots(
-        rows=2, cols=1,
-        row_heights=[0.65, 0.35],
-        vertical_spacing=0.10,
-        specs=[[{"type": "xy"}], [{"type": "table"}]],
+        rows=1, cols=2,
+        column_widths=[0.35, 0.65],
+        horizontal_spacing=0.06,
+        specs=[[{"type": "table"}, {"type": "xy"}]],
     )
 
     for d in model_data:
@@ -310,7 +310,7 @@ def calibration_figure(session: EISSession) -> go.Figure:
             marker=dict(color=d["color"], size=9, symbol="circle"),
             hovertemplate="log([c]) = %{x:.2f}<br>Signal = %{y:.4f}<extra></extra>",
             showlegend=True,
-        ), row=1, col=1)
+        ), row=1, col=2)
 
         # Regression line
         fig.add_trace(go.Scatter(
@@ -320,7 +320,7 @@ def calibration_figure(session: EISSession) -> go.Figure:
             legendgroup=d["model"],
             line=dict(color=d["color"], dash=d["dash"], width=2),
             showlegend=True,
-        ), row=1, col=1)
+        ), row=1, col=2)
 
     # Metrics table
     n = len(model_data)
@@ -345,10 +345,10 @@ def calibration_figure(session: EISSession) -> go.Figure:
             align="center",
             font=dict(size=10),
         ),
-    ), row=2, col=1)
+    ), row=1, col=1)
 
-    fig.update_xaxes(title_text="log([c] / M)", row=1, col=1)
-    fig.update_yaxes(title_text="|Rct_probe − Rct_c| / |Rct_probe|", row=1, col=1)
+    fig.update_xaxes(title_text="log([c] / M)", row=1, col=2)
+    fig.update_yaxes(title_text="|Rct_probe − Rct_c| / |Rct_probe|", row=1, col=2)
     fig.update_layout(
         title="Calibration EIS — Signal normalisé vs log([c])",
         legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
