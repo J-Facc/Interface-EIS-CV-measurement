@@ -69,15 +69,14 @@ def nyquist_figure(session: EISSession) -> go.Figure:
 
         fig.add_trace(go.Scatter(
             x=sp.Zre,
-            y=-sp.Zim,
+            y=sp.Zim,
             mode="markers",
             name=f"{lbl} — exp",
             marker=dict(color=color, size=6, symbol="circle"),
             customdata=sp.f,
             hovertemplate=(
                 f"<b>{lbl}</b><br>"
-                "Zre = %{x:.1f} Ω<br>"
-                "-Zim = %{y:.1f} Ω<br>"
+                "Re(Z) = %{x:.1f} Ω<br>"\n                "−Im(Z) = %{y:.1f} Ω<br>"
                 "f = %{customdata:.3e} Hz<extra></extra>"
             ),
         ))
@@ -92,21 +91,22 @@ def nyquist_figure(session: EISSession) -> go.Figure:
             dash = dashes[di % len(dashes)]
             fig.add_trace(go.Scatter(
                 x=fr.Zfit_re,
-                y=-fr.Zfit_im,
+                y=fr.Zfit_im,
                 mode="lines",
                 name=f"{lbl} — {model_name}",
                 line=dict(color=color, dash=dash, width=2),
                 hovertemplate=(
                     f"<b>{lbl} — {model_name}</b><br>"
-                    "Zre = %{x:.1f} Ω<br>"
-                    "-Zim = %{y:.1f} Ω<extra></extra>"
+                    "Re(Z) = %{x:.1f} Ω<br>"\n                    "−Im(Z) = %{y:.1f} Ω<extra></extra>"
                 ),
             ))
 
     fig.update_layout(
         title="Diagramme de Nyquist",
-        xaxis_title="Z' (Ω)",
-        yaxis_title="−Z'' (Ω)",
+        xaxis_title="Re(Z) (Ω)",
+        yaxis_title="−Im(Z) (Ω)",
+        xaxis=dict(rangemode="tozero"),
+        yaxis=dict(rangemode="tozero"),
         legend=dict(
             orientation="v",
             x=1.02, xanchor="left",

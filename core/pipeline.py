@@ -80,6 +80,20 @@ def run_pipeline(
     session.bare = average_replicates(bare_spectra) if bare_spectra else None
     session.probe = average_replicates(probe_spectra) if probe_spectra else None
 
+    for label, sp in [("bare", session.bare), ("probe", session.probe)]:
+        if sp is None:
+            continue
+        for model in models:
+            try:
+                fr = model.fit(sp, config)
+                sp.fit_results[model.name] = fr
+                log.info(
+                    f"Fit '{model.name}' [{label}]: "
+                    f"Rct={fr.Rct:.1f} Ω chi2={fr.chi2:.3e} ok={fr.converged}"
+                )
+            except Exception as e:
+                log.error(f"Fit '{model.name}' [{label}] failed: {e}")
+
     for conc in sorted(hybridization.keys()):
         sp_list = hybridization[conc]
         spectrum = average_replicates(sp_list) if len(sp_list) > 1 else sp_list[0]
