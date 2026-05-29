@@ -95,8 +95,10 @@ def export_session_yaml(session: EISSession) -> str:
                 "params": {
                     k: (v.tolist() if hasattr(v, "tolist") else
                         [float(x) for x in v] if isinstance(v, (list, tuple)) else
+                        v if isinstance(v, str) else
                         float(v))
                     for k, v in fit.params.items()
+                    if not k.startswith("_lc_") and not k.startswith("_gcv_")
                 },
             }
         data["groups"].append(grp_data)
