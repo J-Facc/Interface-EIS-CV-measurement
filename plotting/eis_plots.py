@@ -68,7 +68,7 @@ def nyquist_figure(session: EISSession) -> go.Figure:
 
         fig.add_trace(go.Scatter(
             x=sp.Zre,
-            y=sp.Zim,
+            y=-sp.Zim,
             mode="markers",
             name=f"{lbl} — exp",
             marker=dict(color=color, size=6, symbol="circle"),
@@ -76,7 +76,7 @@ def nyquist_figure(session: EISSession) -> go.Figure:
             hovertemplate=(
                 f"<b>{lbl}</b><br>"
                 "Zre = %{x:.1f} Ω<br>"
-                "Zim = %{y:.1f} Ω<br>"
+                "-Zim = %{y:.1f} Ω<br>"
                 "f = %{customdata:.3e} Hz<extra></extra>"
             ),
         ))
@@ -91,21 +91,21 @@ def nyquist_figure(session: EISSession) -> go.Figure:
             dash = dashes[di % len(dashes)]
             fig.add_trace(go.Scatter(
                 x=fr.Zfit_re,
-                y=fr.Zfit_im,
+                y=-fr.Zfit_im,
                 mode="lines",
                 name=f"{lbl} — {model_name}",
                 line=dict(color=color, dash=dash, width=2),
                 hovertemplate=(
                     f"<b>{lbl} — {model_name}</b><br>"
                     "Zre = %{x:.1f} Ω<br>"
-                    "Zim = %{y:.1f} Ω<extra></extra>"
+                    "-Zim = %{y:.1f} Ω<extra></extra>"
                 ),
             ))
 
     fig.update_layout(
         title="Diagramme de Nyquist",
         xaxis_title="Z' (Ω)",
-        yaxis_title="Z'' (Ω)",
+        yaxis_title="−Z'' (Ω)",
         legend=dict(
             orientation="v",
             x=1.02, xanchor="left",
@@ -209,9 +209,6 @@ def drt_figure(session: EISSession) -> go.Figure:
             mode="lines",
             name=lbl,
             line=dict(color=color, width=2),
-            fill="tozeroy",
-            fillcolor=color.replace(")", ", 0.15)").replace("rgb", "rgba")
-            if color.startswith("rgb") else color,
         ))
 
     fig.update_layout(
