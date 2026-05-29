@@ -98,6 +98,8 @@ echo Interface disponible sur http://localhost:%PORT%
 echo Fermez cette fenetre pour arreter l'application.
 echo.
 start "" "http://localhost:%PORT%"
-"%VENV_DIR%\Scripts\streamlit.exe" run "%APP_DIR%\app.py" --server.port %PORT% --browser.gatherUsageStats false
+cd /d "%APP_DIR%"
+"%VENV_DIR%\Scripts\streamlit.exe" run app.py --server.port %PORT% --browser.gatherUsageStats false
+pause
 
 endlocal
