@@ -12,20 +12,10 @@ def render_sidebar() -> tuple:
           content (bytes), filename (str), step (str), concentration (float).
         - active_models (list[str]): Checked model names.
         - run_clicked (bool): True when the user clicks "Analyser".
-        - theme_mode (str): 'light' or 'dark'.
         - phys_overrides (dict): User-edited physical parameter overrides.
     """
     with st.sidebar:
         st.title("⚡ EIS Analyzer")
-
-        # ── Theme ──────────────────────────────────────────────────────────────
-        theme_mode = st.radio(
-            "Thème", ["light", "dark"],
-            horizontal=True,
-            key="theme_mode",
-        )
-
-        st.markdown("---")
 
         # ── File upload ────────────────────────────────────────────────────────
         st.subheader("1 · Importer les spectres")
@@ -138,4 +128,4 @@ def render_sidebar() -> tuple:
             use_container_width=True,
         )
 
-    return file_assignments, active_models, run_clicked, theme_mode, phys_overrides
+    return file_assignments, active_models, run_clicked, phys_overrides
