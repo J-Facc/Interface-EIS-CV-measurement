@@ -79,7 +79,13 @@ if not exist "!STREAMLIT_EXE!" (
     "!VENV_DIR!\Scripts\pip.exe" install streamlit --quiet --disable-pip-version-check
 )
 if exist "%APP_DIR%\requirements.txt" (
-    "!VENV_DIR!\Scripts\pip.exe" install -r "%APP_DIR%\requirements.txt" --quiet --disable-pip-version-check
+    echo Installation requirements.txt...
+    "!VENV_DIR!\Scripts\pip.exe" install -r "%APP_DIR%\requirements.txt" --disable-pip-version-check
+    echo pip errorlevel : !errorlevel!
+) else (
+    echo requirements.txt introuvable dans !APP_DIR!
+)
+echo Dependances OK - passage au lancement...
 )
 
 :: 5. Verifier app.py et lancer
