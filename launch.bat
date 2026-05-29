@@ -102,7 +102,7 @@ echo Fermez cette fenetre pour arreter l'application.
 echo.
 start "" "http://localhost:!PORT!"
 cd /d "%APP_DIR%"
-"!STREAMLIT_EXE!" run app.py --server.port !PORT! --browser.gatherUsageStats false
+"!STREAMLIT_EXE!" run app.py --server.port !PORT! --server.headless true --browser.gatherUsageStats false
 
 pause
 endlocal
