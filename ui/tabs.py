@@ -21,31 +21,20 @@ from exports.exporter import (
 )
 
 
-def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None) -> None:
-    """Render all analysis tabs.
-
-    Args:
-        session: EISSession with loaded spectra and fit results.
-        config: App config dict (used by export functions).
-        cv_session: Optional CVSession with CV scan data.
-    """
-    tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export, tab_cv = st.tabs([
-        "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export", "📈 CV",
+def render_eis_tabs(session: EISSession, config: dict) -> None:
+    """Render EIS analysis tabs: Nyquist, Bode, DRT, Paramètres, Calibration, Export."""
+    tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export = st.tabs([
+        "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export",
     ])
 
-    # ── Nyquist ─────────────────────────────────────────────────────────────
     with tab_nyq:
         st.subheader("Diagramme de Nyquist")
-        fig = nyquist_figure(session)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(nyquist_figure(session), width='stretch')
 
-    # ── Bode ─────────────────────────────────────────────────────────────────
     with tab_bode:
         st.subheader("Diagramme de Bode")
-        fig = bode_figure(session)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(bode_figure(session), width='stretch')
 
-    # ── DRT ──────────────────────────────────────────────────────────────────
     with tab_drt:
         st.subheader("Distribution des temps de relaxation (DRT)")
         has_drt = any(
@@ -53,39 +42,31 @@ def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None)
             for grp in session.groups
         )
         if has_drt:
-            fig = drt_figure(session)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(drt_figure(session), width='stretch')
         else:
             st.info(
                 "Activez **DRT Tikhonov** dans la sidebar pour afficher "
                 "la distribution des temps de relaxation."
             )
 
-    # ── Parameters ───────────────────────────────────────────────────────────
     with tab_params:
         st.subheader("Paramètres extraits")
-        fig = params_table_figure(session)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(params_table_figure(session), width='stretch')
 
-    # ── Calibration ───────────────────────────────────────────────────────────
     with tab_calib:
         st.subheader("Courbe de calibration log(Rct) vs log([c])")
         has_hyb = sum(1 for g in session.groups if g.concentration > 0) >= 2
         if has_hyb:
-            fig = calibration_figure(session)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(calibration_figure(session), width='stretch')
         else:
             st.info(
                 "Chargez au moins **2 spectres d'hybridation** avec "
                 "des concentrations positives pour tracer la calibration."
             )
 
-    # ── Export ────────────────────────────────────────────────────────────────
     with tab_export:
         st.subheader("Télécharger les résultats")
-
         col1, col2 = st.columns(2)
-
         with col1:
             st.download_button(
                 label="📄 Paramètres CSV",
@@ -99,7 +80,6 @@ def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None)
                 file_name="eis_spectra.csv",
                 mime="text/csv",
             )
-
         with col2:
             st.download_button(
                 label="🗂 Session YAML",
@@ -107,7 +87,6 @@ def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None)
                 file_name="eis_session.yaml",
                 mime="text/yaml",
             )
-
             nyq_fig = nyquist_figure(session)
             st.download_button(
                 label="🌐 Nyquist HTML",
@@ -115,7 +94,6 @@ def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None)
                 file_name="nyquist.html",
                 mime="text/html",
             )
-
             try:
                 png_data = export_figure_png(nyq_fig, config)
                 st.download_button(
@@ -127,17 +105,26 @@ def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None)
             except RuntimeError as exc:
                 st.caption(str(exc))
 
-    # ── CV ────────────────────────────────────────────────────────────────────
-    with tab_cv:
-        st.subheader("Voltampérométrie cyclique")
-        if cv_session is None or cv_session.probe is None:
-            st.info("Chargez des fichiers CV dans la sidebar pour activer cet onglet.")
+
+def render_cv_tabs(cv_session: CVSession) -> None:
+    """Render CV analysis tabs: Courbes I/E, Calibration."""
+    tab_ie, tab_calib = st.tabs(["📉 Courbes I/E", "📊 Calibration"])
+
+    with tab_ie:
+        st.subheader("Voltampérométrie cyclique — Courant vs Potentiel")
+        if cv_session.probe is not None or cv_session.groups:
+            st.plotly_chart(cv_current_figure(cv_session), width='stretch')
         else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(cv_current_figure(cv_session), use_container_width=True)
-            with col2:
-                if len(cv_session.groups) >= 2:
-                    st.plotly_chart(cv_calibration_figure(cv_session), use_container_width=True)
-                else:
-                    st.info("Ajoutez au moins 2 concentrations pour la courbe de calibration.")
+            st.info("Aucune donnée CV chargée.")
+
+    with tab_calib:
+        st.subheader("Calibration CV — Signal normalisé")
+        if len(cv_session.groups) >= 2:
+            st.plotly_chart(cv_calibration_figure(cv_session), width='stretch')
+        else:
+            st.info("Ajoutez au moins 2 concentrations pour la calibration.")
+
+
+def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None) -> None:
+    """Backward-compatible alias — delegates to render_eis_tabs."""
+    render_eis_tabs(session, config)
