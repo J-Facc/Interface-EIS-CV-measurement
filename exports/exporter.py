@@ -92,7 +92,12 @@ def export_session_yaml(session: EISSession) -> str:
                 "Rct_std": float(fit.Rct_std),
                 "chi2": float(fit.chi2),
                 "converged": bool(fit.converged),
-                "params": {k: float(v) for k, v in fit.params.items()},
+                "params": {
+                    k: (v.tolist() if hasattr(v, "tolist") else
+                        [float(x) for x in v] if isinstance(v, (list, tuple)) else
+                        float(v))
+                    for k, v in fit.params.items()
+                },
             }
         data["groups"].append(grp_data)
 
