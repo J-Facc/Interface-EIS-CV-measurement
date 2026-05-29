@@ -3,6 +3,7 @@
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from scipy import stats
 
 from core.models import EISSession, EISSpectrum
 from plotting.theme import get_theme, apply_theme_to_figure
@@ -223,7 +224,7 @@ def drt_figure(session: EISSession) -> go.Figure:
 # ── Parameters table ───────────────────────────────────────────────────────────
 
 def params_table_figure(session: EISSession) -> go.Figure:
-    """Build a Plotly table of all extracted fit parameters.
+    """Build a Plotly table showing Rct for each step and fit model.
 
     Args:
         session: EISSession.
@@ -231,23 +232,20 @@ def params_table_figure(session: EISSession) -> go.Figure:
     Returns:
         Plotly Figure with a single Table trace.
     """
-    rows = []
+    # Collect all model names present in the session
+    model_names: list[str] = []
     for grp in session.groups:
-        lbl = _spectrum_label(grp.spectrum)
-        for model_name, fr in grp.fit_results.items():
-            row: dict = {
-                "Concentration": lbl,
-                "Modèle": model_name,
-                "Rct (Ω)": f"{fr.Rct:.3e}",
-                "χ²": f"{fr.chi2:.3e}",
-                "Conv.": "✓" if fr.converged else "✗",
-            }
-            for k, v in fr.params.items():
-                if k not in ("tau", "gamma") and isinstance(v, (int, float)):
-                    row[k] = f"{v:.3e}"
-            rows.append(row)
+        for m in grp.fit_results:
+            if m not in model_names:
+                model_names.append(m)
+    # Also check bare/probe if they have fit_results
+    for sp in (session.bare, session.probe):
+        if sp is not None and hasattr(sp, "fit_results"):
+            for m in sp.fit_results:
+                if m not in model_names:
+                    model_names.append(m)
 
-    if not rows:
+    if not model_names:
         fig = go.Figure()
         fig.add_annotation(
             text="Aucun résultat de fit disponible.",
@@ -255,34 +253,68 @@ def params_table_figure(session: EISSession) -> go.Figure:
         )
         return fig
 
-    all_keys = list(rows[0].keys())
-    cells = [[r.get(k, "—") for r in rows] for k in all_keys]
+    def _rct_str(fit_results: dict, model: str) -> str:
+        fr = fit_results.get(model)
+        if fr is None or fr.Rct <= 0:
+            return "—"
+        return f"{fr.Rct:.1f} Ω"
+
+    # Build rows: [Étape, model1, model2, ...]
+    header_values = ["Étape"] + model_names
+    step_col: list[str] = []
+    model_cols: list[list[str]] = [[] for _ in model_names]
+
+    # Bare row
+    if session.bare is not None:
+        step_col.append("Bare")
+        bare_fr = getattr(session.bare, "fit_results", {})
+        for i, m in enumerate(model_names):
+            model_cols[i].append(_rct_str(bare_fr, m))
+
+    # Probe row
+    if session.probe is not None:
+        step_col.append("Probe")
+        probe_fr = getattr(session.probe, "fit_results", {})
+        for i, m in enumerate(model_names):
+            model_cols[i].append(_rct_str(probe_fr, m))
+
+    # Concentration rows
+    for grp in session.groups:
+        step_col.append(f"{grp.concentration:.2e} M")
+        for i, m in enumerate(model_names):
+            model_cols[i].append(_rct_str(grp.fit_results, m))
+
+    n_rows = len(step_col)
+    row_colors = ["#EEF0F8" if i % 2 == 0 else "#FFFFFF" for i in range(n_rows)]
+
+    cell_values = [step_col] + model_cols
 
     fig = go.Figure(data=[go.Table(
         header=dict(
-            values=all_keys,
+            values=header_values,
             fill_color="#4472C4",
             font=dict(color="white", size=12),
             align="left",
         ),
         cells=dict(
-            values=cells,
-            fill_color=[["#EEF0F8", "#FFFFFF"] * (len(rows) // 2 + 1)],
+            values=cell_values,
+            fill_color=[row_colors] * len(header_values),
             align="left",
             font=dict(size=11),
         ),
     )])
-    fig.update_layout(title="Paramètres extraits par modèle")
+    fig.update_layout(title="Rct par étape et modèle")
     return fig
 
 
 # ── Calibration ────────────────────────────────────────────────────────────────
 
 def calibration_figure(session: EISSession) -> go.Figure:
-    """Build calibration curve: log(Rct) vs log([concentration]).
+    """Build calibration curve: normalized Rct signal vs log([concentration]).
 
-    Uses the first available fit model for each concentration group.
-    Overlays a linear regression and displays R².
+    signal_norm = |Rct_probe - Rct_conc| / |Rct_probe|
+
+    Selects the fit model with the best R² on the log-linear regression.
 
     Args:
         session: EISSession.
@@ -295,63 +327,106 @@ def calibration_figure(session: EISSession) -> go.Figure:
 
     fig = go.Figure()
 
-    concs: list = []
-    rcts: list = []
-    model_used = ""
-
-    for grp in session.groups:
-        if grp.concentration <= 0:
-            continue
-        for m_name, fr in grp.fit_results.items():
-            if fr.Rct > 0:
-                concs.append(grp.concentration)
-                rcts.append(fr.Rct)
-                model_used = m_name
-                break
-
-    if len(concs) < 2:
+    # Require probe with fit_results
+    probe_fr = getattr(session.probe, "fit_results", None) if session.probe else None
+    if not probe_fr:
         fig.add_annotation(
-            text="Pas assez de points (min. 2 concentrations positives).",
+            text="Spectre probe requis pour la calibration normalisée.",
             showarrow=False, font=dict(size=13),
         )
         apply_theme_to_figure(fig, "light")
         return fig
 
-    log_c = np.log10(concs)
-    log_rct = np.log10(rcts)
+    # Collect all model names available in both probe and concentration groups
+    candidate_models = list(probe_fr.keys())
 
-    # Linear regression
-    coeffs = np.polyfit(log_c, log_rct, 1)
-    p = np.poly1d(coeffs)
-    log_c_line = np.linspace(log_c.min(), log_c.max(), 200)
+    best_r2 = -np.inf
+    best_model = ""
+    best_concs: list = []
+    best_signals: list = []
+    best_slope = 0.0
+    best_intercept = 0.0
 
-    rct_pred = p(log_c)
-    ss_res = float(np.sum((log_rct - rct_pred) ** 2))
-    ss_tot = float(np.sum((log_rct - np.mean(log_rct)) ** 2))
-    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    for model in candidate_models:
+        probe_rct = probe_fr[model].Rct if probe_fr.get(model) else None
+        if probe_rct is None or probe_rct <= 0:
+            continue
+
+        concs: list = []
+        signals: list = []
+        for grp in session.groups:
+            if grp.concentration <= 0:
+                continue
+            fr = grp.fit_results.get(model)
+            if fr is None or fr.Rct <= 0:
+                continue
+            signal_norm = abs(probe_rct - fr.Rct) / abs(probe_rct)
+            concs.append(grp.concentration)
+            signals.append(signal_norm)
+
+        if len(concs) < 2:
+            continue
+
+        log_c = np.log10(concs)
+        result = stats.linregress(log_c, signals)
+        r2 = result.rvalue ** 2
+        if r2 > best_r2:
+            best_r2 = r2
+            best_model = model
+            best_concs = concs
+            best_signals = signals
+            best_slope = result.slope
+            best_intercept = result.intercept
+
+    if not best_concs:
+        fig.add_annotation(
+            text="Pas assez de points (min. 2 concentrations positives avec fit probe).",
+            showarrow=False, font=dict(size=13),
+        )
+        apply_theme_to_figure(fig, "light")
+        return fig
+
+    log_c_arr = np.log10(best_concs)
+    log_c_line = np.linspace(log_c_arr.min(), log_c_arr.max(), 200)
+    y_line = best_slope * log_c_line + best_intercept
+
+    sign_str = "+" if best_intercept >= 0 else "-"
+    eq_str = f"y = {best_slope:.3f}·x {sign_str} {abs(best_intercept):.3f}"
 
     fig.add_trace(go.Scatter(
-        x=log_c, y=log_rct,
+        x=log_c_arr, y=best_signals,
         mode="markers",
         name="Données",
         marker=dict(color=colors[0], size=10, symbol="circle"),
         hovertemplate=(
             "log([c]) = %{x:.2f}<br>"
-            "log(Rct) = %{y:.2f}<extra></extra>"
+            "Signal norm. = %{y:.4f}<extra></extra>"
         ),
     ))
 
     fig.add_trace(go.Scatter(
-        x=log_c_line, y=p(log_c_line),
+        x=log_c_line, y=y_line,
         mode="lines",
-        name=f"Régression linéaire (R²={r2:.4f}, pente={coeffs[0]:.2f})",
+        name=f"R² = {best_r2:.4f}",
         line=dict(color=colors[1], dash="dash", width=2),
     ))
 
+    fig.add_annotation(
+        text=f"{eq_str}<br>R² = {best_r2:.4f}",
+        xref="paper", yref="paper",
+        x=0.05, y=0.95,
+        showarrow=False,
+        align="left",
+        bgcolor="rgba(255,255,255,0.8)",
+        bordercolor="#4472C4",
+        borderwidth=1,
+        font=dict(size=11),
+    )
+
     fig.update_layout(
-        title=f"Courbe de calibration — {model_used}",
+        title=f"Calibration — {best_model}",
         xaxis_title="log([c] / M)",
-        yaxis_title="log(Rct / Ω)",
+        yaxis_title="|Rct_probe − Rct_c| / |Rct_probe|",
     )
     apply_theme_to_figure(fig, "light")
     return fig
