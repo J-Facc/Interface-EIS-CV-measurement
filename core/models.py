@@ -19,6 +19,7 @@ class EISSpectrum:
         step: Measurement step: 'bare', 'probe', or 'hybridization'.
         n_points: Number of frequency points.
         source_files: Original filenames contributing to this spectrum.
+        fit_results: Dict mapping model name to FitResult (populated by pipeline).
     """
 
     label: str
@@ -29,6 +30,7 @@ class EISSpectrum:
     step: str
     n_points: int
     source_files: list = field(default_factory=list)
+    fit_results: dict = field(default_factory=dict)
 
     def __post_init__(self):
         self.n_points = len(self.f)
@@ -38,18 +40,8 @@ class EISSpectrum:
 class FitResult:
     """Result of a fit model applied to an EIS spectrum.
 
-    Attributes:
-        model_name: Short model identifier.
-        params: Fitted parameter values {name: value}.
-        params_std: Standard deviations {name: std}.
-        Zfit_re: Real part of fitted impedance (Ω).
-        Zfit_im: Imaginary part of fitted impedance (Ω).
-        chi2: Mean squared residual (Ω²).
-        residuals_re: Zre - Zfit_re (Ω).
-        residuals_im: Zim - Zfit_im (Ω).
-        Rct: Extracted charge transfer resistance (Ω).
-        Rct_std: Standard deviation of Rct (Ω).
-        converged: Whether the optimiser converged.
+    Zfit_im follows the same positive convention as EISSpectrum.Zim
+    (i.e. -Im(Z) > 0 for a capacitive semicircle).
     """
 
     model_name: str
@@ -67,13 +59,7 @@ class FitResult:
 
 @dataclass
 class ConcentrationGroup:
-    """A spectrum and its fit results, grouped by analyte concentration.
-
-    Attributes:
-        concentration: Analyte concentration (mol/L).
-        spectrum: Averaged EIS spectrum for this concentration.
-        fit_results: Dict mapping model name to FitResult.
-    """
+    """A spectrum and its fit results, grouped by analyte concentration."""
 
     concentration: float
     spectrum: EISSpectrum
@@ -82,15 +68,7 @@ class ConcentrationGroup:
 
 @dataclass
 class EISSession:
-    """Full analysis session state, stored in st.session_state['session'].
-
-    Attributes:
-        created_at: Timestamp of session creation.
-        bare: Bare electrode spectrum (no probe, no target).
-        probe: Probe-modified electrode spectrum.
-        groups: Hybridization concentration groups, sorted ascending.
-        config: App config dict used for this session.
-    """
+    """Full analysis session state, stored in st.session_state['session']."""
 
     created_at: datetime = field(default_factory=datetime.now)
     bare: Optional[EISSpectrum] = None
