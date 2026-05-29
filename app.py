@@ -11,7 +11,7 @@ from core.pipeline import run_pipeline
 from core.cv_pipeline import run_cv_pipeline
 from core.cv_models import CVSession
 from ui.sidebar import render_sidebar
-from ui.tabs import render_tabs
+from ui.tabs import render_eis_tabs, render_cv_tabs
 
 st.set_page_config(
     page_title="EIS Analyzer",
@@ -46,46 +46,42 @@ def _merge_overrides(base: dict, overrides: dict) -> dict:
 
 
 def main() -> None:
-    file_assignments, cv_assignments, active_models, run_clicked, theme_mode, phys_overrides = render_sidebar()
+    mode = st.radio(
+        "Interface",
+        ["⚡ EIS", "📈 CV"],
+        horizontal=True,
+        key="mode",
+        label_visibility="collapsed",
+    )
 
-    cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
+    if mode == "⚡ EIS":
+        file_assignments, active_models, run_clicked, phys_overrides = render_sidebar("eis")
+        cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
 
-    if run_clicked:
-        if not file_assignments:
-            st.warning("⚠️ Veuillez d'abord charger au moins un fichier CSV.")
-            return
-        if not active_models:
-            st.warning("⚠️ Sélectionnez au moins un modèle de fit dans la sidebar.")
-            return
-
-        with st.spinner("Analyse en cours…"):
-            try:
-                session = run_pipeline(
-                    file_assignments=file_assignments,
-                    config=cfg,
-                    active_models=active_models,
-                )
-                st.session_state["session"] = session
-                st.session_state["config"] = cfg
-                st.success(
-                    f"✅ Analyse terminée — "
-                    f"{len(session.groups)} groupe(s) de concentration."
-                )
-            except Exception as exc:
-                st.error(f"❌ Erreur pendant l'analyse : {exc}")
+        if run_clicked:
+            if not file_assignments:
+                st.warning("⚠️ Veuillez charger au moins un fichier CSV.")
                 return
+            if not active_models:
+                st.warning("⚠️ Sélectionnez au moins un modèle de fit.")
+                return
+            with st.spinner("Analyse EIS en cours…"):
+                try:
+                    session = run_pipeline(
+                        file_assignments=file_assignments,
+                        config=cfg,
+                        active_models=active_models,
+                    )
+                    st.session_state["session"] = session
+                    st.session_state["config"] = cfg
+                    st.success(f"✅ Analyse terminée — {len(session.groups)} groupe(s).")
+                except Exception as exc:
+                    st.error(f"❌ Erreur : {exc}")
+                    return
 
-    if run_clicked and cv_assignments:
-        with st.spinner("Analyse CV en cours…"):
-            try:
-                cv_session = run_cv_pipeline(cv_assignments)
-                st.session_state["cv_session"] = cv_session
-            except Exception as exc:
-                st.error(f"❌ Erreur CV : {exc}")
-
-    if "session" not in st.session_state:
-        st.markdown(
-            """
+        if "session" not in st.session_state:
+            st.markdown(
+                """
 ## Bienvenue dans EIS Analyzer
 
 Analysez vos spectres d'impédance électrochimique (EIS) pour des biosenseurs
@@ -96,7 +92,7 @@ microfluidiques ADN/ARN.
 2. Assignez chaque fichier à une étape : *bare*, *probe* ou *hybridation*.
 3. Saisissez la concentration pour les fichiers d'hybridation.
 4. Sélectionnez les modèles de fit souhaités.
-5. Cliquez sur **▶ Analyser**.
+5. Cliquez sur **▶ Analyser EIS**.
 
 ---
 **Modèles disponibles :**
@@ -105,14 +101,41 @@ microfluidiques ADN/ARN.
 - **Randles complet** — 8 paramètres libres, pondération Modulus
 - **DRT Tikhonov** — distribution des temps de relaxation, λ auto (L-curve)
 """
-        )
-        return
+            )
+            return
 
-    session = st.session_state["session"]
-    saved_cfg = st.session_state.get("config", cfg)
-    cv_session = st.session_state.get("cv_session", None)
+        render_eis_tabs(st.session_state["session"], st.session_state.get("config", cfg))
 
-    render_tabs(session, saved_cfg, cv_session=cv_session)
+    else:  # mode CV
+        cv_assignments, run_clicked_cv = render_sidebar("cv")
+
+        if run_clicked_cv:
+            if not cv_assignments:
+                st.warning("⚠️ Veuillez charger au moins un fichier CV.")
+                return
+            with st.spinner("Analyse CV en cours…"):
+                try:
+                    cv_session = run_cv_pipeline(cv_assignments)
+                    st.session_state["cv_session"] = cv_session
+                    st.success("✅ Analyse CV terminée.")
+                except Exception as exc:
+                    st.error(f"❌ Erreur CV : {exc}")
+                    return
+
+        if "cv_session" not in st.session_state:
+            st.markdown(
+                """
+## Voltampérométrie cyclique
+
+**Pour démarrer :**
+1. Chargez vos fichiers CV dans la sidebar (Bare, Probe, Hybridations).
+2. Saisissez les concentrations.
+3. Cliquez sur **▶ Analyser CV**.
+"""
+            )
+            return
+
+        render_cv_tabs(st.session_state["cv_session"])
 
 
 if __name__ == "__main__":
