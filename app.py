@@ -8,6 +8,8 @@ import streamlit as st
 
 from core.config import load_config, config_to_dict
 from core.pipeline import run_pipeline
+from core.cv_pipeline import run_cv_pipeline
+from core.cv_models import CVSession
 from ui.sidebar import render_sidebar
 from ui.tabs import render_tabs
 
@@ -44,7 +46,7 @@ def _merge_overrides(base: dict, overrides: dict) -> dict:
 
 
 def main() -> None:
-    file_assignments, active_models, run_clicked, theme_mode, phys_overrides = render_sidebar()
+    file_assignments, cv_assignments, active_models, run_clicked, theme_mode, phys_overrides = render_sidebar()
 
     cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
 
@@ -73,6 +75,14 @@ def main() -> None:
                 st.error(f"❌ Erreur pendant l'analyse : {exc}")
                 return
 
+    if run_clicked and cv_assignments:
+        with st.spinner("Analyse CV en cours…"):
+            try:
+                cv_session = run_cv_pipeline(cv_assignments)
+                st.session_state["cv_session"] = cv_session
+            except Exception as exc:
+                st.error(f"❌ Erreur CV : {exc}")
+
     if "session" not in st.session_state:
         st.markdown(
             """
@@ -100,8 +110,9 @@ microfluidiques ADN/ARN.
 
     session = st.session_state["session"]
     saved_cfg = st.session_state.get("config", cfg)
+    cv_session = st.session_state.get("cv_session", None)
 
-    render_tabs(session, saved_cfg)
+    render_tabs(session, saved_cfg, cv_session=cv_session)
 
 
 if __name__ == "__main__":
