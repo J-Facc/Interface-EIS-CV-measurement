@@ -1,8 +1,9 @@
-"""Streamlit tab rendering: Nyquist, Bode, DRT, Paramètres, Calibration, Export."""
+"""Streamlit tab rendering: Nyquist, Bode, DRT, Paramètres, Calibration, Export, CV."""
 
 import streamlit as st
 
 from core.models import EISSession
+from core.cv_models import CVSession
 from plotting.eis_plots import (
     nyquist_figure,
     bode_figure,
@@ -10,6 +11,7 @@ from plotting.eis_plots import (
     params_table_figure,
     calibration_figure,
 )
+from plotting.cv_plots import cv_current_figure, cv_calibration_figure
 from exports.exporter import (
     export_params_csv,
     export_spectra_csv,
@@ -19,15 +21,16 @@ from exports.exporter import (
 )
 
 
-def render_tabs(session: EISSession, config: dict) -> None:
-    """Render all six analysis tabs.
+def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None) -> None:
+    """Render all analysis tabs.
 
     Args:
         session: EISSession with loaded spectra and fit results.
         config: App config dict (used by export functions).
+        cv_session: Optional CVSession with CV scan data.
     """
-    tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export = st.tabs([
-        "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export",
+    tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export, tab_cv = st.tabs([
+        "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export", "📈 CV",
     ])
 
     # ── Nyquist ─────────────────────────────────────────────────────────────
@@ -123,3 +126,18 @@ def render_tabs(session: EISSession, config: dict) -> None:
                 )
             except RuntimeError as exc:
                 st.caption(str(exc))
+
+    # ── CV ────────────────────────────────────────────────────────────────────
+    with tab_cv:
+        st.subheader("Voltampérométrie cyclique")
+        if cv_session is None or cv_session.probe is None:
+            st.info("Chargez des fichiers CV dans la sidebar pour activer cet onglet.")
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(cv_current_figure(cv_session), use_container_width=True)
+            with col2:
+                if len(cv_session.groups) >= 2:
+                    st.plotly_chart(cv_calibration_figure(cv_session), use_container_width=True)
+                else:
+                    st.info("Ajoutez au moins 2 concentrations pour la courbe de calibration.")
