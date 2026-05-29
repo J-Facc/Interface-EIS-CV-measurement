@@ -1,4 +1,8 @@
-"""Streamlit tab rendering: Nyquist, Bode, DRT, Paramètres, Calibration, Export."""
+"""Streamlit tab rendering: Nyquist, Bode, DRT, Paramètres, Calibration, Export, CV."""
+
+from __future__ import annotations
+
+from typing import Optional
 
 import streamlit as st
 
@@ -19,15 +23,20 @@ from exports.exporter import (
 )
 
 
-def render_tabs(session: EISSession, config: dict) -> None:
-    """Render all six analysis tabs.
+def render_tabs(
+    session: EISSession,
+    config: dict,
+    cv_session=None,
+) -> None:
+    """Render all seven analysis tabs.
 
     Args:
         session: EISSession with loaded spectra and fit results.
         config: App config dict (used by export functions).
+        cv_session: Optional CVSession for the CV tab.
     """
-    tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export = st.tabs([
-        "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export",
+    tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export, tab_cv = st.tabs([
+        "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export", "CV",
     ])
 
     # ── Nyquist ─────────────────────────────────────────────────────────────
@@ -123,3 +132,24 @@ def render_tabs(session: EISSession, config: dict) -> None:
                 )
             except RuntimeError as exc:
                 st.caption(str(exc))
+
+    # ── CV ────────────────────────────────────────────────────────────────────
+    with tab_cv:
+        st.subheader("Voltampérométrie cyclique (CV)")
+        if cv_session is None or (cv_session.probe is None and not cv_session.groups):
+            st.info("Chargez des fichiers CV dans la sidebar (section CV) puis cliquez sur ▶ Analyser.")
+        else:
+            from plotting.cv_plots import cv_current_figure, cv_calibration_figure
+            theme_mode = "light"
+
+            st.markdown("### Courbes I vs E")
+            fig_ie = cv_current_figure(cv_session, theme_mode)
+            st.plotly_chart(fig_ie, use_container_width=True)
+
+            has_calib = any(grp.concentration > 0 for grp in cv_session.groups)
+            if has_calib:
+                st.markdown("### Courbe de calibration")
+                fig_cal = cv_calibration_figure(cv_session, theme_mode)
+                st.plotly_chart(fig_cal, use_container_width=True)
+            else:
+                st.info("Ajoutez des fichiers CV d'hybridation pour afficher la courbe de calibration.")

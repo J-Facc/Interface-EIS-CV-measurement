@@ -8,6 +8,7 @@ import streamlit as st
 
 from core.config import load_config, config_to_dict
 from core.pipeline import run_pipeline
+from core.cv_pipeline import run_cv_pipeline
 from ui.sidebar import render_sidebar
 from ui.tabs import render_tabs
 
@@ -44,34 +45,44 @@ def _merge_overrides(base: dict, overrides: dict) -> dict:
 
 
 def main() -> None:
-    file_assignments, active_models, run_clicked, phys_overrides = render_sidebar()
+    file_assignments, cv_assignments, active_models, run_clicked, theme_mode, phys_overrides = render_sidebar()
 
     cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
 
     if run_clicked:
-        if not file_assignments:
+        if file_assignments:
+            if not active_models:
+                st.warning("⚠️ Sélectionnez au moins un modèle de fit dans la sidebar.")
+            else:
+                with st.spinner("Analyse EIS en cours…"):
+                    try:
+                        session = run_pipeline(
+                            file_assignments=file_assignments,
+                            config=cfg,
+                            active_models=active_models,
+                        )
+                        st.session_state["session"] = session
+                        st.session_state["config"] = cfg
+                        st.success(
+                            f"✅ Analyse EIS terminée — "
+                            f"{len(session.groups)} groupe(s) de concentration."
+                        )
+                    except Exception as exc:
+                        st.error(f"❌ Erreur pendant l'analyse EIS : {exc}")
+
+        if cv_assignments:
+            with st.spinner("Analyse CV en cours…"):
+                try:
+                    cv_session = run_cv_pipeline(cv_assignments)
+                    st.session_state["cv_session"] = cv_session
+                    n_groups = len(cv_session.groups)
+                    st.success(f"✅ Analyse CV terminée — {n_groups} groupe(s) de concentration.")
+                except Exception as exc:
+                    st.error(f"❌ Erreur pendant l'analyse CV : {exc}")
+
+        if not file_assignments and not cv_assignments:
             st.warning("⚠️ Veuillez d'abord charger au moins un fichier CSV.")
             return
-        if not active_models:
-            st.warning("⚠️ Sélectionnez au moins un modèle de fit dans la sidebar.")
-            return
-
-        with st.spinner("Analyse en cours…"):
-            try:
-                session = run_pipeline(
-                    file_assignments=file_assignments,
-                    config=cfg,
-                    active_models=active_models,
-                )
-                st.session_state["session"] = session
-                st.session_state["config"] = cfg
-                st.success(
-                    f"✅ Analyse terminée — "
-                    f"{len(session.groups)} groupe(s) de concentration."
-                )
-            except Exception as exc:
-                st.error(f"❌ Erreur pendant l'analyse : {exc}")
-                return
 
     if "session" not in st.session_state:
         st.markdown(
@@ -100,8 +111,9 @@ microfluidiques ADN/ARN.
 
     session = st.session_state["session"]
     saved_cfg = st.session_state.get("config", cfg)
+    cv_session = st.session_state.get("cv_session", None)
 
-    render_tabs(session, saved_cfg)
+    render_tabs(session, saved_cfg, cv_session=cv_session)
 
 
 if __name__ == "__main__":

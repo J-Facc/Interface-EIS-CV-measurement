@@ -10,6 +10,8 @@ def _init_session_state() -> None:
         st.session_state["cv_concentrations"] = []
     if "_conc_counter" not in st.session_state:
         st.session_state["_conc_counter"] = 0
+    if "cv_cv_concentrations" not in st.session_state:
+        st.session_state["cv_cv_concentrations"] = []
 
 
 def _add_concentration() -> None:
@@ -27,13 +29,28 @@ def _remove_concentration(item_id: str) -> None:
     ]
 
 
+def _add_cv_concentration() -> None:
+    st.session_state["cv_cv_concentrations"].append({
+        "id": str(uuid.uuid4()),
+        "mantisse": 1.0,
+        "exposant": -9,
+        "files": None,
+    })
+
+
+def _remove_cv_concentration(item_id: str) -> None:
+    st.session_state["cv_cv_concentrations"] = [
+        c for c in st.session_state["cv_cv_concentrations"] if c["id"] != item_id
+    ]
+
+
 def render_sidebar() -> tuple:
     """Render the full sidebar and collect user inputs.
 
     Returns:
         Tuple of:
-        - file_assignments (list[dict]): Each dict has keys
-          content (bytes), filename (str), step (str), concentration (float).
+        - file_assignments (list[dict]): EIS file assignments.
+        - cv_assignments (list[dict]): CV file assignments.
         - active_models (list[str]): Checked model names.
         - run_clicked (bool): True when the user clicks "Analyser".
         - theme_mode (str): "light" or "dark" (placeholder, always "light").
@@ -167,13 +184,74 @@ def render_sidebar() -> tuple:
 
         st.markdown("---")
 
+        # ── CV section ────────────────────────────────────────────────────────
+        st.subheader("CV (Voltampérométrie cyclique)")
+
+        st.markdown("**Probe CV**")
+        cv_probe_files = st.file_uploader(
+            "Fichiers CV Probe (réplicats → moyennage auto)",
+            type=["csv", "txt"],
+            accept_multiple_files=True,
+            key="cv_probe_files",
+        )
+
+        st.markdown("**Hybridations CV**")
+        cv_conc_list = st.session_state["cv_cv_concentrations"]
+
+        for item in cv_conc_list:
+            item_id = item["id"]
+            cols = st.columns([3, 2, 1])
+
+            with cols[0]:
+                item["mantisse"] = st.number_input(
+                    "Mantisse",
+                    value=float(item["mantisse"]),
+                    min_value=0.1,
+                    max_value=9.9,
+                    step=0.1,
+                    format="%.1f",
+                    key=f"cv_mant_{item_id}",
+                    label_visibility="collapsed",
+                    help="Mantisse (0.1 – 9.9)",
+                )
+
+            with cols[1]:
+                item["exposant"] = st.number_input(
+                    "×10ˣ M",
+                    value=int(item["exposant"]),
+                    min_value=-20,
+                    max_value=0,
+                    step=1,
+                    key=f"cv_exp_{item_id}",
+                    label_visibility="collapsed",
+                    help="Exposant entier (×10ˣ M)",
+                )
+
+            with cols[2]:
+                if st.button("✕", key=f"cv_del_{item_id}", help="Supprimer cette concentration"):
+                    _remove_cv_concentration(item_id)
+                    st.rerun()
+
+            item["files"] = st.file_uploader(
+                f"Fichiers CV pour {item['mantisse']:.1f}×10^{item['exposant']} M",
+                type=["csv", "txt"],
+                accept_multiple_files=True,
+                key=f"cv_files_{item_id}",
+            )
+
+        if st.button("➕ Ajouter une concentration CV", use_container_width=True):
+            _add_cv_concentration()
+            st.rerun()
+
+        st.markdown("---")
+
         run_clicked = st.button(
             "▶  Analyser",
             type="primary",
             use_container_width=True,
         )
 
-    # ── Construction de file_assignments ─────────────────────────────────────
+    # ── Construction de file_assignments (EIS) ────────────────────────────────
     file_assignments: list = []
 
     for uf in (bare_files or []):
@@ -208,6 +286,31 @@ def render_sidebar() -> tuple:
                 "concentration": concentration,
             })
 
+    # ── Construction de cv_assignments ────────────────────────────────────────
+    cv_assignments: list = []
+
+    for uf in (cv_probe_files or []):
+        content = uf.read()
+        uf.seek(0)
+        cv_assignments.append({
+            "content": content,
+            "filename": uf.name,
+            "step": "probe",
+            "concentration": 0.0,
+        })
+
+    for item in st.session_state["cv_cv_concentrations"]:
+        concentration = float(item["mantisse"]) * (10 ** int(item["exposant"]))
+        for uf in (item["files"] or []):
+            content = uf.read()
+            uf.seek(0)
+            cv_assignments.append({
+                "content": content,
+                "filename": uf.name,
+                "step": "hybridization",
+                "concentration": concentration,
+            })
+
     theme_mode = "light"
 
-    return file_assignments, active_models, run_clicked, theme_mode, phys_overrides
+    return file_assignments, cv_assignments, active_models, run_clicked, theme_mode, phys_overrides
