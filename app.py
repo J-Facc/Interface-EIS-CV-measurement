@@ -44,7 +44,10 @@ def _merge_overrides(base: dict, overrides: dict) -> dict:
 
 
 def main() -> None:
-    file_assignments, active_models, run_clicked, theme_mode, phys_overrides = render_sidebar()
+    file_assignments, active_models, run_clicked, _theme_mode, phys_overrides = render_sidebar()
+
+    # Always read theme_mode from session_state so every re-run picks up the live value.
+    theme_mode = st.session_state.get("theme_mode", "light")
 
     cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
 

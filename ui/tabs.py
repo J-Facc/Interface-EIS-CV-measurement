@@ -24,9 +24,13 @@ def render_tabs(session: EISSession, theme_mode: str, config: dict) -> None:
 
     Args:
         session: EISSession with loaded spectra and fit results.
-        theme_mode: 'light' or 'dark'.
+        theme_mode: 'light' or 'dark' (ignored — live value read from session_state).
         config: App config dict (used by export functions).
     """
+    # Read live value so every Streamlit re-run triggered by the radio widget
+    # picks up the current theme instead of a potentially stale argument.
+    theme_mode = st.session_state.get("theme_mode", "light")
+
     tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export = st.tabs([
         "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export",
     ])
