@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 import numpy as np
-
+from typing import Optional
+import numpy as np
 
 @dataclass
 class EISSpectrum:
@@ -21,7 +22,19 @@ class EISSpectrum:
         source_files: Original filenames contributing to this spectrum.
         fit_results: Dict mapping model name to FitResult (populated by pipeline).
     """
-
+  # Résultat de validation du groupe de réplicats dont ce spectre est issu
+    # None si pas encore calculé ou si spectre chargé sans réplicats
+    validation: Optional[object] = None          # ValidationResult (forward-ref)
+ 
+    # σ(f) empirique inter-réplicats — même taille que f[], Zre[], Zim[]
+    # Utilisé comme poids dans les fits : w(f) = 1 / σ²(f)
+    sigma_re: Optional[np.ndarray] = None
+    sigma_im: Optional[np.ndarray] = None
+ 
+    # Plage fréquentielle KK-valide (Hz)
+    f_min_valid: Optional[float] = None
+    f_max_valid: Optional[float] = None
+ 
     label: str
     f: np.ndarray
     Zre: np.ndarray
@@ -55,6 +68,9 @@ class FitResult:
     Rct: float
     Rct_std: float
     converged: bool
+# Incertitude sur Rct propagée depuis σ(f)
+    # Renseigné dans un second temps (sprint 2)
+    Rct_sigma: Optional[float] = None
 
 
 @dataclass
