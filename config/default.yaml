@@ -40,7 +40,10 @@ fit:
     tau_min: 1.0e-5
     tau_max: 100.0
     lambda_auto: true
-
+  fit:
+    alpha_noise: 0.001
+    lambda_drt: 0.001      # ← ancien paramètre Tikhonov (peut rester pour les autres fits)
+    W_drt: 1.0e-8          # ← nouveau : paramètre de régularisation FFT Bissessur
 # Export
 export:
   dpi: 150
