@@ -282,6 +282,7 @@ class DRTFitModel(BaseFitModel):
       W = 1e-10 →  moins lissé, sensible au bruit
     """
 
+    name         = "drt_fft"
     method       = "drt_fft"
     display_name = "DRT (FFT)"
     L_MAXIMA: int = 300   # demi-fenêtre maxima locaux (Bissessur)
