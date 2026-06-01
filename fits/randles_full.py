@@ -77,7 +77,7 @@ class RandlesFullModel(BaseFitModel):
             hi[k] = v[1] if v else defaults_hi[k]
         return lo, hi
 
-    def fit(self, spectrum: EISSpectrum, config: dict) -> FitResult:
+    def fit(self, spectrum: EISSpectrum, config: dict, weights=None) -> FitResult:
         """Optimise full Randles model against spectrum using TRF least-squares.
 
         Args:
@@ -106,7 +106,11 @@ class RandlesFullModel(BaseFitModel):
 
         alpha_noise = float(config.get("fit", {}).get("alpha_noise", 0.001))
         Z_data = spectrum.Zre + 1j * spectrum.Zim
-        weight = 1.0 / np.maximum(alpha_noise * np.abs(Z_data), 1.0)
+        if weights is not None:
+            _w = np.asarray(weights)
+        else:
+            _w = 1.0 / (alpha_noise * np.maximum(np.abs(Z_data), 1.0))**2
+        weight = np.sqrt(_w)
 
         def residuals(x):
             Re, Re_p, Cb, Rct, Qdl, alpha_p, ZD0, D_eff = x

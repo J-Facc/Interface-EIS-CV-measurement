@@ -3,11 +3,56 @@
 from datetime import datetime
 from typing import Optional
 
+import numpy as np
+
 from core.models import EISSession, EISSpectrum, ConcentrationGroup
 from core.loader import load_spectrum, average_replicates
 from core.logger import get_logger
+from core.validator import validate_replicate_group
 
 log = get_logger("pipeline")
+
+
+def validate_session(replicate_groups: dict, config) -> dict:
+    """
+    Valide chaque groupe de réplicats avant analyse.
+
+    Parameters
+    ----------
+    replicate_groups : dict label → {"f": list[np.ndarray],
+                                      "zre": list[np.ndarray],
+                                      "zim": list[np.ndarray]}
+    config : AppSettings
+
+    Returns
+    -------
+    dict label → ValidationResult
+    """
+    results = {}
+    for label, group in replicate_groups.items():
+        vr = validate_replicate_group(
+            frequencies_list=group["f"],
+            zre_list=group["zre"],
+            zim_list=group["zim"],
+            label=label,
+            mu_threshold=getattr(config, "kk_mu_threshold", 0.85),
+            residual_threshold_pct=getattr(config, "kk_residual_pct", 2.0),
+        )
+        results[label] = vr
+    return results
+
+
+def _build_weights(spectrum, config) -> np.ndarray:
+    """
+    Construit w(f) = 1/σ²(f) si σ(f) disponible,
+    sinon retombe sur pondération Modulus uniforme (comportement actuel).
+    """
+    if spectrum.sigma_re is not None and spectrum.sigma_im is not None:
+        sigma2 = np.asarray(spectrum.sigma_re)**2 + np.asarray(spectrum.sigma_im)**2
+        return 1.0 / sigma2
+    alpha = getattr(config, "alpha_noise", 0.001)
+    Z_mod = np.sqrt(np.asarray(spectrum.Zre)**2 + np.asarray(spectrum.Zim)**2)
+    return 1.0 / (alpha * Z_mod)**2
 
 
 def run_pipeline(
@@ -85,7 +130,8 @@ def run_pipeline(
             continue
         for model in models:
             try:
-                fr = model.fit(sp, config)
+                weights = _build_weights(sp, config)
+                fr = model.fit(sp, config, weights=weights)
                 sp.fit_results[model.name] = fr
                 log.info(
                     f"Fit '{model.name}' [{label}]: "
@@ -101,7 +147,8 @@ def run_pipeline(
         fit_results = {}
         for model in models:
             try:
-                fr = model.fit(spectrum, config)
+                weights = _build_weights(spectrum, config)
+                fr = model.fit(spectrum, config, weights=weights)
                 fit_results[model.name] = fr
                 log.info(
                     f"Fit '{model.name}' [{conc:.2e} M]: "

@@ -16,7 +16,7 @@ class BaseFitModel(ABC):
     description: str = ""
 
     @abstractmethod
-    def fit(self, spectrum: EISSpectrum, config: dict) -> FitResult:
+    def fit(self, spectrum: EISSpectrum, config: dict, weights=None) -> FitResult:
         """Fit the model to the spectrum.
 
         Args:
