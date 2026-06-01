@@ -287,6 +287,12 @@ class DRTFitModel(BaseFitModel):
     display_name = "DRT (FFT)"
     L_MAXIMA: int = 300   # demi-fenêtre maxima locaux (Bissessur)
 
+    def initial_guess(self, spectrum: EISSpectrum, config: dict) -> dict:
+        return {}
+
+    def bounds(self, config: dict) -> tuple:
+        return {}, {}
+
     def fit(self, spectrum: EISSpectrum, config) -> FitResult:
         """Calcule la DRT et extrait Rct.
 
