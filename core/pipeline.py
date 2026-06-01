@@ -59,7 +59,7 @@ def run_pipeline(
     file_assignments: list,
     config: dict,
     active_models: Optional[list] = None,
-) -> EISSession:
+) -> tuple:
     """Run the full EIS analysis pipeline.
 
     Args:
@@ -93,6 +93,7 @@ def run_pipeline(
     bare_spectra = []
     probe_spectra = []
     hybridization: dict = {}
+    replicate_groups: dict = {}
 
     for (step, conc), fas in groups.items():
         loaded = []
@@ -112,6 +113,17 @@ def run_pipeline(
 
         if not loaded:
             continue
+
+        # Collect raw replicates for KK validation (before averaging)
+        if step in ("bare", "probe"):
+            grp_label = step
+        else:
+            grp_label = f"hyb_{conc:.2e}"
+        replicate_groups[grp_label] = {
+            "f":   [np.asarray(sp.f,   dtype=float) for sp in loaded],
+            "zre": [np.asarray(sp.Zre, dtype=float) for sp in loaded],
+            "zim": [np.asarray(sp.Zim, dtype=float) for sp in loaded],
+        }
 
         averaged = average_replicates(loaded) if len(loaded) > 1 else loaded[0]
 
@@ -165,4 +177,11 @@ def run_pipeline(
             )
         )
 
-    return session
+    # KK validation on raw replicates
+    try:
+        validation_results = validate_session(replicate_groups, config)
+    except Exception as e:
+        log.error(f"validate_session failed: {e}")
+        validation_results = {}
+
+    return session, validation_results
