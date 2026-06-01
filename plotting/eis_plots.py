@@ -177,15 +177,19 @@ def drt_figure(session: EISSession, log_y: bool = True) -> go.Figure:
         if len(x_vals) == 0 or len(gamma) == 0:
             continue
 
+        mask       = gamma > np.max(gamma) / np.exp(10)
+        x_plot     = x_vals[mask]
+        gamma_plot = gamma[mask]
+
         if log_y:
-            y_vals  = np.log(np.clip(gamma, 1e-30, None))
+            y_vals  = np.log(np.clip(gamma_plot, 1e-30, None))
             y_title = "ln γ(τ)  [Ω]"
         else:
-            y_vals  = gamma
+            y_vals  = gamma_plot
             y_title = "γ(τ)  [Ω]"
 
         fig.add_trace(go.Scatter(
-            x=x_vals, y=y_vals, mode="lines", name=lbl,
+            x=x_plot, y=y_vals, mode="lines", name=lbl,
             line=dict(color=color, width=2),
             hovertemplate=(
                 f"<b>{lbl}</b><br>"
