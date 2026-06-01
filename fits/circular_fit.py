@@ -61,7 +61,7 @@ class CircularFitModel(BaseFitModel):
         """No bounds needed for geometric fit."""
         return {}, {}
 
-    def fit(self, spectrum: EISSpectrum, config: dict) -> FitResult:
+    def fit(self, spectrum: EISSpectrum, config: dict, weights=None) -> FitResult:
         """Fit circle to Nyquist data and extract Rct from chord length.
 
         Args:

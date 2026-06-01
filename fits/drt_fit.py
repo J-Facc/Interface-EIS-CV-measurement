@@ -293,7 +293,7 @@ class DRTFitModel(BaseFitModel):
     def bounds(self, config: dict) -> tuple:
         return {}, {}
 
-    def fit(self, spectrum: EISSpectrum, config) -> FitResult:
+    def fit(self, spectrum: EISSpectrum, config, weights=None) -> FitResult:
         """Calcule la DRT et extrait Rct.
 
         Args:

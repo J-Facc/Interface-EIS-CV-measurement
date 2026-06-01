@@ -12,6 +12,7 @@ from plotting.eis_plots import (
     calibration_figure,
 )
 from plotting.cv_plots import cv_current_figure, cv_calibration_figure
+from plotting.kk_plots import residuals_figure, validation_summary_table
 from exports.exporter import (
     export_params_csv,
     export_spectra_csv,
@@ -21,13 +22,23 @@ from exports.exporter import (
 )
 
 
-def render_eis_tabs(session: EISSession, config: dict) -> None:
-    """Render EIS analysis tabs: Nyquist, Bode, DRT, Paramètres, Calibration, Export."""
-    tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export = st.tabs([
-        "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export",
+def render_eis_tabs(session: EISSession, config: dict, validation_results=None) -> None:
+    """Render EIS analysis tabs: Nyquist, Bode, DRT, Paramètres, Calibration, Export, Validation KK."""
+    tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export, tab7 = st.tabs([
+        "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export", "Validation KK",
     ])
 
     with tab_nyq:
+        # Badges de validité KK
+        if validation_results:
+            kk_cols = st.columns(min(len(validation_results), 6))
+            for kk_col, (kk_label, kk_vr) in zip(kk_cols, validation_results.items()):
+                if not kk_vr.all_valid:
+                    kk_col.error(f"❌ {kk_label}")
+                elif kk_vr.drift_detected:
+                    kk_col.warning(f"⚠ {kk_label}")
+                else:
+                    kk_col.success(f"✅ {kk_label}")
         st.subheader("Diagramme de Nyquist")
         st.plotly_chart(nyquist_figure(session), width='stretch')
 
@@ -106,6 +117,39 @@ def render_eis_tabs(session: EISSession, config: dict) -> None:
             except RuntimeError as exc:
                 st.caption(str(exc))
 
+    with tab7:
+        st.subheader("Validation Kramers-Kronig")
+
+        if not validation_results:
+            st.info("Lancez une analyse pour voir les résultats de validation.")
+        else:
+            st.markdown("#### Récapitulatif")
+            fig_table = validation_summary_table(validation_results, theme_mode="light")
+            st.plotly_chart(fig_table, use_container_width=True)
+
+            st.markdown("#### Résidus par spectre")
+            labels_kk = list(validation_results.keys())
+            selected_kk = st.selectbox("Spectre", labels_kk, key="kk_select")
+            vr = validation_results[selected_kk]
+
+            fig_res = residuals_figure(
+                vr,
+                theme_mode="light",
+                residual_threshold_pct=getattr(config, "kk_residual_pct", 2.0),
+            )
+            st.plotly_chart(fig_res, use_container_width=True)
+
+            for kk in vr.replicates:
+                if kk.warning:
+                    st.warning(f"**{kk.label}** : {kk.warning}")
+            if vr.drift_warning:
+                st.error(f"**Drift inter-réplicats** : {vr.drift_warning}")
+            if vr.f_min_common and vr.f_max_common < float("inf"):
+                st.success(
+                    f"Plage KK-valide commune : "
+                    f"**{vr.f_min_common:.2f} Hz** → **{vr.f_max_common:.2f} Hz**"
+                )
+
 
 def render_cv_tabs(cv_session: CVSession) -> None:
     """Render CV analysis tabs: Courbes I/E, Calibration."""
@@ -126,6 +170,6 @@ def render_cv_tabs(cv_session: CVSession) -> None:
             st.info("Ajoutez au moins 2 concentrations pour la calibration.")
 
 
-def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None) -> None:
+def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None, validation_results=None) -> None:
     """Backward-compatible alias — delegates to render_eis_tabs."""
-    render_eis_tabs(session, config)
+    render_eis_tabs(session, config, validation_results=validation_results)
