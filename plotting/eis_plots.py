@@ -178,8 +178,8 @@ def drt_figure(session: EISSession, log_y: bool = True) -> go.Figure:
             continue
 
         if log_y:
-            y_vals  = np.log(np.clip(gamma, 1e-30, None))
-            y_title = "ln γ(τ)  [Ω]"
+            y_vals  = np.log(np.abs(gamma) + 1e-300)
+            y_title = "ln(|γ(τ)|)"
         else:
             y_vals  = gamma
             y_title = "γ(τ)  [Ω]"
