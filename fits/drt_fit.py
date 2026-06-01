@@ -360,30 +360,37 @@ class DRTFitModel(BaseFitModel):
         ))
 
         # ── 5. FitResult ─────────────────────────────────────────────────────
+        params = {
+            "W":           W,
+            "Re":          R_e,
+            "Re_prime":    R_e_prime,
+            "Cb":          C_b,
+            "Qdl":         Q_dl,
+            "alpha":       alpha,
+            "Rct_randles": R_ct,
+            "tau_d":       tau_d,
+            "R_D":         R_D,
+            "Rct_drt":     Rct_drt,
+            "ln_tau_Rct":  tau_Rct,
+            "ln_tau":      S,           # abscisse DRT — ln(τ)
+            "gamma":       gamma_abs,   # ordonnée DRT — |γ(τ)|
+            # tau_peaks en secondes (np.exp(S)) pour drt_figure qui fait np.log()
+            "tau_peaks":   list(np.exp(tau_maxima)),
+        }
+        Zfit_re = np.real(Zfit)
+        Zfit_im = np.imag(Zfit)
         return FitResult(
-            method=self.method,
-            params={
-                "W":           W,
-                "Re":          R_e,
-                "Re_prime":    R_e_prime,
-                "Cb":          C_b,
-                "Qdl":         Q_dl,
-                "alpha":       alpha,
-                "Rct_randles": R_ct,
-                "tau_d":       tau_d,
-                "R_D":         R_D,
-                "Rct_drt":     Rct_drt,
-                "ln_tau_Rct":  tau_Rct,
-            },
-            Zfit=Zfit,
+            model_name=self.name,
+            params=params,
+            params_std={k: 0.0 for k in params},
+            Zfit_re=Zfit_re,
+            Zfit_im=Zfit_im,
             chi2=chi2,
+            residuals_re=Zre_exp - Zfit_re,
+            residuals_im=Zim_exp - Zfit_im,
             Rct=Rct_drt,
-            extras={
-                "S":            S,            # ln(τ)  — abscisse DRT
-                "H_s":          gamma_abs,    # |γ(τ)| — ordonnée DRT
-                "tau_maxima":   tau_maxima,   # pour annotation dans drt_figure()
-                "gamma_maxima": gamma_maxima,
-            }
+            Rct_std=0.0,
+            converged=True,
         )
 
     def predict(self, spectrum: EISSpectrum, params: dict) -> np.ndarray:
