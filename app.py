@@ -99,7 +99,7 @@ microfluidiques ADN/ARN.
 - **Fit circulaire** — lecture géométrique rapide, aucun paramètre physique
 - **Randles contraint** — Re fixé, 3 paramètres libres (Rct, Qdl, α)
 - **Randles complet** — 8 paramètres libres, pondération Modulus
-- **DRT Tikhonov** — distribution des temps de relaxation, λ auto (L-curve)
+- **DRT (FFT)** — distribution des temps de relaxation via FFT
 """
             )
             return

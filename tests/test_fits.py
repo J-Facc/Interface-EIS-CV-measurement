@@ -5,7 +5,7 @@ import pytest
 
 from fits.physics import Z_randles_full
 from fits.circular_fit import CircularFitModel
-from fits.drt_tikhonov import DRTTikhonovModel
+from fits.drt_fit import DRTFitModel
 from core.models import EISSpectrum
 
 
@@ -84,7 +84,7 @@ def test_circular_fit_params_keys():
     assert {"xc", "yc", "r", "Rct"} <= set(result.params.keys())
 
 
-# ── DRT Tikhonov tests ─────────────────────────────────────────────────────────
+# ── DRT FFT tests ─────────────────────────────────────────────────────────────
 
 _DRT_CONFIG = {
     "fit": {
@@ -100,25 +100,25 @@ _DRT_CONFIG = {
 
 def test_drt_returns_positive_rct():
     sp = _zarc_spectrum()
-    result = DRTTikhonovModel().fit(sp, _DRT_CONFIG)
+    result = DRTFitModel().fit(sp, _DRT_CONFIG)
     assert result.Rct > 0
 
 
 def test_drt_gamma_non_zero():
     sp = _zarc_spectrum()
-    result = DRTTikhonovModel().fit(sp, _DRT_CONFIG)
+    result = DRTFitModel().fit(sp, _DRT_CONFIG)
     gamma = np.array(result.params["gamma"])
     assert gamma.max() > 0, "DRT should have at least one non-zero value"
 
 
 def test_drt_tau_length_matches_n_tau():
     sp = _zarc_spectrum()
-    result = DRTTikhonovModel().fit(sp, _DRT_CONFIG)
+    result = DRTFitModel().fit(sp, _DRT_CONFIG)
     assert len(result.params["tau"]) == _DRT_CONFIG["fit"]["drt"]["n_tau"]
 
 
 def test_drt_fit_arrays_finite():
     sp = _zarc_spectrum()
-    result = DRTTikhonovModel().fit(sp, _DRT_CONFIG)
+    result = DRTFitModel().fit(sp, _DRT_CONFIG)
     assert np.all(np.isfinite(result.Zfit_re))
     assert np.all(np.isfinite(result.Zfit_im))

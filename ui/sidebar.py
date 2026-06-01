@@ -132,7 +132,7 @@ def _render_eis_sidebar() -> tuple:
         "circular": "Fit circulaire",
         "randles_constrained": "Randles contraint",
         "randles_full": "Randles complet",
-        "drt_tikhonov": "DRT Tikhonov",
+        "drt_fft": "DRT (FFT)",
     }
     active_models: list = []
     for mname, mlabel in _model_choices.items():

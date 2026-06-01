@@ -142,12 +142,12 @@ def drt_figure(session: EISSession, log_y: bool = True) -> go.Figure:
     ci = 0
     for sp in (session.bare, session.probe):
         if sp is not None:
-            fr = sp.fit_results.get("drt_tikhonov")
+            fr = sp.fit_results.get("drt_fft")
             if fr is not None:
                 all_items.append((_spectrum_label(sp), fr, ci))
             ci += 1
     for grp in session.groups:
-        fr = grp.fit_results.get("drt_tikhonov")
+        fr = grp.fit_results.get("drt_fft")
         if fr is not None:
             all_items.append((_spectrum_label(grp.spectrum), fr, ci))
         ci += 1
