@@ -38,14 +38,14 @@ def render_eis_tabs(session: EISSession, config: dict) -> None:
     with tab_drt:
         st.subheader("Distribution des temps de relaxation (DRT)")
         has_drt = any(
-            "drt_tikhonov" in grp.fit_results
+            "drt_fft" in grp.fit_results
             for grp in session.groups
         )
         if has_drt:
             st.plotly_chart(drt_figure(session), width='stretch')
         else:
             st.info(
-                "Activez **DRT Tikhonov** dans la sidebar pour afficher "
+                "Activez **DRT (FFT)** dans la sidebar pour afficher "
                 "la distribution des temps de relaxation."
             )
 
