@@ -37,9 +37,10 @@ def render_eis_tabs(session: EISSession, config: dict) -> None:
 
     with tab_drt:
         st.subheader("Distribution des temps de relaxation (DRT)")
-        has_drt = any(
-            "drt_fft" in grp.fit_results
-            for grp in session.groups
+        has_drt = (
+            any("drt_fft" in grp.fit_results for grp in session.groups)
+            or (session.bare is not None and "drt_fft" in session.bare.fit_results)
+            or (session.probe is not None and "drt_fft" in session.probe.fit_results)
         )
         if has_drt:
             st.plotly_chart(drt_figure(session), width='stretch')
