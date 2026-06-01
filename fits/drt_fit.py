@@ -33,6 +33,8 @@ Références internes :
 import numpy as np
 import scipy.fftpack as fftpack
 import scipy.optimize as spo
+from scipy.signal import windows as sig_windows
+from scipy.ndimage import gaussian_filter1d
 
 from fits.base import BaseFitModel
 from core.models import EISSpectrum, FitResult
@@ -235,7 +237,10 @@ def _drt_from_model(R_e, R_e_prime, C_b, Q_dl, alpha, R_ct, tau_d, R_D,
     imZ   = np.concatenate([impart, impad])
 
     # ── 2. Déconvolution Fredholm par FFT (cellule 12) ──────────────────────
-    ETA, imZ_eta = _TF(Z_grid, imZ)
+    # Hann window to suppress Gibbs oscillations before FFT
+    hann_win = sig_windows.hann(len(imZ))
+    imZ_windowed = imZ * hann_win
+    ETA, imZ_eta = _TF(Z_grid, imZ_windowed)
     n_eta        = len(ETA)
 
     # |η| < 71 ⟹ |η·π²| < 701 < 710 = limite float64 de cosh
@@ -260,7 +265,13 @@ def _drt_from_model(R_e, R_e_prime, C_b, Q_dl, alpha, R_ct, tau_d, R_D,
     S, H_s = _TF_inv(ETA, CONV)
     S      = S + DELTA
 
-    return S, np.abs(H_s)
+    gamma_abs = np.abs(H_s)
+    # Gaussian smoothing to suppress residual square-wave oscillations (σ=1.5 bins)
+    gamma_abs = gaussian_filter1d(gamma_abs, sigma=1.5)
+    # Clamp non-physical negatives introduced by smoothing near zero
+    gamma_abs = np.maximum(gamma_abs, 0.0)
+
+    return S, gamma_abs
 
 
 # ─────────────────────────────────────────────────────────────────────────────

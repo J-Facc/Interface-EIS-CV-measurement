@@ -67,13 +67,14 @@ def main() -> None:
                 return
             with st.spinner("Analyse EIS en cours…"):
                 try:
-                    session = run_pipeline(
+                    session, validation_results = run_pipeline(
                         file_assignments=file_assignments,
                         config=cfg,
                         active_models=active_models,
                     )
                     st.session_state["session"] = session
                     st.session_state["config"] = cfg
+                    st.session_state["validation_results"] = validation_results
                     st.success(f"✅ Analyse terminée — {len(session.groups)} groupe(s).")
                 except Exception as exc:
                     st.error(f"❌ Erreur : {exc}")
@@ -104,7 +105,11 @@ microfluidiques ADN/ARN.
             )
             return
 
-        render_eis_tabs(st.session_state["session"], st.session_state.get("config", cfg))
+        render_eis_tabs(
+            st.session_state["session"],
+            st.session_state.get("config", cfg),
+            validation_results=st.session_state.get("validation_results"),
+        )
 
     else:  # mode CV
         cv_assignments, run_clicked_cv = render_sidebar("cv")
