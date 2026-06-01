@@ -9,7 +9,8 @@ from fits.base import BaseFitModel
 
 _registry: dict = {}
 
-
+from fits.drt_fit import DRTFitModel
+registry.register(DRTFitModel())
 def _discover() -> None:
     """Import all submodules in fits/ and register BaseFitModel subclasses."""
     if _registry:
