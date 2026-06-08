@@ -1,92 +1,223 @@
-# Architecture — EIS Analyzer
+# EIS Analyzer — Architecture & Contexte général
+## Document de référence — Maintenance & Développement
 
-## Vue d'ensemble
+> Version courante : v2 — Repo : https://github.com/J-Facc/Interface-EIS-CV-measurement
+> Dernière mise à jour : 29/05/2026
 
-EIS Analyzer est une application web locale (Python/Streamlit) pour l'analyse
-de spectres d'impédance électrochimique (EIS) appliquée à des biosenseurs
-microfluidiques ADN/ARN.
+---
 
-## Structure des modules
+## 1. Objectif de l'interface
+
+EIS Analyzer est une application web locale (Python/Streamlit) pour l'analyse de spectres d'impédance électrochimique (EIS) appliquée à des biosenseurs microfluidiques ADN/ARN sur électrodes Pt. Elle extrait la résistance de transfert de charge **Rct** par 4 méthodes comparatives et produit une courbe de calibration log(Rct) vs log([c]).
+
+**Signal de détection :** Rct encode la concentration cible via :
+```
+θ_EIS = 1 − Rct,bare / Rct,ap
+log(Rct_norm) = a × log([c]) + b       LOD ≈ 10⁻¹⁷ M
+```
+
+---
+
+## 2. Architecture des fichiers
 
 ```
-eis_analyzer/
-├── app.py                   Point d'entrée Streamlit unique
-├── launch_app.bat/.sh       Lanceurs automatiques (venv + pip + streamlit)
-├── requirements.txt
+Interface-EIS-CV-measurement/          ← racine du repo GitHub
+│
+├── app.py                             ← point d'entrée Streamlit
+├── requirements.txt                   ← dépendances Python
+├── launch.bat                         ← lanceur Windows (auto-update + venv)
+├── .version                           ← SHA GitHub du dernier update local
+│
 ├── config/
-│   └── default.yaml         Paramètres physiques, géométrie, fit, export
-├── core/                    Logique métier — AUCUN import Streamlit
-│   ├── config.py            Chargement YAML + validation Pydantic
-│   ├── models.py            EISSpectrum, FitResult, ConcentrationGroup, EISSession
-│   ├── loader.py            Import CSV/TXT, détection auto, validation, moyenne
-│   ├── logger.py            Logging centralisé (fichier + console)
-│   └── pipeline.py          Orchestrateur Import → Fit → EISSession
-├── fits/                    Système plugin — 1 fichier = 1 modèle
-│   ├── base.py              BaseFitModel (ABC) : interface commune
-│   ├── physics.py           Fonctions physiques partagées (ZD, Randles, etc.)
-│   ├── registry.py          Découverte et instanciation automatiques
-│   ├── circular_fit.py      Fit géométrique circulaire
-│   ├── randles_constrained.py  Randles 3 paramètres libres
-│   ├── randles_full.py      Randles 8 paramètres libres
-│   └── drt_tikhonov.py      DRT par régularisation Tikhonov
+│   └── default.yaml                   ← tous les paramètres physiques et de fit
+│
+├── core/                              ← logique métier pure (JAMAIS d'import Streamlit)
+│   ├── __init__.py
+│   ├── models.py                      ← dataclasses : EISSpectrum, FitResult, EISSession
+│   ├── loader.py                      ← import CSV/TXT, validation, moyennage réplicats
+│   ├── pipeline.py                    ← orchestrateur Import → Fit → Analyse
+│   ├── config.py                      ← chargement YAML + Pydantic AppSettings
+│   └── logger.py                      ← logging centralisé
+│
+├── fits/                              ← système plugin : 1 fichier = 1 modèle
+│   ├── __init__.py
+│   ├── base.py                        ← BaseFitModel (ABC) — interface commune
+│   ├── physics.py                     ← fonctions physiques partagées (ZD, alpha_h, Brug)
+│   ├── registry.py                    ← FitRegistry : découverte automatique des modèles
+│   ├── randles_classique.py           ← Randles complet (7-8 paramètres, DE)
+│   ├── randles_contraint.py           ← Randles contraint (3 paramètres effectifs)
+│   ├── drt_fit.py                     ← DRT Tikhonov + NNLS
+│   └── circulaire_fit.py              ← fit circulaire géométrique Kasa
+│
 ├── plotting/
-│   ├── theme.py             Palettes jour/nuit + apply_theme_to_figure
-│   └── eis_plots.py         7 graphes Plotly (Nyquist, Bode, DRT, table, calibration)
+│   ├── __init__.py
+│   ├── theme.py                       ← palettes jour / nuit
+│   └── eis_plots.py                   ← 7 figures Plotly interactives
+│
 ├── exports/
-│   └── exporter.py          CSV, PNG, HTML, YAML session
+│   ├── __init__.py                    ← ⚠️ obligatoire sinon ModuleNotFoundError
+│   └── exporter.py                    ← export CSV, PNG, HTML, YAML session
+│
 ├── ui/
-│   ├── sidebar.py           Upload, assignation, modèles, paramètres physiques
-│   └── tabs.py              6 onglets d'analyse
-└── tests/
-    ├── test_loader.py
-    ├── test_physics.py
-    └── test_fits.py
+│   ├── __init__.py
+│   ├── sidebar.py                     ← upload fichiers + saisie concentrations + toggle thème
+│   └── tabs.py                        ← 6 onglets (render_tabs)
+│
+├── tests/
+│   ├── __init__.py
+│   └── test_fits.py                   ← tests pytest
+│
+├── logs/                              ← créé automatiquement
+├── sessions/                          ← créé automatiquement
+└── .github/
+    └── workflows/
+        └── validate.yml               ← CI : syntax check à chaque push
 ```
 
-## Règles d'architecture
+---
 
-1. **Séparation des responsabilités** : `core/` ne contient jamais d'imports Streamlit.
-   `fits/` ne contient jamais d'imports UI. `plotting/` ne modifie jamais l'état.
+## 3. Règles de modularité — CRITIQUES
 
-2. **Système plugin** : ajouter un modèle de fit = créer un fichier dans `fits/`
-   qui sous-classe `BaseFitModel`. Aucun autre fichier n'est modifié. La découverte
-   est automatique via `fits/registry.py`.
+| Couche | Règle absolue |
+|--------|--------------|
+| `core/` | Jamais d'import Streamlit |
+| `fits/` | Jamais d'import UI ni Streamlit |
+| `plotting/` | Reçoit des données, ne les calcule pas |
+| `ui/` | Appelle `core/` et `fits/`, n'implémente pas de physique |
+| `exports/` | Doit avoir un `__init__.py` sinon Python ne le trouve pas |
 
-3. **État centralisé** : tout l'état de l'application est dans
-   `st.session_state['session']` (objet `EISSession`). Pas de variables globales
-   mutables.
+**Ajouter un modèle de fit** = créer un fichier dans `fits/` héritant de `BaseFitModel`. Aucun autre fichier à modifier.
 
-4. **Configuration YAML** : toutes les constantes physiques et les bornes de fit
-   sont dans `config/default.yaml`, validées par Pydantic (`core/config.py`).
+---
 
-## Flux de données
+## 4. Flux de données
 
 ```
-Fichiers CSV  →  core/loader.py  →  EISSpectrum
-                                      ↓
-                               core/pipeline.py
-                                      ↓
-                    fits/*.py  →  FitResult (par modèle)
-                                      ↓
-                               EISSession
-                                      ↓
-                   ui/tabs.py  →  plotting/eis_plots.py
-                                      ↓
-                              Graphes Plotly / Export
+Fichiers CSV/TXT (EC-Lab export)
+        ↓
+core/loader.py
+  • auto-détection séparateur
+  • correction signe Zim (convention EC-Lab)
+  • suppression 50/100 Hz parasites
+  • tri HF → BF
+  • moyennage réplicats
+        ↓
+core/models.py → EISSpectrum { label, f[], Zre[], Zim[], concentration, step }
+        ↓
+core/pipeline.py → run_analysis()
+        ↓
+fits/ — 4 modèles en parallèle
+  randles_classique   → FitResult { params, Zfit[], chi2, Rct }
+  randles_contraint   → FitResult
+  drt_fit             → FitResult
+  circulaire_fit      → FitResult
+        ↓
+core/models.py → EISSession { bare, probe, groups[] }
+        ↓
+plotting/eis_plots.py → 7 figures Plotly
+        ↓
+ui/tabs.py → 6 onglets Streamlit
 ```
 
-## Modèles de fit
+---
 
-| Nom | Paramètres libres | Méthode |
-|-----|-------------------|---------|
-| `circular` | 0 (géométrique) | Moindres carrés algébriques |
-| `randles_constrained` | 3 (Rct, Qdl, α) | TRF scipy |
-| `randles_full` | 8 | TRF scipy, pondération Modulus |
-| `drt_tikhonov` | grille τ | Tikhonov + L-curve |
+## 5. Les 4 modèles de fit
 
-## Physique implémentée
+| Modèle | Fichier | Paramètres libres | Méthode |
+|--------|---------|-------------------|---------|
+| Randles classique | `randles_classique.py` | 7-8 (Re, R'e, Cb, Rct, Qdl, α, ZD0) | Differential Evolution |
+| Randles contraint | `randles_contraint.py` | 3 (Rct, Qdl, α) — Re et ZD0 fixés | scipy curve_fit |
+| DRT Tikhonov | `drt_fit.py` | λ (régularisation) | NNLS + L-curve |
+| Circulaire | `circulaire_fit.py` | 0 — lecture géométrique | Kasa algebraic fit |
 
-Toutes les formules sont dans `fits/physics.py` et suivent :
-- Poujouly (2022) pour l'impédance de diffusion-convection en microcanal
-- Deslouis et al. pour les régimes LF/HF unifiés
-- Brug (1984) pour la capacité de double couche effective (CPE)
+**Circuit physique (Randles modifié) :**
+```
+Re — [ R'e // Cb ] — [ Rct // CPE(Qdl, α) ] — ZD(ω)
+```
+
+---
+
+## 6. Les 6 onglets de l'interface
+
+| Onglet | Contenu |
+|--------|---------|
+| **Nyquist** | Points exp + courbes de fit avec légende complète (exp / Randles / DRT / Circulaire) |
+| **Bode** | Module \|Z\|(f) et phase φ(f) |
+| **DRT** | Distribution γ(τ) vs log(τ) |
+| **Paramètres** | Tableau Re, Rct, α, Qdl, ZD0, χ² par méthode |
+| **Calibration** | log(Rct_norm) vs log([c]) + régression + R² |
+| **Export** | CSV params, CSV spectres, PNG, HTML, YAML session |
+
+---
+
+## 7. Launcher Windows (launch.bat)
+
+**Fonctionnement à chaque double-clic :**
+```
+1. Vérifier SHA GitHub vs SHA local (.version)
+   → identique + eis_app/ présent : sauter le téléchargement
+   → différent ou absent : télécharger ZIP GitHub + extraire dans eis_app/
+2. Créer venv/ si absent (une seule fois)
+3. pip install requirements.txt
+4. cd eis_app/ + streamlit run app.py
+```
+
+**Fichiers créés localement (à côté du .bat) :**
+```
+EIS-CV_analyzer/
+├── launch.bat          ← seul fichier à distribuer
+├── .version            ← SHA du dernier commit installé
+├── venv/               ← environnement Python (créé automatiquement)
+└── eis_app/            ← code de l'app (extrait du ZIP GitHub)
+```
+
+**Prérequis machine :** Python installé (Microsoft Store ou python.org)
+
+---
+
+## 8. Paramètres physiques (config/default.yaml)
+
+| Symbole | Valeur | Unité | Description |
+|---------|--------|-------|-------------|
+| T | 298 | K | Température |
+| D | 7.2×10⁻¹⁰ | m²/s | Diffusion Fe(CN)₆³⁻ |
+| Fv | 0.5×10⁻⁹ | m³/s | Débit (0.5 µL/s) |
+| h | 60×10⁻⁶ | m | Hauteur canal |
+| d | 300×10⁻⁶ | m | Largeur canal |
+| xe | 30×10⁻⁶ | m | Largeur électrode WE |
+| S | 9×10⁻⁹ | m² | Surface active |
+| C0 | 20 | mM | Concentration Fe(CN)₆ |
+
+---
+
+## 9. Erreurs fréquentes et solutions
+
+| Erreur | Cause | Solution |
+|--------|-------|----------|
+| `ModuleNotFoundError: No module named 'exports'` | `exports/__init__.py` absent | Créer ce fichier vide |
+| `ImportError: cannot import name 'render_tabs'` | Streamlit lancé hors de `eis_app/` | `cd /d "%APP_DIR%"` avant streamlit |
+| `OSError: No such file or directory ... streamlit` | Chemin trop long (MS Store Python) | Utiliser venv local (chemin court) |
+| `SSL: CERTIFICATE_VERIFY_FAILED` | Proxy d'entreprise | `ssl.CERT_NONE` dans les requêtes urllib |
+| Fenêtre .bat qui se ferme | Variable `%VAR%` non évaluée après `cd` | Utiliser `!VAR!` + `setlocal enabledelayedexpansion` |
+
+---
+
+## 10. Commandes utiles
+
+```bash
+# Lancer les tests
+python -m pytest tests/ -v
+
+# Vérifier la syntaxe de app.py
+python -m py_compile app.py
+
+# Forcer une mise à jour (supprimer le SHA local)
+del .version
+
+# Réinstaller le venv from scratch
+rmdir /s /q venv
+```
+
+---
+
+*Document rédigé le 29/05/2026 — à importer dans tout nouveau projet Claude pour la maintenance*
