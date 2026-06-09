@@ -540,7 +540,7 @@ def main() -> None:
 
     session_data = None
 
-    has_active = "comparison_session_data" in st.session_state
+    has_active = st.session_state.get("comparison_session_data") is not None
     source = st.radio(
         "Source",
         options=["session_active", "yaml"],

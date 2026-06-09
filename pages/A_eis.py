@@ -64,7 +64,7 @@ def main() -> None:
                 st.error(f"❌ Erreur : {exc}")
                 return
 
-    if "eis_session" not in st.session_state:
+    if st.session_state.get("eis_session") is None:
         st.markdown(
             """
 ## Bienvenue dans EIS Analyzer
