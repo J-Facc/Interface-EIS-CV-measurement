@@ -12,6 +12,7 @@ from scipy import stats
 
 from plotting.theme import get_theme, apply_theme_to_figure
 
+_THEME = "light"
 
 # Palette fixe pour les 6 méthodes — identique sur toutes les figures
 _METHOD_COLORS = {
@@ -39,11 +40,7 @@ def _sup(n: int) -> str:
 
 
 def _ols_with_ci(x: np.ndarray, y: np.ndarray, n_fit: int = 200) -> dict:
-    """
-    Régression OLS y ~ x avec IC 95 % analytique.
-
-    Returns dict : slope, intercept, r2, x_fit, y_fit, ci_low, ci_high.
-    """
+    """Régression OLS y ~ x avec IC 95 % analytique."""
     res = stats.linregress(x, y)
     n = len(x)
     t95 = stats.t.ppf(0.975, df=max(n - 2, 1))
@@ -68,37 +65,18 @@ def plot_calibration_scalar(
     signal: np.ndarray,
     concentrations: np.ndarray,
     method_name: str,
-    theme_mode: str = "light",
 ) -> go.Figure:
     """
     Calibration scalaire : log₁₀(signal) vs log₁₀([c]) + OLS + IC 95 %.
 
     Utilisé pour les méthodes A1 (ΔI_norm), A2 (Rct fit), A3 (Rct DRT).
-
-    Parameters
-    ----------
-    signal : np.ndarray
-        Valeurs du signal normalisé (ΔI_norm ou Rct_norm) pour chaque concentration.
-        Doit être strictement positif pour l'axe log.
-    concentrations : np.ndarray
-        Concentrations en molaire, même ordre que signal.
-    method_name : str
-        Nom de la méthode affiché dans le titre et la légende (ex. 'A2').
-    theme_mode : str
-        'light' ou 'dark'.
-
-    Returns
-    -------
-    go.Figure
-        Figure Plotly interactive.
     """
     signal = np.asarray(signal, dtype=float)
     concentrations = np.asarray(concentrations, dtype=float)
 
     color = _METHOD_COLORS.get(method_name, "#333333")
-    theme = get_theme(theme_mode)
+    theme = get_theme(_THEME)
 
-    # Filtrer les valeurs non-positives pour l'axe log
     mask = (signal > 0) & (concentrations > 0) & np.isfinite(signal) & np.isfinite(concentrations)
     x = np.log10(concentrations[mask])
     y = np.log10(signal[mask])
@@ -108,7 +86,6 @@ def plot_calibration_scalar(
     if len(x) >= 2:
         ols = _ols_with_ci(x, y)
 
-        # IC 95 % — bande remplie
         fig.add_trace(go.Scatter(
             x=np.concatenate([ols["x_fit"], ols["x_fit"][::-1]]),
             y=np.concatenate([ols["ci_high"], ols["ci_low"][::-1]]),
@@ -118,7 +95,6 @@ def plot_calibration_scalar(
             name="IC 95 %",
             hoverinfo="skip",
         ))
-        # Droite OLS
         fig.add_trace(go.Scatter(
             x=ols["x_fit"], y=ols["y_fit"],
             mode="lines",
@@ -132,12 +108,11 @@ def plot_calibration_scalar(
                 f"+ {ols['intercept']:.3f}<br>R² = {ols['r2']:.4f}"
             ),
             showarrow=False, align="left",
-            bgcolor="rgba(255,255,255,0.85)" if theme_mode == "light" else "rgba(30,30,50,0.85)",
+            bgcolor="rgba(255,255,255,0.85)",
             bordercolor=theme["grid"], borderwidth=1,
             font=dict(color=theme["text"]),
         )
 
-    # Points expérimentaux
     hover = [
         f"{c:.2e} M → signal={s:.4f}" for c, s in zip(concentrations[mask], signal[mask])
     ]
@@ -161,35 +136,18 @@ def plot_calibration_scalar(
         yaxis_title="log₁₀(signal normalisé)",
         legend=dict(x=0.01, y=0.01, bgcolor="rgba(0,0,0,0)"),
     )
-    return apply_theme_to_figure(fig, theme_mode)
+    return apply_theme_to_figure(fig, _THEME)
 
 
 def plot_pls_scree(
     explained_variance: np.ndarray,
     method_name: str,
-    theme_mode: str = "light",
 ) -> go.Figure:
-    """
-    Scree plot : variance expliquée par composante latente PLS.
-
-    Parameters
-    ----------
-    explained_variance : np.ndarray, shape (n_components,)
-        Fraction de variance expliquée par chaque composante (entre 0 et 1).
-    method_name : str
-        Nom de la méthode (ex. 'B2').
-    theme_mode : str
-        'light' ou 'dark'.
-
-    Returns
-    -------
-    go.Figure
-        Barres + courbe cumulée.
-    """
+    """Scree plot : variance expliquée par composante latente PLS."""
     explained_variance = np.asarray(explained_variance, dtype=float)
     n = len(explained_variance)
     color = _METHOD_COLORS.get(method_name, "#333333")
-    theme = get_theme(theme_mode)
+    theme = get_theme(_THEME)
 
     components = list(range(1, n + 1))
     cumulative = np.cumsum(explained_variance) * 100
@@ -220,13 +178,14 @@ def plot_pls_scree(
 
     fig.update_layout(
         title=f"Scree plot PLS — {method_name}",
-        xaxis=dict(title="Composante latente", tickvals=components, ticktext=[f"C{i}" for i in components]),
+        xaxis=dict(title="Composante latente", tickvals=components,
+                   ticktext=[f"C{i}" for i in components]),
         legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)"),
     )
     fig.update_yaxes(title_text="Variance par composante (%)", secondary_y=False)
     fig.update_yaxes(title_text="Variance cumulée (%)", range=[0, 105], secondary_y=True)
 
-    return apply_theme_to_figure(fig, theme_mode)
+    return apply_theme_to_figure(fig, _THEME)
 
 
 def plot_pls_loadings(
@@ -234,39 +193,16 @@ def plot_pls_loadings(
     axis: np.ndarray,
     axis_label: str,
     component: int = 1,
-    theme_mode: str = "light",
 ) -> go.Figure:
-    """
-    Loadings PLS d'une composante sur l'axe fréquence (EIS) ou potentiel (CV).
-
-    Parameters
-    ----------
-    loadings : np.ndarray, shape (n_features,)
-        Vecteur de loadings de la composante sélectionnée.
-    axis : np.ndarray, shape (n_features,)
-        Axe physique : fréquences en Hz (EIS) ou potentiels en V (CV).
-    axis_label : str
-        Label de l'axe x affiché (ex. 'Fréquence (Hz)' ou 'Potentiel (V)').
-    component : int
-        Numéro de la composante latente (1-indexé, affiché dans le titre).
-    theme_mode : str
-        'light' ou 'dark'.
-
-    Returns
-    -------
-    go.Figure
-        Courbe des loadings avec zone positive/négative colorée.
-    """
+    """Loadings PLS d'une composante sur l'axe fréquence (EIS) ou potentiel (CV)."""
     loadings = np.asarray(loadings, dtype=float)
     axis    = np.asarray(axis, dtype=float)
-    theme = get_theme(theme_mode)
+    theme = get_theme(_THEME)
 
-    # Détecte si l'axe est log (fréquences : décades régulièrement espacées)
     use_log = axis.min() > 0 and (np.log10(axis.max()) - np.log10(axis.min())) > 1
 
     fig = go.Figure()
 
-    # Zone positive
     fig.add_trace(go.Scatter(
         x=axis,
         y=np.where(loadings >= 0, loadings, 0),
@@ -276,7 +212,6 @@ def plot_pls_loadings(
         name="Loadings > 0",
         hoverinfo="skip",
     ))
-    # Zone négative
     fig.add_trace(go.Scatter(
         x=axis,
         y=np.where(loadings < 0, loadings, 0),
@@ -286,7 +221,6 @@ def plot_pls_loadings(
         name="Loadings < 0",
         hoverinfo="skip",
     ))
-    # Courbe principale
     fig.add_trace(go.Scatter(
         x=axis,
         y=loadings,
@@ -305,37 +239,20 @@ def plot_pls_loadings(
         yaxis_title="Loading",
         legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)"),
     )
-    return apply_theme_to_figure(fig, theme_mode)
+    return apply_theme_to_figure(fig, _THEME)
 
 
 def plot_predicted_vs_true(
     results_by_method: dict,
-    theme_mode: str = "light",
 ) -> go.Figure:
     """
     Figure principale de performance prédictive : log(c_pred) vs log(c_true).
 
-    Une couleur et un symbole par méthode, barres d'erreur ± std réplicats,
-    droite y = x en pointillés noirs.
-
-    Parameters
-    ----------
-    results_by_method : dict
-        {method_name: {"y_pred": np.ndarray, "y_true": np.ndarray, "y_std": np.ndarray}}
-        y_pred, y_true, y_std sont en log10([c]).
-        y_std peut être un tableau de zéros si pas d'écart-type disponible.
-    theme_mode : str
-        'light' ou 'dark'.
-
-    Returns
-    -------
-    go.Figure
-        Figure Plotly interactive.
+    results_by_method : {method: {"y_pred": ndarray, "y_true": ndarray, "y_std": ndarray}}
     """
-    theme = get_theme(theme_mode)
+    theme = get_theme(_THEME)
     fig = go.Figure()
 
-    # Récupère la plage commune pour la droite y = x
     all_true = np.concatenate([
         np.asarray(v["y_true"]) for v in results_by_method.values()
         if v.get("y_true") is not None and len(v["y_true"]) > 0
@@ -360,7 +277,6 @@ def plot_predicted_vs_true(
         color  = _METHOD_COLORS.get(method, "#333333")
         symbol = _METHOD_SYMBOLS.get(method, "circle")
 
-        # Labels hover
         hover = [
             f"<b>{method}</b><br>"
             f"c_vraie = 10{_sup(int(round(yt)))} M<br>"
@@ -374,15 +290,10 @@ def plot_predicted_vs_true(
             y=y_pred,
             mode="markers",
             name=method,
-            marker=dict(color=color, size=10, symbol=symbol, line=dict(color="white", width=1)),
-            error_y=dict(
-                type="data",
-                array=y_std,
-                visible=True,
-                color=color,
-                thickness=1.5,
-                width=6,
-            ),
+            marker=dict(color=color, size=10, symbol=symbol,
+                        line=dict(color="white", width=1)),
+            error_y=dict(type="data", array=y_std, visible=True,
+                         color=color, thickness=1.5, width=6),
             text=hover,
             hovertemplate="%{text}<extra></extra>",
         ))
@@ -393,29 +304,13 @@ def plot_predicted_vs_true(
         yaxis_title="log₁₀([c] prédite / M)",
         legend_title="Méthode",
     )
-    return apply_theme_to_figure(fig, theme_mode)
+    return apply_theme_to_figure(fig, _THEME)
 
 
 def plot_variance_decomposition(
     metrics_by_method: dict,
-    theme_mode: str = "light",
 ) -> go.Figure:
-    """
-    Barres groupées : σ_intra / σ_inter_brut / σ_inter_norm par méthode.
-
-    Parameters
-    ----------
-    metrics_by_method : dict
-        {method_name: {"sigma_intra": float, "sigma_inter_raw": float, "sigma_inter_norm": float}}
-    theme_mode : str
-        'light' ou 'dark'.
-
-    Returns
-    -------
-    go.Figure
-        Barres groupées, une série par type de variabilité.
-    """
-    theme = get_theme(theme_mode)
+    """Barres groupées : σ_intra / σ_inter_brut / σ_inter_norm par méthode."""
     methods = list(metrics_by_method.keys())
 
     sigma_intra = [metrics_by_method[m].get("sigma_intra", 0) or 0 for m in methods]
@@ -425,22 +320,19 @@ def plot_variance_decomposition(
     fig = go.Figure()
     fig.add_trace(go.Bar(
         name="σ_intra (bruit instrumental)",
-        x=methods,
-        y=sigma_intra,
+        x=methods, y=sigma_intra,
         marker_color="#4878d0",
         hovertemplate="<b>σ_intra</b> = %{y:.4f} décades<extra></extra>",
     ))
     fig.add_trace(go.Bar(
         name="σ_inter brut (avant normalisation)",
-        x=methods,
-        y=sigma_raw,
+        x=methods, y=sigma_raw,
         marker_color="#ee854a",
         hovertemplate="<b>σ_inter brut</b> = %{y:.4f} décades<extra></extra>",
     ))
     fig.add_trace(go.Bar(
         name="σ_inter normalisé (après normalisation probe)",
-        x=methods,
-        y=sigma_norm,
+        x=methods, y=sigma_norm,
         marker_color="#6acc65",
         hovertemplate="<b>σ_inter norm</b> = %{y:.4f} décades<extra></extra>",
     ))
@@ -452,7 +344,7 @@ def plot_variance_decomposition(
         yaxis_title="Variabilité (décades de log₁₀([c]))",
         legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)"),
     )
-    return apply_theme_to_figure(fig, theme_mode)
+    return apply_theme_to_figure(fig, _THEME)
 
 
 # ---------------------------------------------------------------------------

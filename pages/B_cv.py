@@ -115,20 +115,21 @@ def _run_cv_analysis(data: dict) -> dict | None:
             delta_I_norm_mean : float  — moyenne des deux électrodes
     Retourne None en cas d'erreur fatale.
     """
-    cv   = data["calibration"]["cv"]
+    cv    = data["calibration"]["cv"]
     concs = data["concentrations"]
     n_conc = len(concs)
     n_elec = data["n_electrodes"]
     n_rep  = data["n_replicats"]
+    probe_dict = (data.get("probe") or {}).get("cv") or {}
 
     errors = []
 
-    # --- Probe : moyennage de toutes les électrodes disponibles ---
+    # --- Probe : un fichier par électrode (commun à toutes les concentrations) ---
     probe_scans_all = []
     for e in range(1, n_elec + 1):
-        probe_list = cv.get(f"probe_{e}", [])
-        for ci, pf in enumerate(probe_list):
-            sc = _load_scan_from_file(pf, f"probe_e{e}_c{ci+1}", concs[ci], "probe")
+        pf = probe_dict.get(f"electrode_{e}")
+        if pf is not None:
+            sc = _load_scan_from_file(pf, f"probe_e{e}", 0.0, "probe")
             if sc is not None:
                 probe_scans_all.append(sc)
 
