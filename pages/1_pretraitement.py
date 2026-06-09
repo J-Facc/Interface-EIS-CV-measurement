@@ -1,50 +1,84 @@
 """Page 1 — Prétraitement et validation des données.
 
-Visualisation interactive des spectres EIS / courbes CV,
-validation Kramers-Kronig, exclusion des réplicats aberrants,
-et validation finale avant l'analyse.
+Nouvelle interface (refonte complète) :
+  Niveau 1 — Vue d'ensemble par concentration (spectres superposés, contrôles de réplicats)
+  Niveau 2 — Dialog d'édition de points (st.dialog, EIS uniquement)
+  Panneau droit   — Graphes moyens en direct, mis à jour selon les exclusions actives
 """
 
 from __future__ import annotations
 
-import io
-from typing import Any, Dict, List, Optional, Tuple
+import copy
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from core.loader import load_spectrum
-from core.cv_loader import load_cv_file
+from core.loader import load_spectrum, average_replicates
+from core.cv_loader import load_cv_file, average_cv_replicates
 from core.models import EISSpectrum
 from core.cv_models import CVScan
-from core.validator import validate_spectrum, validate_replicate_group, KKResult
 from plotting.eis_plots import nyquist_figure as _nyquist_figure
+
+# ── Palette réplicats ──────────────────────────────────────────────────────────
+# Rep 1 → bleu, Rep 2 → orange, Rep 3 → vert (palette Plotly standard)
+REP_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+EXCL_COLOR = "lightgray"
+
+_SUP_MAP = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+
+
+def _format_conc(conc: float) -> str:
+    if conc <= 0:
+        return f"{conc}"
+    exp = int(np.floor(np.log10(conc)))
+    mant = conc / 10**exp
+    exp_str = str(exp).translate(_SUP_MAP)
+    return f"{mant:.0f}×10{exp_str} M"
 
 
 # ─────────────────────────────────────────────
 # Guard — import obligatoire
 # ─────────────────────────────────────────────
 
-def _check_import() -> bool:
+def _check_import() -> None:
     if "import_validated" not in st.session_state:
         st.warning("⚠️ Importez d'abord vos données dans l'onglet **Import**.")
         st.page_link("pages/0_import.py", label="Aller à l'import", icon="📂")
         st.stop()
-        return False
-    return True
 
 
 # ─────────────────────────────────────────────
-# Chargement des spectres depuis session_state
+# Chargement des spectres / scans
 # ─────────────────────────────────────────────
+
+def _bio_to_eis(bio, label: str) -> Optional[EISSpectrum]:
+    if bio is None:
+        return None
+    try:
+        bio.seek(0)
+        content = bio.read()
+        bio.seek(0)
+        return load_spectrum(content, label=label)
+    except Exception:
+        return None
+
+
+def _bio_to_cv(bio, label: str, concentration: float, step: str) -> Optional[CVScan]:
+    if bio is None:
+        return None
+    try:
+        bio.seek(0)
+        content = bio.read()
+        bio.seek(0)
+        return load_cv_file(content, label=label, concentration=concentration, step=step)
+    except Exception:
+        return None
+
 
 def _load_eis_spectra(experiment: dict) -> Dict[str, Any]:
-    """
-    Charge tous les spectres EIS depuis experiment.
-    Retourne un dict structuré par (type, electrode, concentration_idx, replicat_idx).
-    """
     calibration = (experiment.get("calibration") or {}).get("eis") or {}
     probe_dict  = (experiment.get("probe") or {}).get("eis") or {}
     concentrations = experiment.get("concentrations") or []
@@ -52,60 +86,21 @@ def _load_eis_spectra(experiment: dict) -> Dict[str, Any]:
 
     spectra: Dict[str, Any] = {"probe": {}, "calibration": {}}
 
-    # Probe
     for e in range(1, n_elec + 1):
         key = f"electrode_{e}"
-        rep_list = probe_dict.get(key) or []
-        loaded = []
-        for ri, bio in enumerate(rep_list):
-            sp = _bio_to_eis(bio, f"probe_e{e}_r{ri+1}")
-            if sp is not None:
-                loaded.append(sp)
-        spectra["probe"][key] = loaded
-
-    # Calibration
-    for e in range(1, n_elec + 1):
-        key = f"electrode_{e}"
-        concs_list = calibration.get(key) or []
+        spectra["probe"][key] = [
+            sp for ri, bio in enumerate(probe_dict.get(key) or [])
+            if (sp := _bio_to_eis(bio, f"probe_e{e}_r{ri+1}")) is not None
+        ]
         spectra["calibration"][key] = []
-        for ci, rep_files in enumerate(concs_list):
-            loaded = []
-            conc = concentrations[ci] if ci < len(concentrations) else 0.0
-            for ri, bio in enumerate(rep_files or []):
-                sp = _bio_to_eis(bio, f"e{e}_c{ci+1}_r{ri+1}")
-                if sp is not None:
-                    loaded.append(sp)
-            spectra["calibration"][key].append(loaded)
+        for ci, rep_files in enumerate(calibration.get(key) or []):
+            reps = [
+                sp for ri, bio in enumerate(rep_files or [])
+                if (sp := _bio_to_eis(bio, f"e{e}_c{ci+1}_r{ri+1}")) is not None
+            ]
+            spectra["calibration"][key].append(reps)
 
     return spectra
-
-
-def _bio_to_eis(bio, label: str):
-    """Charge un BytesIO comme spectre EIS. Retourne None en cas d'erreur."""
-    if bio is None:
-        return None
-    try:
-        bio.seek(0)
-        content = bio.read()
-        bio.seek(0)
-        sp = load_spectrum(content, label=label)
-        return sp
-    except Exception as exc:
-        return None
-
-
-def _bio_to_cv(bio, label: str, concentration: float, step: str):
-    """Charge un BytesIO comme scan CV. Retourne None en cas d'erreur."""
-    if bio is None:
-        return None
-    try:
-        bio.seek(0)
-        content = bio.read()
-        bio.seek(0)
-        return load_cv_file(content, label=label,
-                            concentration=concentration, step=step)
-    except Exception:
-        return None
 
 
 def _load_cv_scans(experiment: dict) -> Dict[str, Any]:
@@ -118,558 +113,415 @@ def _load_cv_scans(experiment: dict) -> Dict[str, Any]:
 
     for e in range(1, n_elec + 1):
         key = f"electrode_{e}"
-        rep_list = probe_dict.get(key) or []
-        loaded = []
-        for ri, bio in enumerate(rep_list):
-            sc = _bio_to_cv(bio, f"probe_e{e}_r{ri+1}", 0.0, "probe")
-            if sc is not None:
-                loaded.append(sc)
-        scans["probe"][key] = loaded
-
-    for e in range(1, n_elec + 1):
-        key = f"electrode_{e}"
-        concs_list = calibration.get(key) or []
+        scans["probe"][key] = [
+            sc for ri, bio in enumerate(probe_dict.get(key) or [])
+            if (sc := _bio_to_cv(bio, f"probe_e{e}_r{ri+1}", 0.0, "probe")) is not None
+        ]
         scans["calibration"][key] = []
-        for ci, rep_files in enumerate(concs_list):
-            loaded = []
+        for ci, rep_files in enumerate(calibration.get(key) or []):
             conc = concentrations[ci] if ci < len(concentrations) else 0.0
-            for ri, bio in enumerate(rep_files or []):
-                sc = _bio_to_cv(bio, f"e{e}_c{ci+1}_r{ri+1}", conc, "hybridization")
-                if sc is not None:
-                    loaded.append(sc)
-            scans["calibration"][key].append(loaded)
+            reps = [
+                sc for ri, bio in enumerate(rep_files or [])
+                if (sc := _bio_to_cv(bio, f"e{e}_c{ci+1}_r{ri+1}", conc, "hybridization")) is not None
+            ]
+            scans["calibration"][key].append(reps)
 
     return scans
 
 
 # ─────────────────────────────────────────────
-# Onglet 1 — Visualisation
+# Helpers exclusions / points supprimés
 # ─────────────────────────────────────────────
-
-def _tab_visualisation(experiment: dict, exclusions: dict) -> None:
-    mode = experiment.get("mode", "both")
-    concentrations = experiment.get("concentrations") or []
-    n_elec = experiment.get("n_electrodes", 2)
-
-    has_eis = mode in ("eis_only", "both")
-    has_cv  = mode in ("cv_only", "both")
-
-    if has_eis:
-        st.markdown("### 📡 Spectres EIS")
-        eis_spectra = _load_eis_spectra(experiment)
-        _visualize_eis(eis_spectra, concentrations, n_elec, exclusions)
-
-    if has_cv:
-        st.markdown("### 📈 Voltammogrammes CV")
-        cv_scans = _load_cv_scans(experiment)
-        _visualize_cv(cv_scans, concentrations, n_elec, exclusions)
-
-
-def _visualize_eis(
-    spectra: dict,
-    concentrations: list,
-    n_elec: int,
-    exclusions: dict,
-) -> None:
-    elec_opts  = [f"Électrode {e}" for e in range(1, n_elec + 1)]
-    conc_labels = ["Probe"] + [f"{c:.2e} M" for c in concentrations]
-
-    c1, c2 = st.columns(2)
-    with c1:
-        sel_elec = st.selectbox("Électrode", elec_opts, key="vis_eis_elec")
-    with c2:
-        sel_conc = st.selectbox("Concentration", conc_labels, key="vis_eis_conc")
-
-    e_idx = elec_opts.index(sel_elec) + 1
-    elec_key = f"electrode_{e_idx}"
-
-    if sel_conc == "Probe":
-        reps = spectra["probe"].get(elec_key) or []
-        group_label = f"probe_{elec_key}"
-    else:
-        ci = conc_labels.index(sel_conc) - 1
-        conc_list = spectra["calibration"].get(elec_key) or []
-        reps = conc_list[ci] if ci < len(conc_list) else []
-        group_label = f"eis_{elec_key}_c{ci}"
-
-    if not reps:
-        st.info("Aucun spectre chargé pour cette sélection.")
-        return
-
-    # Exclusion checkboxes (courbes entières)
-    _render_exclusion_checkboxes(reps, group_label, exclusions)
-
-    # Nyquist superposé avec mode édition par réplicat
-    st.markdown("**Diagramme de Nyquist**")
-    for ri, sp in enumerate(reps):
-        excluded_curve = _is_excluded(group_label, ri, exclusions)
-        spectrum_label = f"{group_label}_r{ri}"
-
-        edit_mode = st.toggle(
-            f"✏️ Mode suppression de points — R{ri+1}",
-            key=f"edit_{spectrum_label}",
-        )
-
-        if edit_mode:
-            fig = _nyquist_figure(spectrum=sp, selection_mode=True)
-            event = st.plotly_chart(
-                fig,
-                width='stretch',
-                key=f"nyquist_edit_{spectrum_label}",
-                on_select="rerun",
-            )
-
-            selected_points = []
-            if event and event.selection and event.selection.points:
-                selected_points = [
-                    p['point_index'] for p in event.selection.points
-                ]
-
-            if selected_points:
-                st.warning(
-                    f"{len(selected_points)} point(s) sélectionné(s) : "
-                    f"indices {selected_points}"
-                )
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button(
-                        "🗑️ Supprimer ces points",
-                        key=f"del_{spectrum_label}",
-                    ):
-                        key = f"deleted_points_{spectrum_label}"
-                        existing = st.session_state.get(key, [])
-                        st.session_state[key] = list(
-                            set(existing + selected_points)
-                        )
-                        st.success(f"Points supprimés du spectre R{ri+1}")
-                        st.rerun()
-
-                with col_b:
-                    key = f"deleted_points_{spectrum_label}"
-                    if st.session_state.get(key):
-                        if st.button(
-                            "↩️ Restaurer tous les points",
-                            key=f"restore_{spectrum_label}",
-                        ):
-                            st.session_state[key] = []
-                            st.rerun()
-
-            key = f"deleted_points_{spectrum_label}"
-            deleted = st.session_state.get(key, [])
-            if deleted:
-                st.info(
-                    f"Points actuellement exclus de R{ri+1} : "
-                    f"indices {sorted(deleted)}"
-                )
-        else:
-            key = f"deleted_points_{spectrum_label}"
-            deleted = st.session_state.get(key, [])
-            opacity = 0.35 if excluded_curve else 1.0
-            fig = _nyquist_figure(
-                spectrum=sp,
-                excluded_indices=deleted if deleted else None,
-                selection_mode=False,
-            )
-            fig.update_traces(opacity=opacity)
-            st.plotly_chart(fig, width='stretch', key=f"nyquist_view_{spectrum_label}")
-
-    # Bode
-    fig_bode = go.Figure()
-    for ri, sp in enumerate(reps):
-        excluded = _is_excluded(group_label, ri, exclusions)
-        dash = "dot" if excluded else "solid"
-        opacity = 0.35 if excluded else 1.0
-        name = f"R{ri+1}" + (" [Exclu]" if excluded else "")
-        Z_mod = np.sqrt(np.array(sp.Zre)**2 + np.array(sp.Zim)**2)
-        fig_bode.add_trace(go.Scatter(
-            x=sp.f, y=Z_mod,
-            mode="lines", name=name,
-            line=dict(dash=dash),
-            opacity=opacity,
-        ))
-    fig_bode.update_layout(
-        title="Bode — Module |Z| vs Fréquence",
-        xaxis_title="Fréquence (Hz)",
-        xaxis_type="log",
-        yaxis_title="|Z| (Ω)",
-        yaxis_type="log",
-    )
-    st.plotly_chart(fig_bode, width='stretch')
-
-
-def _cv_figure_single(
-    sc,
-    excluded_indices: list = None,
-    selection_mode: bool = False,
-) -> go.Figure:
-    """Plotly figure for a single CV scan with optional point exclusion highlighting."""
-    fig = go.Figure()
-    E = np.array(sc.E)
-    I = np.array(sc.I) * 1e6
-
-    if excluded_indices:
-        excl_set = set(excluded_indices)
-        keep_idx = [i for i in range(len(E)) if i not in excl_set]
-        excl_idx = sorted(excl_set)
-        fig.add_trace(go.Scatter(
-            x=E[keep_idx], y=I[keep_idx],
-            mode="lines+markers",
-            name=sc.label,
-            marker=dict(size=4),
-        ))
-        fig.add_trace(go.Scatter(
-            x=E[excl_idx], y=I[excl_idx],
-            mode="markers",
-            name="Points exclus",
-            marker=dict(color="lightgray", size=5, symbol="x",
-                        line=dict(width=1, color="gray")),
-        ))
-    else:
-        fig.add_trace(go.Scatter(
-            x=E, y=I,
-            mode="lines+markers",
-            name=sc.label,
-            marker=dict(size=4),
-        ))
-
-    fig.update_layout(
-        title=f"CV — {sc.label}",
-        xaxis_title="Potentiel E (V)",
-        yaxis_title="Courant I (µA)",
-    )
-    if selection_mode:
-        fig.update_layout(dragmode="select", clickmode="event+select")
-    return fig
-
-
-def _visualize_cv(
-    scans: dict,
-    concentrations: list,
-    n_elec: int,
-    exclusions: dict,
-) -> None:
-    elec_opts  = [f"Électrode {e}" for e in range(1, n_elec + 1)]
-    conc_labels = ["Probe"] + [f"{c:.2e} M" for c in concentrations]
-
-    c1, c2 = st.columns(2)
-    with c1:
-        sel_elec = st.selectbox("Électrode", elec_opts, key="vis_cv_elec")
-    with c2:
-        sel_conc = st.selectbox("Concentration", conc_labels, key="vis_cv_conc")
-
-    e_idx = elec_opts.index(sel_elec) + 1
-    elec_key = f"electrode_{e_idx}"
-
-    if sel_conc == "Probe":
-        reps = scans["probe"].get(elec_key) or []
-        group_label = f"cv_probe_{elec_key}"
-    else:
-        ci = conc_labels.index(sel_conc) - 1
-        conc_list = scans["calibration"].get(elec_key) or []
-        reps = conc_list[ci] if ci < len(conc_list) else []
-        group_label = f"cv_{elec_key}_c{ci}"
-
-    if not reps:
-        st.info("Aucun scan CV chargé pour cette sélection.")
-        return
-
-    _render_exclusion_checkboxes(reps, group_label, exclusions)
-
-    st.markdown("**Voltammogrammes**")
-    for ri, sc in enumerate(reps):
-        excluded_curve = _is_excluded(group_label, ri, exclusions)
-        spectrum_label = f"{group_label}_r{ri}"
-
-        edit_mode = st.toggle(
-            f"✏️ Mode suppression de points — R{ri+1}",
-            key=f"edit_{spectrum_label}",
-        )
-
-        if edit_mode:
-            fig = _cv_figure_single(sc, selection_mode=True)
-            event = st.plotly_chart(
-                fig,
-                width='stretch',
-                key=f"cv_edit_{spectrum_label}",
-                on_select="rerun",
-            )
-
-            selected_points = []
-            if event and event.selection and event.selection.points:
-                selected_points = [
-                    p['point_index'] for p in event.selection.points
-                ]
-
-            if selected_points:
-                st.warning(
-                    f"{len(selected_points)} point(s) sélectionné(s) : "
-                    f"indices {selected_points}"
-                )
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button(
-                        "🗑️ Supprimer ces points",
-                        key=f"del_{spectrum_label}",
-                    ):
-                        key = f"deleted_points_{spectrum_label}"
-                        existing = st.session_state.get(key, [])
-                        st.session_state[key] = list(
-                            set(existing + selected_points)
-                        )
-                        st.success(f"Points supprimés de R{ri+1}")
-                        st.rerun()
-
-                with col_b:
-                    key = f"deleted_points_{spectrum_label}"
-                    if st.session_state.get(key):
-                        if st.button(
-                            "↩️ Restaurer tous les points",
-                            key=f"restore_{spectrum_label}",
-                        ):
-                            st.session_state[key] = []
-                            st.rerun()
-
-            key = f"deleted_points_{spectrum_label}"
-            deleted = st.session_state.get(key, [])
-            if deleted:
-                st.info(
-                    f"Points actuellement exclus de R{ri+1} : "
-                    f"indices {sorted(deleted)}"
-                )
-        else:
-            key = f"deleted_points_{spectrum_label}"
-            deleted = st.session_state.get(key, [])
-            opacity = 0.35 if excluded_curve else 1.0
-            fig = _cv_figure_single(sc, excluded_indices=deleted if deleted else None)
-            fig.update_traces(opacity=opacity)
-            st.plotly_chart(fig, width='stretch', key=f"cv_view_{spectrum_label}")
-
-
-def _render_exclusion_checkboxes(reps, group_label: str, exclusions: dict) -> None:
-    """Affiche des checkboxes d'exclusion pour chaque réplicat."""
-    if not reps:
-        return
-    cols = st.columns(len(reps))
-    for ri, (col, _) in enumerate(zip(cols, reps)):
-        with col:
-            excluded = _is_excluded(group_label, ri, exclusions)
-            new_val = st.checkbox(
-                f"Exclure R{ri+1}",
-                value=excluded,
-                key=f"excl_{group_label}_{ri}",
-            )
-            if new_val != excluded:
-                if group_label not in exclusions:
-                    exclusions[group_label] = set()
-                if new_val:
-                    exclusions[group_label].add(ri)
-                else:
-                    exclusions[group_label].discard(ri)
-                st.session_state["exclusions"] = exclusions
-
 
 def _is_excluded(group_label: str, ri: int, exclusions: dict) -> bool:
     return ri in exclusions.get(group_label, set())
 
 
+def _toggle_exclusion(group_label: str, ri: int, exclusions: dict) -> None:
+    if group_label not in exclusions:
+        exclusions[group_label] = set()
+    if ri in exclusions[group_label]:
+        exclusions[group_label].discard(ri)
+    else:
+        exclusions[group_label].add(ri)
+    st.session_state["exclusions"] = exclusions
+
+
+def _deleted_key(group_label: str, ri: int) -> str:
+    return f"deleted_points_{group_label}_r{ri}"
+
+
+def _get_deleted(group_label: str, ri: int) -> list:
+    return list(st.session_state.get(_deleted_key(group_label, ri), []))
+
+
 # ─────────────────────────────────────────────
-# Onglet 2 — Validation KK
+# Figures superposées
 # ─────────────────────────────────────────────
 
-def _tab_validation_kk(experiment: dict, exclusions: dict) -> None:
-    mode = experiment.get("mode", "both")
-    has_eis = mode in ("eis_only", "both")
-    has_cv  = mode in ("cv_only", "both")
-
-    if has_eis:
-        st.markdown("### 🔍 Validation Kramers-Kronig (EIS)")
-        eis_spectra = _load_eis_spectra(experiment)
-        _render_kk_section(eis_spectra, experiment, exclusions)
-
-    if has_cv:
-        st.markdown("### 📊 Validation CV")
-        cv_scans = _load_cv_scans(experiment)
-        _render_cv_validation(cv_scans, experiment, exclusions)
-
-
-def _render_kk_section(eis_spectra: dict, experiment: dict, exclusions: dict) -> None:
-    concentrations = experiment.get("concentrations") or []
-    n_elec = experiment.get("n_electrodes", 2)
-
-    # Construire toutes les lignes du tableau
-    rows = []
-    kk_cache: Dict[str, KKResult] = {}
-
-    for e in range(1, n_elec + 1):
-        elec_key = f"electrode_{e}"
-        # Probe
-        for ri, sp in enumerate(eis_spectra["probe"].get(elec_key) or []):
-            label = f"probe_e{e}_r{ri+1}"
-            kk = validate_spectrum(np.array(sp.f), np.array(sp.Zre), np.array(sp.Zim), label)
-            kk_cache[label] = kk
-            group_label = f"probe_{elec_key}"
-            excluded = _is_excluded(group_label, ri, exclusions)
-            rows.append(_kk_row(label, kk, group_label, ri, excluded))
-        # Calibration
-        for ci, rep_list in enumerate(eis_spectra["calibration"].get(elec_key) or []):
-            conc = concentrations[ci] if ci < len(concentrations) else 0.0
-            group_label = f"eis_{elec_key}_c{ci}"
-            for ri, sp in enumerate(rep_list):
-                label = f"e{e}_c{ci+1}_r{ri+1} ({conc:.1e} M)"
-                kk = validate_spectrum(np.array(sp.f), np.array(sp.Zre), np.array(sp.Zim), label)
-                kk_cache[label] = kk
-                excluded = _is_excluded(group_label, ri, exclusions)
-                rows.append(_kk_row(label, kk, group_label, ri, excluded))
-
-    if not rows:
-        st.info("Aucun spectre EIS chargé pour la validation KK.")
-        return
-
-    df = pd.DataFrame(rows)
-    st.dataframe(
-        df[["Spectre", "µ", "χ²", "Plage valide", "Verdict"]],
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # Boutons d'action globaux
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("🚫 Exclure tous les invalides", key="kk_excl_invalid"):
-            for row in rows:
-                if row["_is_valid"] is False:
-                    gl = row["_group_label"]
-                    ri = row["_rep_idx"]
-                    if gl not in exclusions:
-                        exclusions[gl] = set()
-                    exclusions[gl].add(ri)
-            st.session_state["exclusions"] = exclusions
-            st.rerun()
-    with col3:
-        if st.button("🔄 Réinitialiser les exclusions", key="kk_reset"):
-            st.session_state["exclusions"] = {}
-            st.rerun()
-
-    # Résidus pour le spectre sélectionné
-    st.markdown("**Résidus KK — spectre sélectionné**")
-    label_opts = [r["Spectre"] for r in rows]
-    sel_label = st.selectbox("Spectre", label_opts, key="kk_sel_spectre")
-    if sel_label and sel_label in kk_cache:
-        kk = kk_cache[sel_label]
-        _plot_kk_residuals(kk)
-
-    # Expander d'interprétation
-    with st.expander("ℹ️ Interpréter les résultats KK"):
-        st.markdown("""
-**µ < 0.85** : proportion de capacités RC négatives acceptable.
-Au-delà, le système dévie des hypothèses KK (non-stationnarité, non-linéarité).
-
-**Résidus < 2%** : cohérence Re/Im satisfaisante sur la plage considérée.
-
-**Drift inter-réplicats** : si les résidus augmentent systématiquement
-du 1er au 3e réplicat, la surface évolue pendant la mesure.
-        """)
-
-
-def _kk_row(label: str, kk: KKResult, group_label: str, ri: int, excluded: bool) -> dict:
-    verdict = "✅ Valide" if kk.is_valid else "❌ Invalide"
-    if excluded:
-        verdict += " [Exclu]"
-    plage = f"{kk.f_min_valid:.1f}–{kk.f_max_valid:.0f} Hz"
-    return {
-        "Spectre":      label,
-        "µ":            f"{kk.mu:.3f}",
-        "χ²":           f"{kk.chi2_pseudo:.4f}",
-        "Plage valide": plage,
-        "Verdict":      verdict,
-        "_is_valid":    kk.is_valid,
-        "_group_label": group_label,
-        "_rep_idx":     ri,
-    }
-
-
-def _plot_kk_residuals(kk: KKResult) -> None:
+def _superposed_nyquist(reps: list, group_label: str, exclusions: dict) -> go.Figure:
+    """Nyquist avec tous les réplicats superposés ; exclus grisés/pointillés."""
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=kk.frequencies, y=kk.residuals_re,
-        mode="lines+markers", name="Résidus Re(Z) (%)",
-        line=dict(color="steelblue"),
-    ))
-    fig.add_trace(go.Scatter(
-        x=kk.frequencies, y=kk.residuals_im,
-        mode="lines+markers", name="Résidus Im(Z) (%)",
-        line=dict(color="firebrick"),
-    ))
-    # Seuil ±2 %
-    for val, color in [(2, "red"), (-2, "red")]:
-        fig.add_hline(y=val, line_dash="dot", line_color=color, opacity=0.6)
-    # Plage valide
-    fig.add_vrect(
-        x0=kk.f_min_valid, x1=kk.f_max_valid,
-        fillcolor="lightgreen", opacity=0.15,
-        layer="below", line_width=0,
-        annotation_text="Plage valide",
-    )
+    for ri, sp in enumerate(reps):
+        excluded = _is_excluded(group_label, ri, exclusions)
+        deleted  = _get_deleted(group_label, ri)
+
+        color   = EXCL_COLOR if excluded else REP_COLORS[ri % len(REP_COLORS)]
+        opacity = 0.3 if excluded else 1.0
+        name    = f"Rép {ri+1}" + (" [Exclu]" if excluded else "")
+
+        keep = np.ones(len(sp.f), dtype=bool)
+        for idx in deleted:
+            if 0 <= idx < len(sp.f):
+                keep[idx] = False
+
+        Zre = np.asarray(sp.Zre)[keep]
+        Zim = np.asarray(sp.Zim)[keep]
+
+        fig.add_trace(go.Scatter(
+            x=Zre, y=Zim,
+            mode="markers",
+            name=name,
+            marker=dict(color=color, size=6),
+            opacity=opacity,
+            hovertemplate=(
+                f"<b>{name}</b><br>"
+                "Re(Z) = %{x:.1f} Ω<br>−Im(Z) = %{y:.1f} Ω<extra></extra>"
+            ),
+        ))
+
     fig.update_layout(
-        title=f"Résidus KK — {kk.label}",
-        xaxis_title="Fréquence (Hz)",
-        xaxis_type="log",
-        yaxis_title="Résidu normalisé (%)",
+        xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
+        yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="closest",
+        height=300,
+        margin=dict(t=30, b=40, l=50, r=20),
     )
-    st.plotly_chart(fig, width='stretch')
+    return fig
 
 
-def _render_cv_validation(cv_scans: dict, experiment: dict, exclusions: dict) -> None:
-    concentrations = experiment.get("concentrations") or []
-    n_elec = experiment.get("n_electrodes", 2)
+def _superposed_cv(reps: list, group_label: str, exclusions: dict) -> go.Figure:
+    """CV avec tous les réplicats superposés ; exclus grisés/pointillés."""
+    fig = go.Figure()
+    for ri, sc in enumerate(reps):
+        excluded = _is_excluded(group_label, ri, exclusions)
+        color   = EXCL_COLOR if excluded else REP_COLORS[ri % len(REP_COLORS)]
+        opacity = 0.3 if excluded else 1.0
+        dash    = "dot" if excluded else "solid"
+        name    = f"Rép {ri+1}" + (" [Exclu]" if excluded else "")
 
-    rows = []
-    for e in range(1, n_elec + 1):
-        elec_key = f"electrode_{e}"
-        for ci, rep_list in enumerate(cv_scans["calibration"].get(elec_key) or []):
+        fig.add_trace(go.Scatter(
+            x=np.asarray(sc.E),
+            y=np.asarray(sc.I) * 1e6,
+            mode="lines",
+            name=name,
+            line=dict(color=color, dash=dash),
+            opacity=opacity,
+        ))
+
+    fig.update_layout(
+        xaxis_title="Potentiel E (V)",
+        yaxis_title="Courant I (µA)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="closest",
+        height=240,
+        margin=dict(t=30, b=40, l=50, r=20),
+    )
+    return fig
+
+
+# ─────────────────────────────────────────────
+# Dialog d'édition de points (EIS)
+# ─────────────────────────────────────────────
+
+@st.dialog("Édition du réplicat", width="large")
+def _edit_replicate_dialog(
+    sp: EISSpectrum,
+    group_label: str,
+    ri: int,
+    electrode_label: str,
+    conc_label: str,
+) -> None:
+    dkey = _deleted_key(group_label, ri)
+    deleted: list = list(st.session_state.get(dkey, []))
+
+    st.markdown(f"**{electrode_label} — {conc_label} — Réplicat {ri + 1}**")
+
+    col_graph, col_table = st.columns([0.6, 0.4])
+
+    with col_graph:
+        fig = _nyquist_figure(
+            spectrum=sp,
+            excluded_indices=deleted if deleted else None,
+            selection_mode=True,
+        )
+        fig.update_layout(height=400, title=None, margin=dict(t=10, b=40, l=50, r=20))
+        event = st.plotly_chart(
+            fig,
+            use_container_width=True,
+            key=f"dialog_nyquist_{group_label}_r{ri}",
+            on_select="rerun",
+        )
+
+    selected: list = []
+    if event and hasattr(event, "selection") and event.selection and event.selection.points:
+        selected = [p["point_index"] for p in event.selection.points]
+
+    with col_table:
+        st.markdown("**Points du spectre**")
+        excl_set = set(deleted)
+        rows = [
+            {
+                "Idx": i,
+                "f (Hz)": f"{sp.f[i]:.3e}",
+                "Re(Z) Ω": f"{sp.Zre[i]:.2f}",
+                "−Im(Z) Ω": f"{sp.Zim[i]:.2f}",
+                "État": "✗" if i in excl_set else "",
+            }
+            for i in range(len(sp.f))
+        ]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True, height=320)
+
+    st.divider()
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        if selected:
+            if st.button(f"🗑️ Exclure {len(selected)} point(s)", type="primary",
+                         key=f"dlg_excl_{group_label}_r{ri}"):
+                existing = st.session_state.get(dkey, [])
+                st.session_state[dkey] = list(set(list(existing) + selected))
+                st.rerun()
+        else:
+            st.button("🗑️ Exclure sélection", disabled=True,
+                      key=f"dlg_excl_dis_{group_label}_r{ri}")
+
+    with col_b:
+        if deleted:
+            if st.button("↩️ Restaurer tous", key=f"dlg_restore_{group_label}_r{ri}"):
+                st.session_state[dkey] = []
+                st.rerun()
+
+    with col_c:
+        if deleted:
+            st.info(f"{len(deleted)} point(s) exclu(s)")
+        elif selected:
+            st.caption(f"{len(selected)} point(s) sélectionné(s)")
+
+
+# ─────────────────────────────────────────────
+# Ligne de contrôle d'un réplicat
+# ─────────────────────────────────────────────
+
+def _replicate_control_row(
+    ri: int,
+    reps_eis: list,
+    reps_cv: list,
+    group_label_eis: str,
+    group_label_cv: str,
+    electrode_label: str,
+    conc_label: str,
+    mode: str,
+    exclusions: dict,
+) -> None:
+    primary = group_label_eis if mode != "cv_only" else group_label_cv
+    excluded = _is_excluded(primary, ri, exclusions)
+
+    cols = st.columns([0.18, 0.22, 0.20, 0.20, 0.20])
+
+    with cols[0]:
+        dot = "🔴" if excluded else "🟢"
+        st.markdown(f"**{dot} Rép {ri+1}**")
+
+    with cols[1]:
+        if excluded:
+            st.markdown(":orange[⚠️ Exclu]")
+        else:
+            st.markdown(":green[✓ Inclus]")
+
+    with cols[2]:
+        btn = "Restaurer" if excluded else "Exclure"
+        if st.button(btn, key=f"toggle_{primary}_{ri}", use_container_width=True):
+            for gl in [group_label_eis, group_label_cv]:
+                if gl:
+                    _toggle_exclusion(gl, ri, exclusions)
+            st.rerun()
+
+    with cols[3]:
+        # Bouton Éditer — EIS uniquement
+        if mode != "cv_only" and ri < len(reps_eis):
+            dkey = _deleted_key(group_label_eis, ri)
+            n_del = len(st.session_state.get(dkey, []))
+            label = f"✏️ Éditer" + (f" ({n_del}✗)" if n_del else "")
+            if st.button(label, key=f"edit_{group_label_eis}_r{ri}", use_container_width=True):
+                _edit_replicate_dialog(
+                    sp=reps_eis[ri],
+                    group_label=group_label_eis,
+                    ri=ri,
+                    electrode_label=electrode_label,
+                    conc_label=conc_label,
+                )
+        else:
+            st.empty()
+
+    with cols[4]:
+        st.empty()
+
+
+# ─────────────────────────────────────────────
+# Bloc par concentration (expander)
+# ─────────────────────────────────────────────
+
+def _concentration_block(
+    conc_label: str,
+    reps_eis: list,
+    reps_cv: list,
+    group_label_eis: str,
+    group_label_cv: str,
+    electrode_label: str,
+    mode: str,
+    exclusions: dict,
+) -> None:
+    with st.expander(f"**{conc_label}**", expanded=True):
+        # Graphe Nyquist superposé
+        if mode in ("eis_only", "both") and reps_eis:
+            st.plotly_chart(
+                _superposed_nyquist(reps_eis, group_label_eis, exclusions),
+                use_container_width=True,
+                key=f"nyq_{group_label_eis}",
+            )
+
+        # Graphe CV superposé
+        if mode in ("cv_only", "both") and reps_cv:
+            st.plotly_chart(
+                _superposed_cv(reps_cv, group_label_cv, exclusions),
+                use_container_width=True,
+                key=f"cv_{group_label_cv}",
+            )
+
+        # Lignes de contrôle par réplicat
+        n_reps = max(len(reps_eis) if reps_eis else 0, len(reps_cv) if reps_cv else 0)
+        if n_reps:
+            st.divider()
+            for ri in range(n_reps):
+                _replicate_control_row(
+                    ri=ri,
+                    reps_eis=reps_eis,
+                    reps_cv=reps_cv,
+                    group_label_eis=group_label_eis,
+                    group_label_cv=group_label_cv,
+                    electrode_label=electrode_label,
+                    conc_label=conc_label,
+                    mode=mode,
+                    exclusions=exclusions,
+                )
+
+
+# ─────────────────────────────────────────────
+# Panneau droit — Graphes moyens en direct
+# ─────────────────────────────────────────────
+
+def _average_nyquist(all_groups: list, exclusions: dict) -> go.Figure:
+    """Un graphe Nyquist avec la moyenne des réplicats actifs par groupe."""
+    fig = go.Figure()
+    for ci, (label, reps, gl) in enumerate(all_groups):
+        active = [sp for ri, sp in enumerate(reps) if not _is_excluded(gl, ri, exclusions)]
+        if not active:
+            continue
+        try:
+            avg = average_replicates(active)
+            color = REP_COLORS[ci % len(REP_COLORS)]
+            fig.add_trace(go.Scatter(
+                x=avg.Zre, y=avg.Zim,
+                mode="markers+lines",
+                name=label,
+                marker=dict(color=color, size=5),
+                line=dict(color=color, width=1),
+            ))
+        except Exception:
+            pass
+
+    fig.update_layout(
+        title="Nyquist moyen",
+        xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
+        yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"),
+        hovermode="closest",
+        height=290,
+        margin=dict(t=40, b=40, l=50, r=10),
+        legend=dict(font=dict(size=10)),
+    )
+    return fig
+
+
+def _average_cv(all_groups: list, exclusions: dict) -> go.Figure:
+    """Un graphe CV avec la moyenne des réplicats actifs par groupe."""
+    fig = go.Figure()
+    for ci, (label, reps, gl) in enumerate(all_groups):
+        active = [sc for ri, sc in enumerate(reps) if not _is_excluded(gl, ri, exclusions)]
+        if not active:
+            continue
+        try:
+            avg = average_cv_replicates(active)
+            color = REP_COLORS[ci % len(REP_COLORS)]
+            fig.add_trace(go.Scatter(
+                x=avg.E,
+                y=np.asarray(avg.I) * 1e6,
+                mode="lines",
+                name=label,
+                line=dict(color=color),
+            ))
+        except Exception:
+            pass
+
+    fig.update_layout(
+        title="CV moyen",
+        xaxis_title="Potentiel E (V)",
+        yaxis_title="Courant I (µA)",
+        hovermode="closest",
+        height=240,
+        margin=dict(t=40, b=40, l=50, r=10),
+        legend=dict(font=dict(size=10)),
+    )
+    return fig
+
+
+def _render_average_panel(
+    eis_spectra: dict,
+    cv_scans: dict,
+    elec_key: str,
+    concentrations: list,
+    mode: str,
+    exclusions: dict,
+) -> None:
+    st.markdown("#### Moyennes en direct")
+    st.caption("Mises à jour selon les exclusions actives.")
+
+    if mode in ("eis_only", "both"):
+        groups_eis: list = []
+        probe_reps = eis_spectra["probe"].get(elec_key) or []
+        if probe_reps:
+            groups_eis.append(("Probe", probe_reps, f"probe_{elec_key}"))
+        for ci, reps in enumerate(eis_spectra["calibration"].get(elec_key) or []):
             conc = concentrations[ci] if ci < len(concentrations) else 0.0
-            group_label = f"cv_{elec_key}_c{ci}"
-            for ri, sc in enumerate(rep_list):
-                excluded = _is_excluded(group_label, ri, exclusions)
-                row = _cv_validation_row(sc, e, ci, ri, conc, group_label, excluded)
-                rows.append(row)
+            groups_eis.append((_format_conc(conc), reps, f"eis_{elec_key}_c{ci}"))
 
-    if not rows:
-        st.info("Aucun scan CV chargé pour la validation.")
-        return
+        if groups_eis:
+            st.plotly_chart(_average_nyquist(groups_eis, exclusions),
+                            use_container_width=True, key=f"avg_nyq_{elec_key}")
 
-    df = pd.DataFrame(rows)
-    st.dataframe(
-        df[["Spectre", "I_pic_ox (µA)", "I_pic_red (µA)", "Symétrie", "E_pic_ox (V)", "Verdict"]],
-        use_container_width=True,
-        hide_index=True,
-    )
+    if mode in ("cv_only", "both"):
+        groups_cv: list = []
+        probe_reps = cv_scans["probe"].get(elec_key) or []
+        if probe_reps:
+            groups_cv.append(("Probe", probe_reps, f"cv_probe_{elec_key}"))
+        for ci, reps in enumerate(cv_scans["calibration"].get(elec_key) or []):
+            conc = concentrations[ci] if ci < len(concentrations) else 0.0
+            groups_cv.append((_format_conc(conc), reps, f"cv_{elec_key}_c{ci}"))
 
-
-def _cv_validation_row(sc, e, ci, ri, conc, group_label, excluded):
-    I = np.array(sc.I)
-    E = np.array(sc.E)
-    idx_ox  = int(np.argmax(I))
-    idx_red = int(np.argmin(I))
-    I_ox  = float(I[idx_ox])
-    I_red = float(I[idx_red])
-    sym   = abs(I_ox) / max(abs(I_red), 1e-20)
-    sym_ok = 0.8 <= sym <= 1.2
-
-    verdict = "✅" if sym_ok else "⚠️ Asymétrique"
-    if excluded:
-        verdict += " [Exclu]"
-
-    return {
-        "Spectre":       f"e{e}_c{ci+1}_r{ri+1} ({conc:.1e} M)",
-        "I_pic_ox (µA)": f"{I_ox*1e6:.3f}",
-        "I_pic_red (µA)": f"{I_red*1e6:.3f}",
-        "Symétrie":      f"{sym:.2f}",
-        "E_pic_ox (V)":  f"{float(E[idx_ox]):.4f}",
-        "Verdict":       verdict,
-        "_group_label":  group_label,
-        "_rep_idx":      ri,
-    }
+        if groups_cv:
+            st.plotly_chart(_average_cv(groups_cv, exclusions),
+                            use_container_width=True, key=f"avg_cv_{elec_key}")
 
 
 # ─────────────────────────────────────────────
@@ -677,87 +529,43 @@ def _cv_validation_row(sc, e, ci, ri, conc, group_label, excluded):
 # ─────────────────────────────────────────────
 
 def _collect_all_spectrum_labels(experiment: dict) -> list:
-    """Return all spectrum_label strings (used as deleted_points keys) in the experiment."""
     labels = []
     mode = experiment.get("mode", "both")
     n_elec = experiment.get("n_electrodes", 2)
-    concentrations = experiment.get("concentrations") or []
 
     if mode in ("eis_only", "both"):
         for e in range(1, n_elec + 1):
             elec_key = f"electrode_{e}"
             probe_reps = ((experiment.get("probe") or {}).get("eis") or {}).get(elec_key) or []
             for ri in range(len(probe_reps)):
-                group_label = f"probe_{elec_key}"
-                labels.append(f"{group_label}_r{ri}")
+                labels.append(f"probe_{elec_key}_r{ri}")
             cal = ((experiment.get("calibration") or {}).get("eis") or {}).get(elec_key) or []
             for ci, rep_list in enumerate(cal):
-                group_label = f"eis_{elec_key}_c{ci}"
                 for ri in range(len(rep_list or [])):
-                    labels.append(f"{group_label}_r{ri}")
+                    labels.append(f"eis_{elec_key}_c{ci}_r{ri}")
 
     if mode in ("cv_only", "both"):
         for e in range(1, n_elec + 1):
             elec_key = f"electrode_{e}"
             probe_reps = ((experiment.get("probe") or {}).get("cv") or {}).get(elec_key) or []
             for ri in range(len(probe_reps)):
-                group_label = f"cv_probe_{elec_key}"
-                labels.append(f"{group_label}_r{ri}")
+                labels.append(f"cv_probe_{elec_key}_r{ri}")
             cal = ((experiment.get("calibration") or {}).get("cv") or {}).get(elec_key) or []
             for ci, rep_list in enumerate(cal):
-                group_label = f"cv_{elec_key}_c{ci}"
                 for ri in range(len(rep_list or [])):
-                    labels.append(f"{group_label}_r{ri}")
+                    labels.append(f"cv_{elec_key}_c{ci}_r{ri}")
 
     return labels
-
-
-def _section_final_validation(experiment: dict, exclusions: dict) -> None:
-    st.divider()
-    st.subheader("📋 Résumé et validation finale")
-
-    n_total  = _count_spectra(experiment)
-    n_curves_excluded = sum(len(v) for v in exclusions.values())
-    n_retenu = max(n_total - n_curves_excluded, 0)
-
-    all_spectrum_labels = _collect_all_spectrum_labels(experiment)
-    total_points_excluded = sum(
-        len(st.session_state.get(f"deleted_points_{lbl}", []))
-        for lbl in all_spectrum_labels
-    )
-
-    st.markdown("#### Résumé des modifications")
-    st.write(f"- {n_curves_excluded} courbe(s) complète(s) exclue(s)")
-    st.write(f"- {total_points_excluded} point(s) individuel(s) exclu(s)")
-    st.write(f"- {n_retenu} spectre(s) retenus pour l'analyse")
-
-    if st.button(
-        "✅ Valider le prétraitement et passer à l'analyse",
-        key="preproc_validate_btn",
-        type="primary",
-    ):
-        exp_clean = _apply_exclusions(experiment, exclusions)
-        st.session_state["experiment_clean"] = exp_clean
-        # Store point exclusions separately so downstream can apply them
-        point_exclusions = {
-            lbl: st.session_state[f"deleted_points_{lbl}"]
-            for lbl in all_spectrum_labels
-            if st.session_state.get(f"deleted_points_{lbl}")
-        }
-        st.session_state["point_exclusions"] = point_exclusions
-        st.success(
-            "✅ Prétraitement validé. Rendez-vous dans les pages "
-            "**EIS seule**, **CV seule**, **Comparatif** ou **Prédiction**."
-        )
 
 
 def _count_spectra(experiment: dict) -> int:
     n = 0
     mode = experiment.get("mode", "both")
     n_elec = experiment.get("n_electrodes", 2)
-    for sig in (["eis"] if mode == "eis_only" else ["cv"] if mode == "cv_only" else ["eis", "cv"]):
-        probe  = (experiment.get("probe") or {}).get(sig) or {}
-        cal    = (experiment.get("calibration") or {}).get(sig) or {}
+    sigs = ["eis"] if mode == "eis_only" else ["cv"] if mode == "cv_only" else ["eis", "cv"]
+    for sig in sigs:
+        probe = (experiment.get("probe") or {}).get(sig) or {}
+        cal   = (experiment.get("calibration") or {}).get(sig) or {}
         for e in range(1, n_elec + 1):
             key = f"electrode_{e}"
             n += len(probe.get(key) or [])
@@ -767,23 +575,12 @@ def _count_spectra(experiment: dict) -> int:
 
 
 def _apply_exclusions(experiment: dict, exclusions: dict) -> dict:
-    """
-    Retourne une copie de experiment sans les BytesIO exclus.
-    Les listes de réplicats sont filtrées en place.
-    """
-    import copy
     exp_clean = copy.deepcopy(experiment)
     mode   = exp_clean.get("mode", "both")
     n_elec = exp_clean.get("n_electrodes", 2)
+    sigs = ["eis"] if mode == "eis_only" else ["cv"] if mode == "cv_only" else ["eis", "cv"]
 
-    sig_types = (
-        ["eis"] if mode == "eis_only"
-        else ["cv"] if mode == "cv_only"
-        else ["eis", "cv"]
-    )
-
-    for sig in sig_types:
-        # Probe
+    for sig in sigs:
         probe_sig = (exp_clean.get("probe") or {}).get(sig) or {}
         for e in range(1, n_elec + 1):
             key = f"electrode_{e}"
@@ -792,18 +589,54 @@ def _apply_exclusions(experiment: dict, exclusions: dict) -> dict:
             reps = probe_sig.get(key) or []
             probe_sig[key] = [r for i, r in enumerate(reps) if i not in excl_set]
 
-        # Calibration
         cal_sig = (exp_clean.get("calibration") or {}).get(sig) or {}
         for e in range(1, n_elec + 1):
             key = f"electrode_{e}"
-            concs_list = cal_sig.get(key) or []
-            for ci, rep_list in enumerate(concs_list):
+            for ci, rep_list in enumerate(cal_sig.get(key) or []):
                 prefix = "eis" if sig == "eis" else "cv"
                 group_label = f"{prefix}_{key}_c{ci}"
                 excl_set = exclusions.get(group_label, set())
-                concs_list[ci] = [r for i, r in enumerate(rep_list or []) if i not in excl_set]
+                cal_sig[key][ci] = [r for i, r in enumerate(rep_list or []) if i not in excl_set]
 
     return exp_clean
+
+
+def _section_final_validation(experiment: dict, exclusions: dict) -> None:
+    st.divider()
+    st.subheader("📋 Résumé et validation finale")
+
+    n_total = _count_spectra(experiment)
+    n_excl  = sum(len(v) for v in exclusions.values())
+    n_kept  = max(n_total - n_excl, 0)
+
+    all_labels = _collect_all_spectrum_labels(experiment)
+    n_pts_excl = sum(
+        len(st.session_state.get(f"deleted_points_{lbl}", []))
+        for lbl in all_labels
+    )
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Courbes exclues", n_excl)
+    col_b.metric("Points exclus", n_pts_excl)
+    col_c.metric("Spectres retenus", n_kept)
+
+    if st.button(
+        "✅ Valider le prétraitement et passer à l'analyse",
+        key="preproc_validate_btn",
+        type="primary",
+    ):
+        exp_clean = _apply_exclusions(experiment, exclusions)
+        st.session_state["experiment_clean"] = exp_clean
+        point_exclusions = {
+            lbl: st.session_state[f"deleted_points_{lbl}"]
+            for lbl in all_labels
+            if st.session_state.get(f"deleted_points_{lbl}")
+        }
+        st.session_state["point_exclusions"] = point_exclusions
+        st.success(
+            "✅ Prétraitement validé. Rendez-vous dans les pages "
+            "**EIS seule**, **CV seule**, **Comparatif** ou **Prédiction**."
+        )
 
 
 # ─────────────────────────────────────────────
@@ -812,24 +645,86 @@ def _apply_exclusions(experiment: dict, exclusions: dict) -> dict:
 
 def main() -> None:
     st.title("🔬 Prétraitement des données")
-    st.caption("Visualisation, validation KK, exclusion des outliers.")
+    st.caption("Vue d'ensemble des réplicats, exclusion de courbes, édition de points.")
 
     _check_import()
 
-    experiment = st.session_state["experiment"]
+    experiment    = st.session_state["experiment"]
+    mode          = experiment.get("mode", "both")
+    concentrations = experiment.get("concentrations") or []
+    n_elec        = experiment.get("n_electrodes", 2)
 
-    # Initialiser les exclusions
     if "exclusions" not in st.session_state:
         st.session_state["exclusions"] = {}
     exclusions: dict = st.session_state["exclusions"]
 
-    tab_visu, tab_kk = st.tabs(["📊 Visualisation", "🔍 Validation & Nettoyage"])
+    # ── Sélecteur d'électrode ────────────────────────────────────────────────
+    elec_opts = [f"Électrode {e}" for e in range(1, n_elec + 1)]
+    sel_elec  = st.radio("Électrode", elec_opts, horizontal=True, key="preproc_elec_radio")
+    e_idx     = elec_opts.index(sel_elec) + 1
+    elec_key  = f"electrode_{e_idx}"
 
-    with tab_visu:
-        _tab_visualisation(experiment, exclusions)
+    st.divider()
 
-    with tab_kk:
-        _tab_validation_kk(experiment, exclusions)
+    # ── Chargement ───────────────────────────────────────────────────────────
+    has_eis = mode in ("eis_only", "both")
+    has_cv  = mode in ("cv_only", "both")
+
+    eis_spectra = _load_eis_spectra(experiment) if has_eis else {"probe": {}, "calibration": {}}
+    cv_scans    = _load_cv_scans(experiment)    if has_cv  else {"probe": {}, "calibration": {}}
+
+    # ── Deux colonnes ────────────────────────────────────────────────────────
+    col_left, col_right = st.columns([0.65, 0.35])
+
+    with col_left:
+        st.markdown("### Vue d'ensemble")
+
+        # ── Probe ──────────────────────────────────────────────────────────
+        reps_eis_probe = eis_spectra["probe"].get(elec_key) or []
+        reps_cv_probe  = cv_scans["probe"].get(elec_key)   or []
+        if reps_eis_probe or reps_cv_probe:
+            _concentration_block(
+                conc_label="Probe",
+                reps_eis=reps_eis_probe,
+                reps_cv=reps_cv_probe,
+                group_label_eis=f"probe_{elec_key}",
+                group_label_cv=f"cv_probe_{elec_key}",
+                electrode_label=sel_elec,
+                mode=mode,
+                exclusions=exclusions,
+            )
+
+        # ── Calibration par concentration ───────────────────────────────────
+        concs_eis = eis_spectra["calibration"].get(elec_key) or []
+        concs_cv  = cv_scans["calibration"].get(elec_key)   or []
+
+        for ci, conc in enumerate(concentrations):
+            reps_eis = concs_eis[ci] if ci < len(concs_eis) else []
+            reps_cv  = concs_cv[ci]  if ci < len(concs_cv)  else []
+            if not reps_eis and not reps_cv:
+                continue
+
+            conc_label = f"Concentration {ci+1} — {_format_conc(conc)}"
+            _concentration_block(
+                conc_label=conc_label,
+                reps_eis=reps_eis,
+                reps_cv=reps_cv,
+                group_label_eis=f"eis_{elec_key}_c{ci}",
+                group_label_cv=f"cv_{elec_key}_c{ci}",
+                electrode_label=sel_elec,
+                mode=mode,
+                exclusions=exclusions,
+            )
+
+    with col_right:
+        _render_average_panel(
+            eis_spectra=eis_spectra,
+            cv_scans=cv_scans,
+            elec_key=elec_key,
+            concentrations=concentrations,
+            mode=mode,
+            exclusions=exclusions,
+        )
 
     _section_final_validation(experiment, exclusions)
 
