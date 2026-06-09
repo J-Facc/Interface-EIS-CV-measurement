@@ -55,13 +55,23 @@ def save_experiment(experiment: Dict[str, Any], exclusions: Optional[Dict] = Non
             "n_replicats":  int(experiment.get("n_replicats", 3)),
         }
 
-        # Sérialiser les exclusions (set → list pour YAML)
+        # Sérialiser les exclusions 2D {e_str: {modality: {ci: [bool]}}}
         if exclusions:
-            meta["exclusions"] = {
-                k: sorted(int(i) for i in v)
-                for k, v in exclusions.items()
-                if v
-            }
+            excl_serial: Dict[str, Any] = {}
+            for e_str, mod_dict in exclusions.items():
+                if not mod_dict:
+                    continue
+                excl_serial[e_str] = {}
+                for modality, ci_dict in mod_dict.items():
+                    if not ci_dict:
+                        continue
+                    excl_serial[e_str][modality] = {}
+                    for ci, excl_list in ci_dict.items():
+                        ci_key = "probe" if ci == "probe" else str(ci)
+                        excl_serial[e_str][modality][ci_key] = [bool(x) for x in excl_list]
+            if excl_serial:
+                meta["exclusions"] = excl_serial
+
         if deleted_points:
             meta["deleted_points"] = {
                 k: sorted(int(i) for i in v)
@@ -212,7 +222,19 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
 
         # ── exclusions et points supprimés (optionnel) ────────────────────
         raw_exclusions = meta.get("exclusions") or {}
-        exclusions_out = {k: set(v) for k, v in raw_exclusions.items()} if raw_exclusions else {}
+        exclusions_out: Dict[str, Any] = {}
+        if raw_exclusions:
+            # Détecte le format 2D {e_str: {modality: {ci_key: [bool]}}}
+            first_val = next(iter(raw_exclusions.values()), None)
+            if isinstance(first_val, dict):
+                for e_str, mod_dict in raw_exclusions.items():
+                    exclusions_out[e_str] = {}
+                    for modality, ci_dict in (mod_dict or {}).items():
+                        exclusions_out[e_str][modality] = {}
+                        for ci_key, excl_list in (ci_dict or {}).items():
+                            ci = "probe" if ci_key == "probe" else int(ci_key)
+                            exclusions_out[e_str][modality][ci] = list(excl_list)
+            # Ancien format {group_label: list[int]} ignoré (incompatible)
 
         raw_deleted = meta.get("deleted_points") or {}
         deleted_points_out = {k: list(v) for k, v in raw_deleted.items()} if raw_deleted else {}
