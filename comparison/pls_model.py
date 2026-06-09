@@ -6,46 +6,49 @@ from sklearn.model_selection import LeaveOneGroupOut
 
 def normalize_by_probe(
     spectrum: np.ndarray,
-    probe: np.ndarray,
+    probe_spectra: list,
 ) -> np.ndarray:
     """
-    Normalise un spectre par le spectre probe de référence.
+    Normalise un spectre par la moyenne des réplicats probe de référence.
 
-    Formule : (spectrum - probe) / probe
+    Formule : (spectrum - probe_mean) / probe_mean
 
-    Les éléments de probe dont la valeur absolue est inférieure à 1e-10
-    sont considérés comme nuls : la sortie vaut 0.0 à ces indices pour
-    éviter des divisions par zéro ou des artefacts numériques.
+    Les positions où |probe_mean| < 1e-10 valent 0.0 (évite divisions par zéro).
 
     Parameters
     ----------
     spectrum : np.ndarray
-        Spectre à normaliser (Zre, Zim, ou courant CV). Même shape que probe.
-    probe : np.ndarray
-        Spectre de référence (électrode fonctionnalisée avant hybridation).
+        Spectre à normaliser (Zre, Zim, ou courant CV).
+    probe_spectra : list[np.ndarray]
+        Liste de 1 à N réplicats probe. Le spectre moyen est calculé avant
+        normalisation.
 
     Returns
     -------
     np.ndarray
-        Spectre normalisé, même shape que l'entrée. Les positions où
-        |probe| < 1e-10 valent 0.0.
+        Spectre normalisé, même shape que spectrum.
 
     Raises
     ------
     ValueError
-        Si spectrum et probe n'ont pas la même shape.
+        Si probe_spectra est vide, ou si les shapes sont incompatibles.
     """
     spectrum = np.asarray(spectrum, dtype=float)
-    probe = np.asarray(probe, dtype=float)
 
-    if spectrum.shape != probe.shape:
+    if not probe_spectra:
+        raise ValueError("probe_spectra ne peut pas être vide")
+
+    probes = np.stack([np.asarray(p, dtype=float) for p in probe_spectra], axis=0)
+    probe_mean = np.mean(probes, axis=0)
+
+    if spectrum.shape != probe_mean.shape:
         raise ValueError(
-            f"spectrum et probe doivent avoir la même shape "
-            f"({spectrum.shape} vs {probe.shape})"
+            f"spectrum et probe_mean doivent avoir la même shape "
+            f"({spectrum.shape} vs {probe_mean.shape})"
         )
 
-    safe_probe = np.where(np.abs(probe) < 1e-10, np.nan, probe)
-    result = (spectrum - probe) / safe_probe
+    safe_probe = np.where(np.abs(probe_mean) < 1e-10, np.nan, probe_mean)
+    result = (spectrum - probe_mean) / safe_probe
     result = np.where(np.isnan(result), 0.0, result)
     return result
 

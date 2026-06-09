@@ -112,17 +112,20 @@ def _render_probe_section(
     cols = st.columns(n_elec)
     for e in range(1, n_elec + 1):
         with cols[e - 1]:
-            f = st.file_uploader(
+            files = st.file_uploader(
                 f"{icon} {label} — Électrode {e}",
                 type=["csv", "txt"],
-                accept_multiple_files=False,
+                accept_multiple_files=True,
                 key=_sk(pfx, signal_type, f"probe_e{e}"),
             )
-            if f is not None:
-                st.caption(f":green[✓ {f.name}]")
+            if files:
+                st.markdown(
+                    f":green[{len(files)} réplicat(s) probe chargé(s)]",
+                    help="\n".join(f.name for f in files),
+                )
             else:
-                st.caption("Aucun fichier")
-            result[f"electrode_{e}"] = f
+                st.caption("Glisser les réplicats probe ici")
+            result[f"electrode_{e}"] = files if files else []
 
     return result
 
@@ -198,12 +201,13 @@ def _count_files(
     if calib_dict is None:
         return 0, 0
 
-    # Probes : un par électrode
+    # Probes : au moins un réplicat par électrode
     total_probes = n_elec
     uploaded_probes = 0
     if probe_dict:
         for e in range(1, n_elec + 1):
-            if probe_dict.get(f"electrode_{e}") is not None:
+            files = probe_dict.get(f"electrode_{e}") or []
+            if files:
                 uploaded_probes += 1
 
     # Calibration : au moins un fichier par créneau (conc × élec)

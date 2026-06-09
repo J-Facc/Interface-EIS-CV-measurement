@@ -16,6 +16,7 @@ from core.cv_loader import load_cv_file, average_cv_replicates
 from fits.registry import get_model
 from comparison.report import compute_full_report
 from comparison.plots import plot_pls_loadings
+from comparison.metrics import compute_sigma_probe
 from ui.data_input import render_data_input
 
 _CONFIG = None
@@ -228,22 +229,21 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
         "probe_delta_I": None,
     }
 
-    # ---- Probe EIS (un fichier par électrode) ----
+    # ---- Probe EIS (réplicats par électrode, tous moyennés) ----
     probe_dict_eis = (data.get("probe") or {}).get("eis") or {}
     progress_cb(0.02, "Chargement des probes EIS…")
     probe_eis_spectra = []
     for e in range(1, n_elec + 1):
-        pf = probe_dict_eis.get(f"electrode_{e}")
-        if pf is None:
-            continue
-        content, name = _read_file(pf)
-        if content is None:
-            continue
-        try:
-            sp = load_spectrum(content, name, concentration=0.0, step="probe", config=config)
-            probe_eis_spectra.append(sp)
-        except Exception as exc:
-            st.warning(f"Probe EIS e{e} : {exc}")
+        rep_files = probe_dict_eis.get(f"electrode_{e}") or []
+        for ri, pf in enumerate(rep_files):
+            content, name = _read_file(pf)
+            if content is None:
+                continue
+            try:
+                sp = load_spectrum(content, name, concentration=0.0, step="probe", config=config)
+                probe_eis_spectra.append(sp)
+            except Exception as exc:
+                st.warning(f"Probe EIS e{e} r{ri+1} : {exc}")
 
     if not probe_eis_spectra:
         st.error("Aucun fichier probe EIS valide — impossible de normaliser.")
@@ -262,22 +262,21 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
     Zre_probe = np.interp(freq_grid, probe_eis.f[::-1], probe_eis.Zre[::-1])
     Zim_probe = np.interp(freq_grid, probe_eis.f[::-1], probe_eis.Zim[::-1])
 
-    # ---- Probe CV (un fichier par électrode) ----
+    # ---- Probe CV (réplicats par électrode, tous moyennés) ----
     probe_dict_cv = (data.get("probe") or {}).get("cv") or {}
     progress_cb(0.06, "Chargement des probes CV…")
     probe_cv_scans = []
     for e in range(1, n_elec + 1):
-        pf = probe_dict_cv.get(f"electrode_{e}")
-        if pf is None:
-            continue
-        content, name = _read_file(pf)
-        if content is None:
-            continue
-        try:
-            sc = load_cv_file(content, name, concentration=0.0, step="probe")
-            probe_cv_scans.append(sc)
-        except Exception as exc:
-            st.warning(f"Probe CV e{e} : {exc}")
+        rep_files = probe_dict_cv.get(f"electrode_{e}") or []
+        for ri, pf in enumerate(rep_files):
+            content, name = _read_file(pf)
+            if content is None:
+                continue
+            try:
+                sc = load_cv_file(content, name, concentration=0.0, step="probe")
+                probe_cv_scans.append(sc)
+            except Exception as exc:
+                st.warning(f"Probe CV e{e} r{ri+1} : {exc}")
 
     if not probe_cv_scans:
         st.error("Aucun fichier probe CV valide.")
@@ -376,6 +375,20 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
 
     progress_cb(0.95, "Assemblage du rapport…")
 
+    # sigma_probe : variabilité inter-réplicats sur les grilles communes
+    eis_probe_spectra_grid = [
+        np.concatenate([
+            np.interp(freq_grid, sp.f[::-1], sp.Zre[::-1]),
+            np.interp(freq_grid, sp.f[::-1], sp.Zim[::-1]),
+        ])
+        for sp in probe_eis_spectra
+    ]
+    cv_probe_spectra_grid = [
+        np.interp(pot_grid, sc.E, sc.I) for sc in probe_cv_scans
+    ]
+    sigma_probe_eis = compute_sigma_probe(eis_probe_spectra_grid)
+    sigma_probe_cv  = compute_sigma_probe(cv_probe_spectra_grid)
+
     session_data = {
         "concentrations":  concs.tolist(),
         "n_electrodes":    n_elec,
@@ -390,8 +403,10 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
         "probe_rct_fit":   out["probe_rct_fit"],
         "probe_rct_drt":   out["probe_rct_drt"],
         "probe_delta_I":   out["probe_delta_I"],
+        "sigma_probe_eis": sigma_probe_eis,
+        "sigma_probe_cv":  sigma_probe_cv,
         "validation":      val_out,
-        # Stocker les scans bruts pour les figures Nyquist et voltammogrammes
+        # Scans bruts pour les figures Nyquist et voltammogrammes
         "_probe_eis":      probe_eis,
         "_probe_cv":       probe_cv,
     }
@@ -543,6 +558,34 @@ def _section1_data_quality(report: dict, session_data: dict) -> None:
                 height=350, margin=dict(t=30),
             )
             st.plotly_chart(fig2, use_container_width=True)
+
+        # Variabilité probe
+        st.markdown("**Stabilité des réplicats probe (σ_probe)**")
+        sp_eis = session_data.get("sigma_probe_eis", 0.0)
+        sp_cv  = session_data.get("sigma_probe_cv",  0.0)
+
+        def _probe_color(v):
+            if v < 2:   return "normal"
+            if v < 5:   return "off"
+            return "inverse"
+
+        pc1, pc2 = st.columns(2)
+        pc1.metric("σ_probe EIS", f"{sp_eis:.2f} %",
+                   delta=None, delta_color=_probe_color(sp_eis))
+        pc2.metric("σ_probe CV",  f"{sp_cv:.2f} %",
+                   delta=None, delta_color=_probe_color(sp_cv))
+
+        with st.expander("ℹ️  Interpréter σ_probe"):
+            st.markdown("""\
+**Variabilité des réplicats probe (%).**
+Mesure la stabilité de la fonctionnalisation pendant la session.
+
+| Valeur | Interprétation |
+|--------|----------------|
+| < 2 %  | fonctionnalisation stable — normalisation fiable |
+| 2–5 %  | variabilité modérée — surveiller l'impact sur σ_inter |
+| > 5 %  | instabilité de surface significative — vérifier la qualité du SAM et la reproductibilité du greffage |
+""")
 
         # Tableau σ_inter avant normalisation
         st.markdown("**Cohérence inter-électrode (σ_inter brut, par méthode)**")

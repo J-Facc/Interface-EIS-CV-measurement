@@ -11,6 +11,7 @@ from comparison.metrics import (
     compute_rmsecv_logo,
     diebold_mariano_test,
     compute_normalization_reduction,
+    compute_sigma_probe,
 )
 
 
@@ -284,3 +285,44 @@ class TestNormalizationReduction:
         # Normalisation qui aggrave la variabilité → facteur < 1
         result = compute_normalization_reduction(1.0, 2.0)
         assert result == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# compute_sigma_probe
+# ---------------------------------------------------------------------------
+
+class TestSigmaProbe:
+    def test_identical_replicates_returns_zero(self):
+        p = np.array([1.0, 2.0, 3.0])
+        assert compute_sigma_probe([p, p, p]) == pytest.approx(0.0, abs=1e-10)
+
+    def test_single_replicate_returns_zero(self):
+        p = np.array([1.0, 2.0])
+        assert compute_sigma_probe([p]) == 0.0
+
+    def test_empty_list_returns_zero(self):
+        assert compute_sigma_probe([]) == 0.0
+
+    def test_known_value(self):
+        # std([1,2]) = 0.7071, mean([1,2]) = 1.5 → relative = 0.4714 → ~47 %
+        p1 = np.array([1.0])
+        p2 = np.array([2.0])
+        result = compute_sigma_probe([p1, p2])
+        # std ddof=1 = 0.7071, mean = 1.5, relative = 0.4714
+        expected = (0.7071 / 1.5) * 100
+        assert result == pytest.approx(expected, rel=1e-3)
+
+    def test_returns_percent(self):
+        # 10 % de variation connue
+        p1 = np.ones(10) * 1.0
+        p2 = np.ones(10) * 1.1   # +10 %
+        result = compute_sigma_probe([p1, p2])
+        assert 0 < result < 20  # dans un ordre de grandeur raisonnable
+
+    def test_near_zero_mean_handled(self):
+        # Ne doit pas lever d'erreur ni retourner nan/inf
+        p1 = np.array([1e-12, 1.0])
+        p2 = np.array([2e-12, 2.0])
+        result = compute_sigma_probe([p1, p2])
+        assert np.isfinite(result)
+        assert result >= 0.0
