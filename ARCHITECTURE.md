@@ -1,8 +1,8 @@
 # EIS Analyzer — Architecture & Contexte général
 ## Document de référence — Maintenance & Développement
 
-> Version courante : v2 — Repo : https://github.com/J-Facc/Interface-EIS-CV-measurement
-> Dernière mise à jour : 29/05/2026
+> Version courante : v3 — Repo : https://github.com/J-Facc/Interface-EIS-CV-measurement
+> Dernière mise à jour : 09/06/2026
 
 ---
 
@@ -23,7 +23,7 @@ log(Rct_norm) = a × log([c]) + b       LOD ≈ 10⁻¹⁷ M
 ```
 Interface-EIS-CV-measurement/          ← racine du repo GitHub
 │
-├── app.py                             ← point d'entrée Streamlit
+├── app.py                             ← point d'entrée Streamlit (navigation v3)
 ├── requirements.txt                   ← dépendances Python
 ├── launch.bat                         ← lanceur Windows (auto-update + venv)
 ├── .version                           ← SHA GitHub du dernier update local
@@ -37,7 +37,12 @@ Interface-EIS-CV-measurement/          ← racine du repo GitHub
 │   ├── loader.py                      ← import CSV/TXT, validation, moyennage réplicats
 │   ├── pipeline.py                    ← orchestrateur Import → Fit → Analyse
 │   ├── config.py                      ← chargement YAML + Pydantic AppSettings
-│   └── logger.py                      ← logging centralisé
+│   ├── logger.py                      ← logging centralisé
+│   ├── validator.py                   ← validation KK (lin-KK via impedance.py)
+│   ├── cv_loader.py                   ← chargement fichiers CV
+│   ├── cv_models.py                   ← CVScan, CVConcentrationGroup
+│   ├── cv_pipeline.py                 ← pipeline traitement CV
+│   └── experiment_io.py               ← sauvegarde/chargement session complète (ZIP)
 │
 ├── fits/                              ← système plugin : 1 fichier = 1 modèle
 │   ├── __init__.py
@@ -73,6 +78,65 @@ Interface-EIS-CV-measurement/          ← racine du repo GitHub
     └── workflows/
         └── validate.yml               ← CI : syntax check à chaque push
 ```
+
+---
+
+## 2b. Navigation v3 — Structure des pages
+
+```
+app.py  →  st.navigation({
+  "Données":     [0_import.py, 1_pretraitement.py],
+  "Analyse":     [A_eis.py,    B_cv.py           ],
+  "Comparaison": [C_comparatif.py                 ],
+  "Inférence":   [D_inference.py                  ],
+})
+```
+
+### Flux obligatoire
+
+```
+pages/0_import.py
+  → st.session_state['experiment']
+  → st.session_state['import_validated'] = True
+
+pages/1_pretraitement.py
+  → st.session_state['exclusions']
+  → st.session_state['experiment_clean']
+
+pages/A_eis.py, B_cv.py, C_comparatif.py, D_inference.py
+  ← lisent st.session_state['experiment_clean']
+  ← affichent st.warning + st.stop() si experiment_clean absent
+```
+
+### Structure de st.session_state['experiment']
+
+```python
+{
+  "name":         str,
+  "date":         str,           # YYYY-MM-DD
+  "mode":         "eis_only" | "cv_only" | "both",
+  "concentrations": [float, ...],
+  "n_electrodes": int,
+  "n_replicats":  int,
+  "probe": {
+    "eis": {"electrode_1": [BytesIO, ...], "electrode_2": [...]},
+    "cv":  {"electrode_1": [BytesIO, ...], ...},
+  },
+  "calibration": {
+    "eis": {"electrode_1": [[BytesIO, ...], ...], ...},
+    "cv":  {"electrode_1": [[BytesIO, ...], ...], ...},
+  },
+  "validation": { ... } | None,
+}
+```
+
+### core/experiment_io.py
+
+Sérialise/désérialise l'experiment dict en ZIP :
+- `save_experiment(experiment) -> bytes`  (alias `zip_experiment`)
+- `load_experiment(zip_bytes) -> dict`
+
+Format ZIP : `experiment.yaml` + `probe/electrode_N/rep_R.bin` + `calibration/sig/electrode_N/conc_C_rep_R.bin`
 
 ---
 

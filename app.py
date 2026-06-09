@@ -22,11 +22,15 @@ st.set_page_config(
 def _init_shared_state() -> None:
     """Crée les clés partagées si elles n'existent pas encore."""
     defaults = {
-        "eis_session": None,              # EISSession (page A)
+        "eis_session": None,
         "eis_config": None,
         "eis_validation": None,
-        "comparison_report": None,        # dict retourné par compute_full_report (page C)
-        "comparison_session_data": None,  # session_data brut pour predict_from_session (page D)
+        "comparison_report": None,
+        "comparison_session_data": None,
+        "experiment": None,
+        "experiment_clean": None,
+        "import_validated": False,
+        "exclusions": {},
     }
     for key, default in defaults.items():
         if key not in st.session_state:
@@ -41,9 +45,13 @@ _init_shared_state()
 
 pg = st.navigation(
     {
+        "Données": [
+            st.Page("pages/0_import.py",        title="Import",        icon="📂"),
+            st.Page("pages/1_pretraitement.py", title="Prétraitement", icon="🔬"),
+        ],
         "Analyse": [
-            st.Page("pages/A_eis.py", title="EIS seule",  icon="📡"),
-            st.Page("pages/B_cv.py",  title="CV seule",   icon="📈"),
+            st.Page("pages/A_eis.py", title="EIS seule", icon="📡"),
+            st.Page("pages/B_cv.py",  title="CV seule",  icon="📈"),
         ],
         "Comparaison": [
             st.Page("pages/C_comparatif.py", title="Comparatif", icon="⚖️"),
