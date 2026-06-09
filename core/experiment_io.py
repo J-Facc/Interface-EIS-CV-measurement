@@ -3,9 +3,9 @@
 Sauvegarde et chargement d'une session expérimentale complète (ZIP).
 
 Format ZIP :
-  experiment.yaml   — métadonnées (name, date, mode, concentrations, n_electrodes, n_replicats)
-  probe/electrode_1/rep_0.bin  — bytes bruts des fichiers probe
-  probe/electrode_2/rep_0.bin
+  experiment.yaml   — métadonnées + exclusions + flags
+  probe/eis/electrode_1/rep_0.bin  — bytes bruts des fichiers probe EIS
+  probe/cv/electrode_1/rep_0.bin   — bytes bruts des fichiers probe CV
   calibration/eis/electrode_1/conc_0_rep_0.bin
   calibration/cv/electrode_1/conc_0_rep_0.bin
   validation/eis/electrode_1/conc_0_rep_0.bin   (optionnel)
@@ -16,6 +16,7 @@ Aucun import Streamlit — logique métier pure.
 
 from __future__ import annotations
 
+import copy
 import io
 import zipfile
 from datetime import datetime
@@ -28,15 +29,23 @@ import yaml
 # Sauvegarde
 # ─────────────────────────────────────────────
 
-def save_experiment(experiment: Dict[str, Any], exclusions: Optional[Dict] = None, deleted_points: Optional[Dict] = None) -> bytes:
+def save_experiment(
+    experiment: Dict[str, Any],
+    exclusions: Optional[Dict] = None,
+    deleted_points: Optional[Dict] = None,
+    preprocessing_done: bool = False,
+) -> bytes:
     """
     Sérialise un dict experiment dans un ZIP en mémoire.
 
     Parameters
     ----------
     experiment : dict conforme à la structure définie dans pages/0_import.py
-    exclusions : dict[group_label -> set/list of int] — réplicats exclus
-    deleted_points : dict[label -> list[int]] — points exclus par spectre
+        probe structure : {sig_type: {electrode_k: [BytesIO, ...]}}
+    exclusions : dict 2D {e_str: {modality: {ci: [bool]}}}
+    deleted_points : dict {inner_label: [int]} — points exclus par spectre EIS
+    preprocessing_done : bool — si True, le ZIP peut être rechargé directement
+        en état post-prétraitement (exclusions seront réappliquées au rechargement)
 
     Returns
     -------
@@ -47,12 +56,13 @@ def save_experiment(experiment: Dict[str, Any], exclusions: Optional[Dict] = Non
 
         # ── métadonnées YAML ──────────────────────────────────────────────
         meta: Dict[str, Any] = {
-            "name":         experiment.get("name", ""),
-            "date":         experiment.get("date", datetime.now().strftime("%Y-%m-%d")),
-            "mode":         experiment.get("mode", "both"),
-            "concentrations": [float(c) for c in experiment.get("concentrations", [])],
-            "n_electrodes": int(experiment.get("n_electrodes", 2)),
-            "n_replicats":  int(experiment.get("n_replicats", 3)),
+            "name":             experiment.get("name", ""),
+            "date":             experiment.get("date", datetime.now().strftime("%Y-%m-%d")),
+            "mode":             experiment.get("mode", "both"),
+            "concentrations":   [float(c) for c in experiment.get("concentrations", [])],
+            "n_electrodes":     int(experiment.get("n_electrodes", 2)),
+            "n_replicats":      int(experiment.get("n_replicats", 3)),
+            "preprocessing_done": bool(preprocessing_done),
         }
 
         # Sérialiser les exclusions 2D {e_str: {modality: {ci: [bool]}}}
@@ -81,17 +91,18 @@ def save_experiment(experiment: Dict[str, Any], exclusions: Optional[Dict] = Non
 
         zf.writestr("experiment.yaml", yaml.dump(meta, allow_unicode=True))
 
-        # ── probe ─────────────────────────────────────────────────────────
+        # ── probe : {sig_type: {electrode_k: [BytesIO, ...]}} ────────────
         probe = experiment.get("probe") or {}
-        for elec_key, rep_list in probe.items():
-            if not rep_list:
+        for sig_type, elec_dict in probe.items():
+            if not isinstance(elec_dict, dict):
                 continue
-            for ri, bio in enumerate(rep_list):
-                if bio is None:
-                    continue
-                data = _read_bytesio(bio)
-                if data:
-                    zf.writestr(f"probe/{elec_key}/rep_{ri}.bin", data)
+            for elec_key, rep_list in elec_dict.items():
+                for ri, bio in enumerate(rep_list or []):
+                    if bio is None:
+                        continue
+                    data = _read_bytesio(bio)
+                    if data:
+                        zf.writestr(f"probe/{sig_type}/{elec_key}/rep_{ri}.bin", data)
 
         # ── calibration ───────────────────────────────────────────────────
         calibration = experiment.get("calibration") or {}
@@ -116,7 +127,7 @@ def save_experiment(experiment: Dict[str, Any], exclusions: Optional[Dict] = Non
 
         # ── validation (optionnel) ────────────────────────────────────────
         validation = experiment.get("validation") or {}
-        for sig_type, elec_dict in validation.items():
+        for sig_type, elec_dict in (validation or {}).items():
             if not elec_dict:
                 continue
             for elec_key, conc_list in elec_dict.items():
@@ -155,7 +166,10 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
 
     Returns
     -------
-    dict avec la même structure que st.session_state['experiment']
+    dict avec les clés :
+      name, date, mode, concentrations, n_electrodes, n_replicats,
+      probe, calibration, validation,
+      exclusions, deleted_points, preprocessing_done
 
     Raises
     ------
@@ -173,15 +187,18 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
         n_concs = len(meta.get("concentrations", []))
         mode    = meta.get("mode", "both")
 
-        # ── probe ─────────────────────────────────────────────────────────
-        probe: Dict[str, List[Optional[io.BytesIO]]] = {}
-        for e in range(1, n_elec + 1):
-            elec_key = f"electrode_{e}"
-            reps = _load_rep_list(zf, names, f"probe/{elec_key}")
-            probe[elec_key] = reps
+        sig_types = _sig_types_for_mode(mode)
+
+        # ── probe : {sig_type: {electrode_k: [BytesIO, ...]}} ────────────
+        probe: Dict[str, Any] = {}
+        for sig_type in sig_types:
+            probe[sig_type] = {}
+            for e in range(1, n_elec + 1):
+                elec_key = f"electrode_{e}"
+                reps = _load_rep_list(zf, names, f"probe/{sig_type}/{elec_key}")
+                probe[sig_type][elec_key] = reps
 
         # ── calibration ───────────────────────────────────────────────────
-        sig_types = _sig_types_for_mode(mode)
         calibration: Dict[str, Any] = {st_: None for st_ in ["eis", "cv"]}
         for sig_type in sig_types:
             elec_dict: Dict[str, List] = {}
@@ -198,14 +215,12 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
             calibration[sig_type] = elec_dict
 
         # ── validation (optionnel) ────────────────────────────────────────
-        has_validation = any(
-            n.startswith("validation/") for n in names
-        )
+        has_validation = any(n.startswith("validation/") for n in names)
         validation: Optional[Dict] = None
         if has_validation:
             validation = {}
             for sig_type in sig_types:
-                elec_dict = {}
+                elec_dict_v = {}
                 for e in range(1, n_elec + 1):
                     elec_key = f"electrode_{e}"
                     conc_list = []
@@ -217,14 +232,13 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
                             break
                         conc_list.append(reps)
                         ci += 1
-                    elec_dict[elec_key] = conc_list
-                validation[sig_type] = elec_dict
+                    elec_dict_v[elec_key] = conc_list
+                validation[sig_type] = elec_dict_v
 
         # ── exclusions et points supprimés (optionnel) ────────────────────
         raw_exclusions = meta.get("exclusions") or {}
         exclusions_out: Dict[str, Any] = {}
         if raw_exclusions:
-            # Détecte le format 2D {e_str: {modality: {ci_key: [bool]}}}
             first_val = next(iter(raw_exclusions.values()), None)
             if isinstance(first_val, dict):
                 for e_str, mod_dict in raw_exclusions.items():
@@ -240,18 +254,76 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
         deleted_points_out = {k: list(v) for k, v in raw_deleted.items()} if raw_deleted else {}
 
         return {
-            "name":           meta.get("name", ""),
-            "date":           meta.get("date", ""),
-            "mode":           mode,
-            "concentrations": meta.get("concentrations", []),
-            "n_electrodes":   n_elec,
-            "n_replicats":    int(meta.get("n_replicats", 3)),
-            "probe":          probe,
-            "calibration":    calibration,
-            "validation":     validation,
-            "exclusions":     exclusions_out,
-            "deleted_points": deleted_points_out,
+            "name":               meta.get("name", ""),
+            "date":               meta.get("date", ""),
+            "mode":               mode,
+            "concentrations":     meta.get("concentrations", []),
+            "n_electrodes":       n_elec,
+            "n_replicats":        int(meta.get("n_replicats", 3)),
+            "probe":              probe,
+            "calibration":        calibration,
+            "validation":         validation,
+            "exclusions":         exclusions_out,
+            "deleted_points":     deleted_points_out,
+            "preprocessing_done": bool(meta.get("preprocessing_done", False)),
         }
+
+
+# ─────────────────────────────────────────────
+# Application des exclusions (utilitaire partagé)
+# ─────────────────────────────────────────────
+
+def apply_exclusions(experiment: Dict[str, Any], exclusions: Dict) -> Dict[str, Any]:
+    """
+    Applique les exclusions 2D sur un dict experiment brut (BytesIO lists).
+
+    Parameters
+    ----------
+    experiment : dict experiment avec probe/calibration contenant des BytesIO
+    exclusions : dict 2D {e_str: {modality: {ci: [bool]}}}
+
+    Returns
+    -------
+    Copie profonde de experiment avec les réplicats exclus retirés.
+    """
+    exp_clean = copy.deepcopy(experiment)
+    mode      = exp_clean.get("mode", "both")
+    n_elec    = exp_clean.get("n_electrodes", 2)
+
+    def _excl(e_str: str, modality: str, ci) -> list:
+        return exclusions.get(e_str, {}).get(modality, {}).get(ci, [])
+
+    for e_idx in range(1, n_elec + 1):
+        e_str    = f"e{e_idx}"
+        elec_key = f"electrode_{e_idx}"
+
+        if mode in ("eis_only", "both"):
+            probe_eis = ((exp_clean.get("probe") or {}).get("eis") or {})
+            reps = probe_eis.get(elec_key) or []
+            excl = _excl(e_str, "eis", "probe")
+            probe_eis[elec_key] = [r for ri, r in enumerate(reps)
+                                   if not (ri < len(excl) and excl[ri])]
+
+            cal_eis = ((exp_clean.get("calibration") or {}).get("eis") or {})
+            for ci, rep_list in enumerate(cal_eis.get(elec_key) or []):
+                excl = _excl(e_str, "eis", ci)
+                cal_eis[elec_key][ci] = [r for ri, r in enumerate(rep_list or [])
+                                         if not (ri < len(excl) and excl[ri])]
+
+        if mode in ("cv_only", "both"):
+            probe_cv = ((exp_clean.get("probe") or {}).get("cv") or {})
+            reps = probe_cv.get(elec_key) or []
+            excl = _excl(e_str, "cv", "probe")
+            probe_cv[elec_key] = [r for ri, r in enumerate(reps)
+                                  if not (ri < len(excl) and excl[ri])]
+
+            cal_cv = ((exp_clean.get("calibration") or {}).get("cv") or {})
+            for ci, rep_list in enumerate(cal_cv.get(elec_key) or []):
+                excl = _excl(e_str, "cv", ci)
+                cal_cv[elec_key][ci] = [r for ri, r in enumerate(rep_list or [])
+                                        if not (ri < len(excl) and excl[ri])]
+
+    return exp_clean
 
 
 # ─────────────────────────────────────────────
