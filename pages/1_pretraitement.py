@@ -15,7 +15,6 @@ Clés deleted_points : f"deleted_points_{e_str}_{modality}_c{ci_str}_r{ri}"
 
 from __future__ import annotations
 
-import copy
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +25,7 @@ import streamlit as st
 
 from core.loader import load_spectrum, average_replicates
 from core.cv_loader import load_cv_file, average_cv_replicates
+from core.experiment_io import apply_exclusions as _apply_exclusions
 from core.models import EISSpectrum
 from core.cv_models import CVScan
 from plotting.eis_plots import nyquist_figure as _nyquist_figure
@@ -614,43 +614,6 @@ def _count_spectra(experiment: dict) -> dict:
     return result
 
 
-def _apply_exclusions(experiment: dict, exclusions: dict) -> dict:
-    exp_clean = copy.deepcopy(experiment)
-    mode      = exp_clean.get("mode", "both")
-    n_elec    = exp_clean.get("n_electrodes", 2)
-
-    for e_idx in range(1, n_elec + 1):
-        e_str    = f"e{e_idx}"
-        elec_key = f"electrode_{e_idx}"
-
-        if mode in ("eis_only", "both"):
-            probe_eis = ((exp_clean.get("probe") or {}).get("eis") or {})
-            reps = probe_eis.get(elec_key) or []
-            excl = _excl_get(exclusions, e_str, "eis", "probe")
-            probe_eis[elec_key] = [r for ri, r in enumerate(reps)
-                                   if not (ri < len(excl) and excl[ri])]
-
-            cal_eis = ((exp_clean.get("calibration") or {}).get("eis") or {})
-            for ci, rep_list in enumerate(cal_eis.get(elec_key) or []):
-                excl = _excl_get(exclusions, e_str, "eis", ci)
-                cal_eis[elec_key][ci] = [r for ri, r in enumerate(rep_list or [])
-                                         if not (ri < len(excl) and excl[ri])]
-
-        if mode in ("cv_only", "both"):
-            probe_cv = ((exp_clean.get("probe") or {}).get("cv") or {})
-            reps = probe_cv.get(elec_key) or []
-            excl = _excl_get(exclusions, e_str, "cv", "probe")
-            probe_cv[elec_key] = [r for ri, r in enumerate(reps)
-                                  if not (ri < len(excl) and excl[ri])]
-
-            cal_cv = ((exp_clean.get("calibration") or {}).get("cv") or {})
-            for ci, rep_list in enumerate(cal_cv.get(elec_key) or []):
-                excl = _excl_get(exclusions, e_str, "cv", ci)
-                cal_cv[elec_key][ci] = [r for ri, r in enumerate(rep_list or [])
-                                        if not (ri < len(excl) and excl[ri])]
-
-    return exp_clean
-
 
 def _run_kk_validation(exp_clean: dict) -> None:
     """Lance la validation KK sur tous les groupes EIS de l'expérience nettoyée."""
@@ -702,8 +665,8 @@ def _section_save(experiment: dict, exclusions: dict, dp_labels: list) -> None:
     st.divider()
     st.markdown("### 💾 Sauvegarder l'expérience prétraitée")
     st.caption(
-        "Sauvegarde les données originales + les exclusions de courbes "
-        "et de points. Rechargeable depuis la page Import."
+        "Inclut les données brutes + toutes les exclusions. "
+        "Au rechargement, vous pourrez aller directement à l'analyse."
     )
 
     col1, col2 = st.columns([2, 1])
@@ -728,6 +691,7 @@ def _section_save(experiment: dict, exclusions: dict, dp_labels: list) -> None:
             experiment,
             exclusions=exclusions,
             deleted_points=deleted_points,
+            preprocessing_done=True,
         )
         st.download_button(
             label=f"📥 Télécharger {save_name}.zip",

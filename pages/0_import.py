@@ -11,7 +11,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from core.experiment_io import load_experiment, save_experiment
+from core.experiment_io import load_experiment, save_experiment, apply_exclusions
 
 
 # ─────────────────────────────────────────────
@@ -75,17 +75,17 @@ def _section_load_existing() -> None:
     if zip_file is not None:
         try:
             exp = load_experiment(zip_file.read())
-            # Pré-remplir le session_state depuis le ZIP chargé
-            st.session_state[_sk("mode")] = _mode_from_key(exp["mode"])
-            st.session_state[_sk("n_conc")] = len(exp.get("concentrations") or [])
-            st.session_state[_sk("n_elec")] = exp.get("n_electrodes", 2)
-            st.session_state[_sk("n_rep")]  = exp.get("n_replicats", 3)
+
+            # Pré-remplir les champs du formulaire
+            import math
+            st.session_state[_sk("mode")]     = _mode_from_key(exp["mode"])
+            st.session_state[_sk("n_conc")]   = len(exp.get("concentrations") or [])
+            st.session_state[_sk("n_elec")]   = exp.get("n_electrodes", 2)
+            st.session_state[_sk("n_rep")]    = exp.get("n_replicats", 3)
             st.session_state[_sk("exp_name")] = exp.get("name", "")
-            # Reconstituer conc_params
-            concs = exp.get("concentrations") or []
+            concs  = exp.get("concentrations") or []
             params = []
             for c in concs:
-                import math
                 if c > 0:
                     exp10 = int(math.floor(math.log10(c)))
                     mant  = round(c / (10 ** exp10), 2)
@@ -93,17 +93,44 @@ def _section_load_existing() -> None:
                     exp10, mant = -9, 1.0
                 params.append({"mantisse": mant, "exposant": exp10})
             st.session_state[_sk("conc_params")] = params
-            # Stocker l'expérience chargée pour pré-remplir les uploaders
-            st.session_state[_sk("loaded_exp")] = exp
-            # Restaurer les exclusions et points supprimés si présents dans le ZIP
+
+            # Valider automatiquement : stocker experiment + marquer import OK
+            st.session_state["experiment"]     = exp
+            st.session_state["import_validated"] = True
+
+            # Restaurer exclusions et points supprimés
             if exp.get("exclusions"):
                 st.session_state["exclusions"] = exp["exclusions"]
+            else:
+                st.session_state.pop("exclusions", None)
             if exp.get("deleted_points"):
                 for lbl, pts in exp["deleted_points"].items():
                     st.session_state[f"deleted_points_{lbl}"] = pts
-            st.success(
-                f"✅ Expérience chargée : **{exp.get('name', '—')}** ({exp.get('date', '—')})"
-            )
+
+            # ZIP post-prétraitement → reconstruire experiment_clean directement
+            if exp.get("preprocessing_done") and exp.get("exclusions"):
+                exp_clean = apply_exclusions(exp, exp["exclusions"])
+                st.session_state["experiment_clean"]  = exp_clean
+                st.session_state["preprocessing_done"] = True
+                for key in ("eis_session", "eis_validation",
+                            "comparison_report", "comparison_session_data"):
+                    st.session_state[key] = None
+                st.success(
+                    f"✅ Expérience **{exp.get('name', '—')}** chargée "
+                    f"avec prétraitement — vous pouvez aller directement à l'analyse."
+                )
+                st.page_link("pages/A_eis.py",
+                             label="→ Aller à l'analyse EIS", icon="📡")
+            else:
+                st.session_state.pop("experiment_clean", None)
+                st.session_state["preprocessing_done"] = False
+                st.success(
+                    f"✅ Expérience **{exp.get('name', '—')}** ({exp.get('date', '—')}) chargée "
+                    f"— passez au prétraitement."
+                )
+                st.page_link("pages/1_pretraitement.py",
+                             label="→ Aller au prétraitement", icon="🔬")
+
         except Exception as exc:
             st.error(f"❌ Impossible de charger le ZIP : {exc}")
 
