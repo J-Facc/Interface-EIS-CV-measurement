@@ -124,12 +124,12 @@ def _run_cv_analysis(data: dict) -> dict | None:
 
     errors = []
 
-    # --- Probe : un fichier par électrode (commun à toutes les concentrations) ---
+    # --- Probe : liste de réplicats par électrode, moyennés sur toutes les électrodes ---
     probe_scans_all = []
     for e in range(1, n_elec + 1):
-        pf = probe_dict.get(f"electrode_{e}")
-        if pf is not None:
-            sc = _load_scan_from_file(pf, f"probe_e{e}", 0.0, "probe")
+        rep_files = probe_dict.get(f"electrode_{e}") or []
+        for ri, pf in enumerate(rep_files):
+            sc = _load_scan_from_file(pf, f"probe_e{e}_r{ri+1}", 0.0, "probe")
             if sc is not None:
                 probe_scans_all.append(sc)
 

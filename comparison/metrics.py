@@ -332,3 +332,46 @@ def compute_normalization_reduction(
     if norm == 0.0:
         return np.inf if raw > 0.0 else 1.0
     return raw / norm
+
+
+def compute_sigma_probe(probe_spectra: list) -> float:
+    """
+    Écart-type inter-réplicats du probe, moyenné sur toutes les fréquences.
+
+    Mesure la stabilité de la fonctionnalisation pendant la session de mesure.
+    Un sigma_probe élevé indique une dérive ou une inhomogénéité de surface
+    qui dégradera la qualité de la normalisation.
+
+    Parameters
+    ----------
+    probe_spectra : list[np.ndarray]
+        Liste de 1 à N réplicats probe (spectres ou vecteurs de même shape).
+
+    Returns
+    -------
+    float
+        Écart-type relatif moyen en % : mean(std / |mean|) × 100.
+        Retourne 0.0 si moins de 2 réplicats ou si le tableau est vide.
+
+    Notes
+    -----
+    Interprétation :
+        < 2 %  → fonctionnalisation stable, normalisation fiable
+        2–5 %  → variabilité modérée, surveiller l'impact sur σ_inter
+        > 5 %  → instabilité de surface significative
+    """
+    if not probe_spectra or len(probe_spectra) < 2:
+        return 0.0
+
+    stack = np.stack([np.asarray(p, dtype=float) for p in probe_spectra], axis=0)
+    std_per_freq  = np.std(stack, axis=0, ddof=1)
+    mean_per_freq = np.mean(stack, axis=0)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        relative_std = np.where(
+            np.abs(mean_per_freq) > 1e-10,
+            std_per_freq / np.abs(mean_per_freq),
+            0.0,
+        )
+
+    return float(np.mean(relative_std)) * 100.0

@@ -78,21 +78,30 @@ def _make_calibration_data(n_conc=7, n_rep=2, n_freq=20, n_pot=15):
 # ---------------------------------------------------------------------------
 
 class TestNormalizeByProbe:
+    # probe_spectra est maintenant une liste de 1 à N réplicats
     def test_identical_signal_returns_zeros(self):
         probe = np.array([1.0, 2.0, 3.0])
-        result = normalize_by_probe(probe, probe)
+        result = normalize_by_probe(probe, [probe])
         np.testing.assert_array_almost_equal(result, np.zeros(3))
 
     def test_double_signal_returns_ones(self):
         probe = np.array([1.0, 2.0, 4.0])
         spectrum = 2.0 * probe
-        result = normalize_by_probe(spectrum, probe)
+        result = normalize_by_probe(spectrum, [probe])
         np.testing.assert_array_almost_equal(result, np.ones(3))
+
+    def test_multiple_replicates_uses_mean(self):
+        # probe_mean = [1.5, 2.5, 3.5]
+        p1 = np.array([1.0, 2.0, 3.0])
+        p2 = np.array([2.0, 3.0, 4.0])
+        spectrum = np.array([1.5, 2.5, 3.5])   # spectrum == probe_mean → zeros
+        result = normalize_by_probe(spectrum, [p1, p2])
+        np.testing.assert_array_almost_equal(result, np.zeros(3))
 
     def test_division_by_zero_returns_zero(self):
         probe = np.array([0.0, 1.0, 2.0])
         spectrum = np.array([5.0, 2.0, 4.0])
-        result = normalize_by_probe(spectrum, probe)
+        result = normalize_by_probe(spectrum, [probe])
         assert result[0] == 0.0
         assert not np.any(np.isnan(result))
         assert not np.any(np.isinf(result))
@@ -100,25 +109,29 @@ class TestNormalizeByProbe:
     def test_near_zero_probe_treated_as_zero(self):
         probe = np.array([1e-12, 1.0])
         spectrum = np.array([2e-12, 2.0])
-        result = normalize_by_probe(spectrum, probe)
+        result = normalize_by_probe(spectrum, [probe])
         assert result[0] == 0.0
         assert result[1] == pytest.approx(1.0)
 
+    def test_empty_probe_list_raises(self):
+        with pytest.raises(ValueError):
+            normalize_by_probe(np.array([1.0, 2.0]), [])
+
     def test_shape_mismatch_raises(self):
         with pytest.raises(ValueError):
-            normalize_by_probe(np.array([1.0, 2.0]), np.array([1.0]))
+            normalize_by_probe(np.array([1.0, 2.0]), [np.array([1.0])])
 
     def test_output_shape(self):
         probe = np.array([1.0, 2.0, 3.0, 4.0])
         spectrum = np.array([2.0, 4.0, 6.0, 8.0])
-        result = normalize_by_probe(spectrum, probe)
+        result = normalize_by_probe(spectrum, [probe])
         assert result.shape == probe.shape
 
     def test_negative_values(self):
         # Courants CV peuvent être négatifs
         probe = np.array([-2.0, -1.0, 1.0])
         spectrum = np.array([-4.0, -2.0, 2.0])
-        result = normalize_by_probe(spectrum, probe)
+        result = normalize_by_probe(spectrum, [probe])
         np.testing.assert_array_almost_equal(result, np.ones(3))
 
 
