@@ -719,3 +719,244 @@ def _build_pred_vs_true(methods_results: dict, theme_mode: str) -> go.Figure:
         return fig
 
     return plot_predicted_vs_true(results_by_method, theme_mode)
+
+
+# ---------------------------------------------------------------------------
+# Inférence sur une nouvelle mesure
+# ---------------------------------------------------------------------------
+
+def predict_from_session(
+    session_data: dict,
+    new_signals: dict,
+) -> dict:
+    """
+    Prédit la concentration d'une mesure inconnue à partir d'une session de calibration.
+
+    Les modèles OLS (méthodes A) et PLS (méthodes B) sont reconstruits à partir
+    de session_data. La normalisation utilise le probe de la NOUVELLE mesure
+    (pas le probe de calibration) pour capturer l'état actuel de la surface.
+
+    Parameters
+    ----------
+    session_data : dict
+        Session de calibration produite par _load_session_data() dans C_comparatif.
+        Doit contenir : concentrations, eis_rct_fit, eis_rct_drt, cv_delta_I,
+        eis_spectra, cv_spectra, freq_grid, pot_grid,
+        probe_rct_fit, probe_rct_drt, probe_delta_I.
+    new_signals : dict
+        Signaux de la mesure inconnue :
+        {
+          "rct_fit_e1": float | None,    # Rct par fit Randles, électrode 1
+          "rct_fit_e2": float | None,    # idem électrode 2
+          "rct_drt_e1": float | None,    # Rct par DRT, électrode 1
+          "rct_drt_e2": float | None,    # idem électrode 2
+          "delta_I_e1": float | None,    # ΔI_pic CV, électrode 1
+          "delta_I_e2": float | None,    # idem électrode 2
+          "eis_feat_e1": np.ndarray | None,  # [Zre_norm, Zim_norm] interpolés
+          "eis_feat_e2": np.ndarray | None,
+          "cv_feat_e1":  np.ndarray | None,  # I_norm interpolé
+          "cv_feat_e2":  np.ndarray | None,
+          "probe_rct_fit": float,    # Rct probe nouvelle mesure (Randles)
+          "probe_rct_drt": float,    # Rct probe nouvelle mesure (DRT)
+          "probe_delta_I": float,    # I_pic probe nouvelle mesure (CV)
+        }
+
+    Returns
+    -------
+    dict
+        {
+          method_name: {
+            "log10_c_e1":   float | None,   # prédiction log10([c]) électrode 1
+            "log10_c_e2":   float | None,   # prédiction log10([c]) électrode 2
+            "log10_c_mean": float | None,   # moyenne des deux électrodes
+            "c_mean":       float | None,   # 10 ** log10_c_mean (mol/L)
+            "ci_factor":    float | None,   # facteur multiplicatif IC 95 % (= 10^(1.96*sigma))
+            "sigma_pred":   float | None,   # incertitude en décades (RMSEP ou RMSECV)
+            "coherent":     bool,           # True si |pred_e1 - pred_e2| < 2 * sigma_inter_calib
+            "delta_elec":   float | None,   # |pred_e1 - pred_e2|
+          },
+          ...
+        }
+    """
+    concs    = np.asarray(session_data["concentrations"], dtype=float)
+    log_c    = _log10_array(concs)
+
+    probe_rct_fit_new = float(new_signals.get("probe_rct_fit") or 0)
+    probe_rct_drt_new = float(new_signals.get("probe_rct_drt") or 0)
+    probe_dI_new      = float(new_signals.get("probe_delta_I") or 0)
+
+    def _norm_scalar(val, probe_new):
+        if val is None or probe_new == 0:
+            return None
+        return (float(val) - probe_new) / abs(probe_new)
+
+    # Signaux normalisés de la nouvelle mesure
+    new_norm = {
+        "A1_e1": _norm_scalar(new_signals.get("delta_I_e1"),  probe_dI_new),
+        "A1_e2": _norm_scalar(new_signals.get("delta_I_e2"),  probe_dI_new),
+        "A2_e1": _norm_scalar(new_signals.get("rct_fit_e1"),  probe_rct_fit_new),
+        "A2_e2": _norm_scalar(new_signals.get("rct_fit_e2"),  probe_rct_fit_new),
+        "A3_e1": _norm_scalar(new_signals.get("rct_drt_e1"),  probe_rct_drt_new),
+        "A3_e2": _norm_scalar(new_signals.get("rct_drt_e2"),  probe_rct_drt_new),
+    }
+
+    # Reconstruit les OLS de calibration (méthodes A)
+    def _ols_model(raw_e1_list, raw_e2_list, probe_calib):
+        """Retourne (slope, intercept) OLS recalibré, ou None si pas de données."""
+        if not raw_e1_list:
+            return None
+        raw_e1 = np.asarray(raw_e1_list, dtype=float)
+        raw_e2 = np.asarray(raw_e2_list, dtype=float) if raw_e2_list else None
+
+        def _norm_arr(arr, p):
+            return (arr - p) / abs(p) if p != 0 else arr
+
+        norm1 = _norm_arr(raw_e1, probe_calib)
+        norm2 = _norm_arr(raw_e2, probe_calib) if raw_e2 is not None else None
+        norm_mean = (norm1 + norm2) / 2.0 if norm2 is not None else norm1
+
+        valid = np.isfinite(norm_mean) & np.isfinite(log_c)
+        if valid.sum() < 2:
+            return None
+        r = stats.linregress(norm_mean[valid], log_c[valid])
+        return r.slope, r.intercept
+
+    ols_A1 = _ols_model(
+        session_data["cv_delta_I"].get("e1", []),
+        session_data["cv_delta_I"].get("e2"),
+        session_data.get("probe_delta_I", 0),
+    )
+    ols_A2 = _ols_model(
+        session_data["eis_rct_fit"].get("e1", []),
+        session_data["eis_rct_fit"].get("e2"),
+        session_data.get("probe_rct_fit", 0),
+    )
+    ols_A3 = _ols_model(
+        session_data["eis_rct_drt"].get("e1", []),
+        session_data["eis_rct_drt"].get("e2"),
+        session_data.get("probe_rct_drt", 0),
+    )
+
+    def _predict_ols(ols, norm_e1, norm_e2):
+        if ols is None:
+            return None, None
+        slope, intercept = ols
+        p1 = slope * norm_e1 + intercept if norm_e1 is not None else None
+        p2 = slope * norm_e2 + intercept if norm_e2 is not None else None
+        return p1, p2
+
+    # Reconstruit les modèles PLS de calibration (méthodes B)
+    def _train_pls_model(X_list_e1, X_list_e2, log_c_arr, n_components=2):
+        """Entraîne un PLSRegression sur les données de calibration."""
+        rows = list(X_list_e1 or [])
+        if X_list_e2:
+            rows += list(X_list_e2)
+        if not rows:
+            return None, None
+        X = np.array([np.asarray(r, dtype=float) for r in rows], dtype=float)
+        n_elec = 2 if X_list_e2 else 1
+        y = np.concatenate([log_c_arr] * n_elec)
+        valid = np.isfinite(y) & np.all(np.isfinite(X), axis=1)
+        if valid.sum() < max(2, n_components + 1):
+            return None, None
+        sc = StandardScaler()
+        Xs = sc.fit_transform(X[valid])
+        k = min(n_components, Xs.shape[1], valid.sum() - 1)
+        model = PLSRegression(n_components=max(1, k), scale=False)
+        model.fit(Xs, y[valid])
+        return model, sc
+
+    def _predict_pls(model, scaler, feat_e1, feat_e2):
+        if model is None or scaler is None:
+            return None, None
+        def _pred(feat):
+            if feat is None:
+                return None
+            x = np.asarray(feat, dtype=float).reshape(1, -1)
+            xs = scaler.transform(x)
+            return float(model.predict(xs).ravel()[0])
+        return _pred(feat_e1), _pred(feat_e2)
+
+    eis_X_e1 = session_data.get("eis_spectra", {}).get("e1", [])
+    eis_X_e2 = session_data.get("eis_spectra", {}).get("e2")
+    cv_X_e1  = session_data.get("cv_spectra",  {}).get("e1", [])
+    cv_X_e2  = session_data.get("cv_spectra",  {}).get("e2")
+
+    def _concat(a, b):
+        if a is None or b is None:
+            return None
+        return np.concatenate([np.asarray(a), np.asarray(b)])
+
+    b3_X_e1 = [_concat(e, c) for e, c in zip(eis_X_e1, cv_X_e1)] if eis_X_e1 and cv_X_e1 else []
+    b3_X_e2 = [_concat(e, c) for e, c in zip(eis_X_e2 or [], cv_X_e2 or [])] if eis_X_e2 and cv_X_e2 else None
+
+    pls_B1 = _train_pls_model(cv_X_e1,   cv_X_e2,   log_c)
+    pls_B2 = _train_pls_model(eis_X_e1,  eis_X_e2,  log_c)
+    pls_B3 = _train_pls_model(b3_X_e1,   b3_X_e2,   log_c)
+
+    eis_e1_new = new_signals.get("eis_feat_e1")
+    eis_e2_new = new_signals.get("eis_feat_e2")
+    cv_e1_new  = new_signals.get("cv_feat_e1")
+    cv_e2_new  = new_signals.get("cv_feat_e2")
+    b3_e1_new  = _concat(eis_e1_new, cv_e1_new)
+    b3_e2_new  = _concat(eis_e2_new, cv_e2_new)
+
+    # ---------- Assemblage des prédictions ----------
+    raw_predictions = {
+        "A1": _predict_ols(ols_A1, new_norm["A1_e1"], new_norm["A1_e2"]),
+        "A2": _predict_ols(ols_A2, new_norm["A2_e1"], new_norm["A2_e2"]),
+        "A3": _predict_ols(ols_A3, new_norm["A3_e1"], new_norm["A3_e2"]),
+        "B1": _predict_pls(pls_B1[0], pls_B1[1], cv_e1_new,  cv_e2_new),
+        "B2": _predict_pls(pls_B2[0], pls_B2[1], eis_e1_new, eis_e2_new),
+        "B3": _predict_pls(pls_B3[0], pls_B3[1], b3_e1_new,  b3_e2_new),
+    }
+
+    # Incertitude : RMSEP si dispo, sinon RMSECV
+    # (accédé depuis session_data si un rapport a déjà été calculé)
+    saved_report = session_data.get("_report")
+
+    def _sigma(method_name):
+        if saved_report:
+            res = saved_report.get("methods", {}).get(method_name, {})
+            v = res.get("rmsep") or res.get("rmsecv")
+            if v and np.isfinite(v):
+                return float(v)
+        return None
+
+    # sigma_inter de calibration pour cohérence inter-électrode
+    def _sigma_inter_calib(method_name):
+        if saved_report:
+            res = saved_report.get("methods", {}).get(method_name, {})
+            v = res.get("sigma_inter_norm") or res.get("sigma_inter_raw")
+            if v and np.isfinite(v):
+                return float(v)
+        return None
+
+    results = {}
+    for m, (p1, p2) in raw_predictions.items():
+        if p1 is None and p2 is None:
+            continue
+
+        vals = [v for v in (p1, p2) if v is not None]
+        mean = float(np.mean(vals)) if vals else None
+        c_lin = float(10.0 ** mean) if mean is not None else None
+
+        sigma = _sigma(m)
+        ci_factor = float(10 ** (1.96 * sigma)) if sigma is not None else None
+
+        delta_elec = abs(p1 - p2) if (p1 is not None and p2 is not None) else None
+        s_inter = _sigma_inter_calib(m)
+        coherent = (delta_elec < 2 * s_inter) if (delta_elec is not None and s_inter) else True
+
+        results[m] = {
+            "log10_c_e1":   p1,
+            "log10_c_e2":   p2,
+            "log10_c_mean": mean,
+            "c_mean":       c_lin,
+            "ci_factor":    ci_factor,
+            "sigma_pred":   sigma,
+            "coherent":     coherent,
+            "delta_elec":   delta_elec,
+        }
+
+    return results
