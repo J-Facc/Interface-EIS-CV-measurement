@@ -60,14 +60,14 @@ def _extract_peaks(scan: CVScan) -> dict:
 
 def _normalize_peak(I_pic_hyb: float, I_pic_probe: float) -> float:
     """
-    ΔI_norm = (I_pic_hyb − I_pic_probe) / |I_pic_probe|
+    ΔI_norm = |I_pic_hyb − I_pic_probe| / |I_pic_probe|
 
-    Retourne 0.0 si |I_pic_probe| < 1e-15 A pour éviter les divisions par zéro.
+    Toujours >= 0. Retourne 0.0 si |I_pic_probe| < 1e-15 A.
     """
     denom = abs(I_pic_probe)
     if denom < 1e-15:
         return 0.0
-    return (I_pic_hyb - I_pic_probe) / denom
+    return abs(I_pic_hyb - I_pic_probe) / denom
 
 
 # ---------------------------------------------------------------------------
@@ -262,13 +262,15 @@ def _fig_voltammograms(result: dict) -> go.Figure:
         for e in (1, 2):
             avg = grp.get(f"avg_e{e}")
             if avg is not None:
-                fig.add_trace(go.Scatter(
-                    x=avg.E, y=avg.I * 1e6,
-                    mode="lines",
-                    name=f"{grp['label']} – élec.{e}",
-                    line=dict(color=color),
-                    legendgroup=grp["label"],
-                ))
+                y_values = avg.I * 1e6
+                if np.any(np.isfinite(y_values)):
+                    fig.add_trace(go.Scatter(
+                        x=avg.E, y=y_values,
+                        mode="lines",
+                        name=f"{grp['label']} – élec.{e}",
+                        line=dict(color=color, width=1.5),
+                        legendgroup=grp["label"],
+                    ))
 
     fig.update_layout(
         title="Voltammogrammes CV — Courant vs Potentiel",
@@ -307,24 +309,27 @@ def _fig_pic_redox(result: dict) -> go.Figure:
 
 
 def _fig_calibration(ols: dict) -> go.Figure:
-    """Droite OLS + IC 95 % + nuage de points."""
+    """Droite OLS + IC 95 % + nuage de points. X = log₁₀([c]), Y = ΔI_norm."""
     fig = go.Figure()
 
+    # Points expérimentaux : x = log10([c]), y = ΔI_norm
     fig.add_trace(go.Scatter(
-        x=ols["x_data"], y=ols["y_data"],
+        x=ols["y_data"], y=ols["x_data"],
         mode="markers",
         name="Données",
         marker=dict(size=10, color="steelblue"),
     ))
+    # Droite OLS
     fig.add_trace(go.Scatter(
-        x=ols["x_fit"], y=ols["y_fit"],
+        x=ols["y_fit"], y=ols["x_fit"],
         mode="lines",
         name=f"OLS (R²={ols['r2']:.3f})",
         line=dict(color="firebrick", width=2),
     ))
+    # IC 95 % — bande horizontale (log[c] varie, ΔI_norm fixe par x_fit)
     fig.add_trace(go.Scatter(
-        x=np.concatenate([ols["x_fit"], ols["x_fit"][::-1]]),
-        y=np.concatenate([ols["ci_high"], ols["ci_low"][::-1]]),
+        x=np.concatenate([ols["ci_low"], ols["ci_high"][::-1]]),
+        y=np.concatenate([ols["x_fit"], ols["x_fit"][::-1]]),
         fill="toself",
         fillcolor="rgba(178,34,34,0.10)",
         line=dict(color="rgba(0,0,0,0)"),
@@ -344,8 +349,8 @@ def _fig_calibration(ols: dict) -> go.Figure:
     )
     fig.update_layout(
         title="Calibration CV — Régression OLS",
-        xaxis_title="ΔI_norm",
-        yaxis_title="log₁₀([c] / M)",
+        xaxis_title="log₁₀([c] / M)",
+        yaxis_title="ΔI_norm = |ΔI| / |I_probe|",
     )
     return fig
 

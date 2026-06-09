@@ -40,9 +40,12 @@ Structure de session_data attendue
 }
 """
 
+import logging
 import numpy as np
 import plotly.graph_objects as go
 from scipy import stats
+
+logger = logging.getLogger(__name__)
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.preprocessing import StandardScaler
 
@@ -149,7 +152,11 @@ def _metrics_scalar(
     # --- sigma_intra : std des deux électrodes à chaque concentration ---
     if signal_norm_e2 is not None:
         per_conc = np.stack([signal_norm_e1, signal_norm_e2], axis=1)  # (n_conc, 2)
-        sigma_intra = float(np.nanmean([compute_sigma_intra(row) for row in per_conc]))
+        per_conc_valid = [row for row in per_conc if np.any(np.isfinite(row))]
+        if per_conc_valid:
+            sigma_intra = float(np.nanmean([compute_sigma_intra(row) for row in per_conc_valid]))
+        else:
+            sigma_intra = float('nan')
     else:
         sigma_intra = 0.0
 
@@ -157,19 +164,33 @@ def _metrics_scalar(
     if signal_e2 is not None and signal_probe > 0:
         raw_e1 = signal_e1 / signal_probe
         raw_e2 = signal_e2 / signal_probe
-        sigma_inter_raw = float(np.nanmean([
-            compute_sigma_inter(float(r1), float(r2))
+        pairs_raw = [
+            (float(r1), float(r2))
             for r1, r2 in zip(raw_e1, raw_e2)
-        ]))
+            if np.isfinite(r1) and np.isfinite(r2)
+        ]
+        if pairs_raw:
+            sigma_inter_raw = float(np.nanmean([
+                compute_sigma_inter(r1, r2) for r1, r2 in pairs_raw
+            ]))
+        else:
+            sigma_inter_raw = float('nan')
     else:
         sigma_inter_raw = 0.0
 
     # --- sigma_inter (normalisé) ---
     if signal_norm_e2 is not None:
-        sigma_inter_norm = float(np.nanmean([
-            compute_sigma_inter(float(n1), float(n2))
+        pairs_norm = [
+            (float(n1), float(n2))
             for n1, n2 in zip(signal_norm_e1, signal_norm_e2)
-        ]))
+            if np.isfinite(n1) and np.isfinite(n2)
+        ]
+        if pairs_norm:
+            sigma_inter_norm = float(np.nanmean([
+                compute_sigma_inter(n1, n2) for n1, n2 in pairs_norm
+            ]))
+        else:
+            sigma_inter_norm = float('nan')
     else:
         sigma_inter_norm = 0.0
 
@@ -593,6 +614,13 @@ def compute_full_report(session_data: dict, config=None) -> dict:
     # -----------------------------------------------------------------------
     # Calcul des 6 méthodes
     # -----------------------------------------------------------------------
+    logger.info("A1 cv_delta_I e1 : %s", cv_dI_e1)
+    logger.info("A1 norm_dI e1   : %s", norm_dI_e1)
+    logger.info("A3 rct_drt e1   : %s", rct_drt_e1)
+    logger.info("A3 norm_drt e1  : %s", norm_rct_drt_e1)
+    logger.info("probe_dI=%.4g  probe_rct_fit=%.4g  probe_rct_drt=%.4g",
+                probe_dI, probe_rct_fit, probe_rct_drt)
+
     methods_results: dict = {}
 
     methods_results["A1"] = _metrics_scalar(

@@ -52,8 +52,8 @@ _INTERPRET = {
 
 | Valeur | Signification |
 |--------|---------------|
-| \|biais\| < 0.2 décade | acceptable |
-| \|biais\| > 0.5 décade | erreur systématique significative à investiguer |
+| |biais| < 0.2 décade | acceptable |
+| |biais| > 0.5 décade | erreur systématique significative à investiguer |
 
 **Causes fréquentes :**
 - Biais positif aux hautes concentrations → saturation du signal non modélisée
@@ -176,7 +176,7 @@ def _read_file(uploaded_file):
     return content, uploaded_file.name
 
 
-def _fit_eis_spectrum(spectrum, config, model_names=("randles_full", "drt_fit")):
+def _fit_eis_spectrum(spectrum, config, model_names=("randles_full", "drt_fft")):
     """Ajuste un spectre EIS avec les modèles demandés. Retourne dict {name: FitResult}."""
     results = {}
     for name in model_names:
@@ -250,7 +250,7 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
     probe_eis = average_replicates(probe_eis_spectra)
     probe_fits = _fit_eis_spectrum(probe_eis, config)
     out["probe_rct_fit"] = probe_fits.get("randles_full") and probe_fits["randles_full"].Rct
-    out["probe_rct_drt"] = probe_fits.get("drt_fit") and probe_fits["drt_fit"].Rct
+    out["probe_rct_drt"] = probe_fits.get("drt_fft") and probe_fits["drt_fft"].Rct
     if out["probe_rct_fit"] is None:
         out["probe_rct_fit"] = 0.0
     if out["probe_rct_drt"] is None:
@@ -317,7 +317,7 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
                 rct_fit = fits_h.get("randles_full")
                 out["eis_rct_fit"][ek].append(float(rct_fit.Rct) if rct_fit else np.nan)
 
-                rct_drt = fits_h.get("drt_fit")
+                rct_drt = fits_h.get("drt_fft")
                 out["eis_rct_drt"][ek].append(float(rct_drt.Rct) if rct_drt else np.nan)
 
                 # Features spectrales PLS : [Zre_norm, Zim_norm] interpolées sur freq_grid
@@ -453,7 +453,7 @@ def _load_validation_data(val_data, config, freq_grid, pot_grid,
                 sp = average_replicates(eis_reps) if len(eis_reps) > 1 else eis_reps[0]
                 fits_h = _fit_eis_spectrum(sp, config)
                 rct_fit = fits_h.get("randles_full")
-                rct_drt = fits_h.get("drt_fit")
+                rct_drt = fits_h.get("drt_fft")
                 out["eis_rct_fit"][ek].append(float(rct_fit.Rct) if rct_fit else np.nan)
                 out["eis_rct_drt"][ek].append(float(rct_drt.Rct) if rct_drt else np.nan)
                 Zre_h = np.interp(freq_grid, sp.f[::-1], sp.Zre[::-1])
@@ -784,11 +784,37 @@ def _section5_loadings(report: dict, session_data: dict) -> None:
 
 def _build_html_report(report: dict, session_data: dict) -> str:
     """Génère un rapport HTML autonome avec toutes les figures et métriques."""
+    # Collecter toutes les figures dans l'ordre
+    figures_ordered = []
+
+    for m, res in report["methods"].items():
+        fig = res.get("calibration_fig")
+        if fig:
+            figures_ordered.append((f"Calibration — {m}", fig))
+
+    for title, key in [
+        ("Performance prédictive", "predicted_vs_true"),
+        ("Décomposition de la variance", "variance_decomposition"),
+    ]:
+        fig = report["figures"].get(key)
+        if fig:
+            figures_ordered.append((title, fig))
+
+    for m, res in report["methods"].items():
+        for key, fig in (res.get("loadings_figs") or {}).items():
+            figures_ordered.append((f"Loadings {m} — {key}", fig))
+
+    # Construire le HTML : plotlyjs embarqué via CDN une seule fois (première figure)
+    html_parts = []
+    for i, (title, fig) in enumerate(figures_ordered):
+        include_js = "cdn" if i == 0 else False
+        html_parts.append(f"<h2>{title}</h2>")
+        html_parts.append(pio.to_html(fig, full_html=False, include_plotlyjs=include_js))
+
     parts = [
         "<!DOCTYPE html><html><head>",
         '<meta charset="utf-8">',
         "<title>EIS Analyzer v3 — Rapport comparatif</title>",
-        '<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>',
         "<style>body{font-family:sans-serif;max-width:1200px;margin:auto;padding:20px}",
         "table{border-collapse:collapse;width:100%}",
         "th,td{border:1px solid #ccc;padding:6px 10px;text-align:center}",
@@ -798,32 +824,8 @@ def _build_html_report(report: dict, session_data: dict) -> str:
         "<h1>Rapport comparatif — EIS Analyzer v3</h1>",
         f"<p>Concentrations : {len(session_data['concentrations'])} points — "
         f"Électrodes : {session_data['n_electrodes']}</p>",
+        *html_parts,
     ]
-
-    # Section calibrations
-    parts.append("<h2>Calibration par méthode</h2>")
-    for m, res in report["methods"].items():
-        fig = res.get("calibration_fig")
-        if fig:
-            parts.append(f"<h3>{m}</h3>")
-            parts.append(pio.to_html(fig, full_html=False, include_plotlyjs=False))
-
-    # Figures globales
-    for title, key in [
-        ("Performance prédictive", "predicted_vs_true"),
-        ("Décomposition de la variance", "variance_decomposition"),
-    ]:
-        fig = report["figures"].get(key)
-        if fig:
-            parts.append(f"<h2>{title}</h2>")
-            parts.append(pio.to_html(fig, full_html=False, include_plotlyjs=False))
-
-    # Loadings
-    parts.append("<h2>Loadings PLS</h2>")
-    for m, res in report["methods"].items():
-        for key, fig in (res.get("loadings_figs") or {}).items():
-            parts.append(f"<h3>{m} — {key}</h3>")
-            parts.append(pio.to_html(fig, full_html=False, include_plotlyjs=False))
 
     # Tableau métriques
     parts.append("<h2>Métriques de performance</h2>")
