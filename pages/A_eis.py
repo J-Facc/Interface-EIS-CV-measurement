@@ -65,26 +65,9 @@ def main() -> None:
                 return
 
     if st.session_state.get("eis_session") is None:
-        st.markdown(
-            """
-## Bienvenue dans EIS Analyzer
-
-Analysez vos spectres d'impédance électrochimique pour des biosenseurs microfluidiques ADN/ARN.
-
-**Pour démarrer :**
-1. Chargez vos fichiers CSV dans la sidebar (gauche).
-2. Assignez chaque fichier à une étape : *bare*, *probe* ou *hybridation*.
-3. Saisissez la concentration pour les fichiers d'hybridation.
-4. Sélectionnez les modèles de fit souhaités.
-5. Cliquez sur **▶ Analyser EIS**.
-
----
-**Modèles disponibles :**
-- **Fit circulaire** — lecture géométrique rapide, aucun paramètre physique
-- **Randles contraint** — Re fixé, 3 paramètres libres (Rct, Qdl, α)
-- **Randles complet** — 8 paramètres libres, pondération Modulus
-- **DRT (FFT)** — distribution des temps de relaxation via FFT
-"""
+        st.info(
+            "Chargez vos fichiers CSV dans la sidebar, assignez les étapes "
+            "(bare / probe / hybridation), puis cliquez sur **▶ Analyser EIS**."
         )
         return
 

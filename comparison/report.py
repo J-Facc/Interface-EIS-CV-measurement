@@ -135,7 +135,6 @@ def _metrics_scalar(
     val_norm_e2: np.ndarray | None,
     val_concentrations: np.ndarray | None,
     method_name: str,
-    theme_mode: str,
 ) -> dict:
     """
     Calcule toutes les métriques pour une méthode A (signal scalaire).
@@ -205,7 +204,6 @@ def _metrics_scalar(
         signal=norm_mean,
         concentrations=concentrations,
         method_name=method_name,
-        theme_mode=theme_mode,
     )
 
     # --- Métriques de validation (si données présentes) ---
@@ -260,7 +258,6 @@ def _metrics_pls(
     val_X_e2: list | None,
     val_concentrations: np.ndarray | None,
     method_name: str,
-    theme_mode: str,
     freq_grid: np.ndarray | None = None,
     pot_grid: np.ndarray | None = None,
 ) -> dict:
@@ -309,7 +306,7 @@ def _metrics_pls(
     ])
     explained_var = np.clip(explained_var, 0, 1)
 
-    scree_fig = plot_pls_scree(explained_var, method_name, theme_mode)
+    scree_fig = plot_pls_scree(explained_var, method_name)
 
     # Loadings figures
     loadings_figs = {}
@@ -320,7 +317,7 @@ def _metrics_pls(
             n_f = len(freq_grid)
             lf = lv[:n_f]
             loadings_figs[f"eis_c{comp}"] = plot_pls_loadings(
-                lf, freq_grid, "Fréquence (Hz)", component=comp, theme_mode=theme_mode
+                lf, freq_grid, "Fréquence (Hz)", component=comp
             )
         if pot_grid is not None and len(lv) > (len(freq_grid) if freq_grid is not None else 0):
             offset = len(freq_grid) * 2 if freq_grid is not None else 0
@@ -328,7 +325,7 @@ def _metrics_pls(
                 lp = lv[offset: offset + len(pot_grid)]
                 if len(lp) == len(pot_grid):
                     loadings_figs[f"cv_c{comp}"] = plot_pls_loadings(
-                        lp, pot_grid, "Potentiel (V)", component=comp, theme_mode=theme_mode
+                        lp, pot_grid, "Potentiel (V)", component=comp
                     )
 
     # --- sigma_intra / sigma_inter ---
@@ -519,7 +516,6 @@ def compute_full_report(session_data: dict, config=None) -> dict:
     Métriques non calculables sans validation (rmsep, bias, rpd, ci95, dm_tests)
     sont mises à None.
     """
-    theme_mode = session_data.get("theme_mode", "light")
     concs   = np.asarray(session_data["concentrations"], dtype=float)
     val_data = session_data.get("validation")
 
@@ -602,38 +598,35 @@ def compute_full_report(session_data: dict, config=None) -> dict:
     methods_results["A1"] = _metrics_scalar(
         cv_dI_e1, cv_dI_e2, probe_dI, concs,
         norm_dI_e1, norm_dI_e2,
-        val_dI_e1, val_dI_e2, val_concs,
-        "A1", theme_mode,
+        val_dI_e1, val_dI_e2, val_concs, "A1",
     )
     methods_results["A2"] = _metrics_scalar(
         rct_fit_e1, rct_fit_e2, probe_rct_fit, concs,
         norm_rct_fit_e1, norm_rct_fit_e2,
-        val_rct_fit_e1, val_rct_fit_e2, val_concs,
-        "A2", theme_mode,
+        val_rct_fit_e1, val_rct_fit_e2, val_concs, "A2",
     )
     methods_results["A3"] = _metrics_scalar(
         rct_drt_e1, rct_drt_e2, probe_rct_drt, concs,
         norm_rct_drt_e1, norm_rct_drt_e2,
-        val_rct_drt_e1, val_rct_drt_e2, val_concs,
-        "A3", theme_mode,
+        val_rct_drt_e1, val_rct_drt_e2, val_concs, "A3",
     )
 
     if eis_X_e1:
         methods_results["B1"] = _metrics_pls(
             cv_X_e1, cv_X_e2, concs,
             val_cv_X_e1, val_cv_X_e2, val_concs,
-            "B1", theme_mode, freq_grid=None, pot_grid=pot_grid,
+            "B1", freq_grid=None, pot_grid=pot_grid,
         )
         methods_results["B2"] = _metrics_pls(
             eis_X_e1, eis_X_e2, concs,
             val_eis_X_e1, val_eis_X_e2, val_concs,
-            "B2", theme_mode, freq_grid=freq_grid, pot_grid=None,
+            "B2", freq_grid=freq_grid, pot_grid=None,
         )
         if b3_X_e1:
             methods_results["B3"] = _metrics_pls(
                 b3_X_e1, b3_X_e2, concs,
                 val_b3_X_e1, val_b3_X_e2, val_concs,
-                "B3", theme_mode, freq_grid=freq_grid, pot_grid=pot_grid,
+                "B3", freq_grid=freq_grid, pot_grid=pot_grid,
             )
 
     # -----------------------------------------------------------------------
@@ -653,7 +646,7 @@ def compute_full_report(session_data: dict, config=None) -> dict:
     # Figures globales
     # -----------------------------------------------------------------------
     # predicted_vs_true — uniquement si validation disponible
-    pred_fig = _build_pred_vs_true(methods_results, theme_mode)
+    pred_fig = _build_pred_vs_true(methods_results)
 
     # variance decomposition
     var_metrics = {
@@ -664,7 +657,7 @@ def compute_full_report(session_data: dict, config=None) -> dict:
         }
         for m, res in methods_results.items()
     }
-    var_fig = plot_variance_decomposition(var_metrics, theme_mode)
+    var_fig = plot_variance_decomposition(var_metrics)
 
     return {
         "methods": public_results,
@@ -675,7 +668,7 @@ def compute_full_report(session_data: dict, config=None) -> dict:
     }
 
 
-def _build_pred_vs_true(methods_results: dict, theme_mode: str) -> go.Figure:
+def _build_pred_vs_true(methods_results: dict) -> go.Figure:
     """Construit la figure predicted_vs_true à partir des champs internes."""
     results_by_method = {}
 
@@ -718,7 +711,7 @@ def _build_pred_vs_true(methods_results: dict, theme_mode: str) -> go.Figure:
         fig.update_layout(title="Données de validation absentes — figure non disponible")
         return fig
 
-    return plot_predicted_vs_true(results_by_method, theme_mode)
+    return plot_predicted_vs_true(results_by_method)
 
 
 # ---------------------------------------------------------------------------

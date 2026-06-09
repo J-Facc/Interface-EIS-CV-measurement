@@ -228,20 +228,22 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
         "probe_delta_I": None,
     }
 
-    # ---- Probe EIS (moyenne de toutes les électrodes, première concentration) ----
+    # ---- Probe EIS (un fichier par électrode) ----
+    probe_dict_eis = (data.get("probe") or {}).get("eis") or {}
     progress_cb(0.02, "Chargement des probes EIS…")
     probe_eis_spectra = []
     for e in range(1, n_elec + 1):
-        probe_list = eis_block.get(f"probe_{e}", [])
-        for ci, pf in enumerate(probe_list):
-            content, name = _read_file(pf)
-            if content is None:
-                continue
-            try:
-                sp = load_spectrum(content, name, concentration=0.0, step="probe", config=config)
-                probe_eis_spectra.append(sp)
-            except Exception as exc:
-                st.warning(f"Probe EIS e{e} c{ci+1} : {exc}")
+        pf = probe_dict_eis.get(f"electrode_{e}")
+        if pf is None:
+            continue
+        content, name = _read_file(pf)
+        if content is None:
+            continue
+        try:
+            sp = load_spectrum(content, name, concentration=0.0, step="probe", config=config)
+            probe_eis_spectra.append(sp)
+        except Exception as exc:
+            st.warning(f"Probe EIS e{e} : {exc}")
 
     if not probe_eis_spectra:
         st.error("Aucun fichier probe EIS valide — impossible de normaliser.")
@@ -260,20 +262,22 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
     Zre_probe = np.interp(freq_grid, probe_eis.f[::-1], probe_eis.Zre[::-1])
     Zim_probe = np.interp(freq_grid, probe_eis.f[::-1], probe_eis.Zim[::-1])
 
-    # ---- Probe CV ----
+    # ---- Probe CV (un fichier par électrode) ----
+    probe_dict_cv = (data.get("probe") or {}).get("cv") or {}
     progress_cb(0.06, "Chargement des probes CV…")
     probe_cv_scans = []
     for e in range(1, n_elec + 1):
-        probe_list = cv_block.get(f"probe_{e}", [])
-        for ci, pf in enumerate(probe_list):
-            content, name = _read_file(pf)
-            if content is None:
-                continue
-            try:
-                sc = load_cv_file(content, name, concentration=0.0, step="probe")
-                probe_cv_scans.append(sc)
-            except Exception as exc:
-                st.warning(f"Probe CV e{e} c{ci+1} : {exc}")
+        pf = probe_dict_cv.get(f"electrode_{e}")
+        if pf is None:
+            continue
+        content, name = _read_file(pf)
+        if content is None:
+            continue
+        try:
+            sc = load_cv_file(content, name, concentration=0.0, step="probe")
+            probe_cv_scans.append(sc)
+        except Exception as exc:
+            st.warning(f"Probe CV e{e} : {exc}")
 
     if not probe_cv_scans:
         st.error("Aucun fichier probe CV valide.")
@@ -387,7 +391,6 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
         "probe_rct_drt":   out["probe_rct_drt"],
         "probe_delta_I":   out["probe_delta_I"],
         "validation":      val_out,
-        "theme_mode":      st.session_state.get("theme_mode", "light"),
         # Stocker les scans bruts pour les figures Nyquist et voltammogrammes
         "_probe_eis":      probe_eis,
         "_probe_cv":       probe_cv,

@@ -2,6 +2,12 @@
 
 Utilisé par les pages A (EIS seul), B (CV seul), C (comparatif) et D (inférence).
 Aucun import Streamlit en dehors de ce module — toute la logique UI est ici.
+
+Structure retournée :
+    probe        : {"eis": {"electrode_1": file, ...}, "cv": {...}}
+    calibration  : {"eis": {"electrode_1": [[f,f,...], ...], ...}, "cv": {...}}
+    Le probe est mesuré une fois par électrode par session.
+    Les réplicats sont uploadés en multi-fichier (accept_multiple_files=True).
 """
 
 import streamlit as st
@@ -46,10 +52,7 @@ def _resize_conc_list(prefix: str, new_n: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _render_concentration_inputs(prefix: str, n_conc: int) -> list[float]:
-    """
-    Affiche n_conc lignes mantisse × 10^ exposant.
-    Retourne la liste des concentrations en molaire.
-    """
+    """Affiche n_conc lignes mantisse × 10^ exposant. Retourne la liste des concentrations en M."""
     conc_params = _get_conc_params(prefix)
     concentrations = []
 
@@ -88,43 +91,44 @@ def _render_concentration_inputs(prefix: str, n_conc: int) -> list[float]:
 
 
 # ---------------------------------------------------------------------------
-# Upload d'un bloc de fichiers (réplicats + probe)
+# Section probe — un seul fichier par électrode, commun à toutes les concentrations
 # ---------------------------------------------------------------------------
 
-def _render_file_block(
-    label: str,
+def _render_probe_section(
     prefix: str,
-    conc_idx: int,
-    elec_idx: int,
-    n_rep: int,
-    signal_type: str,
-) -> tuple[list, object]:
+    signal_type: str,   # 'eis' | 'cv'
+    n_elec: int,
+    key_prefix: str | None = None,
+) -> dict:
     """
-    Affiche les uploaders pour n_rep réplicats et 1 probe d'une électrode.
-    Retourne ([file_rep1, ...], file_probe).
+    Affiche un file_uploader par électrode pour le probe.
+    Retourne {"electrode_1": file|None, "electrode_2": file|None, ...}.
     """
-    st.markdown(f"**{label}**")
-    rep_files = []
-    for r in range(n_rep):
-        f = st.file_uploader(
-            f"Réplicat {r + 1}",
-            type=["csv", "txt"],
-            key=_sk(prefix, signal_type, f"c{conc_idx}_e{elec_idx}_r{r}"),
-            label_visibility="visible",
-        )
-        rep_files.append(f)
+    pfx = key_prefix if key_prefix else prefix
+    icon  = "⚡" if signal_type == "eis" else "📈"
+    label = "EIS" if signal_type == "eis" else "CV"
 
-    probe_file = st.file_uploader(
-        "Probe",
-        type=["csv", "txt"],
-        key=_sk(prefix, signal_type, f"c{conc_idx}_e{elec_idx}_probe"),
-        label_visibility="visible",
-    )
-    return rep_files, probe_file
+    result = {}
+    cols = st.columns(n_elec)
+    for e in range(1, n_elec + 1):
+        with cols[e - 1]:
+            f = st.file_uploader(
+                f"{icon} {label} — Électrode {e}",
+                type=["csv", "txt"],
+                accept_multiple_files=False,
+                key=_sk(pfx, signal_type, f"probe_e{e}"),
+            )
+            if f is not None:
+                st.caption(f":green[✓ {f.name}]")
+            else:
+                st.caption("Aucun fichier")
+            result[f"electrode_{e}"] = f
+
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Assemblage d'un bloc signal complet (toutes concentrations, toutes électrodes)
+# Section calibration — réplicats par concentration (multi-fichier)
 # ---------------------------------------------------------------------------
 
 def _render_signal_block(
@@ -132,45 +136,47 @@ def _render_signal_block(
     signal_type: str,          # 'eis' | 'cv'
     n_conc: int,
     n_elec: int,
-    n_rep: int,
     concentrations: list[float],
-    val_prefix: str | None = None,  # préfixe alternatif pour la validation
+    key_prefix: str | None = None,
 ) -> dict:
     """
-    Construit le dict signal complet :
+    Affiche des uploaders multi-fichiers pour les réplicats de chaque concentration.
+
+    Retourne :
     {
-      'electrode_1': [[f, ...], ...],   # [c][rep]
-      'electrode_2': [[f, ...], ...],
-      'probe_1': [f, ...],              # [c]
-      'probe_2': [f, ...],
+      "electrode_1": [[f, f, ...], [f], ...],  # [ci][replicats]
+      "electrode_2": [...],
     }
     """
-    pfx = val_prefix if val_prefix else prefix
-    result: dict = {}
-
-    for e in range(1, n_elec + 1):
-        result[f"electrode_{e}"] = [None] * n_conc
-        result[f"probe_{e}"] = [None] * n_conc
-
+    pfx  = key_prefix if key_prefix else prefix
     icon = "⚡" if signal_type == "eis" else "📈"
     type_label = "EIS" if signal_type == "eis" else "CV"
 
+    result: dict = {f"electrode_{e}": [None] * n_conc for e in range(1, n_elec + 1)}
+
     for ci in range(n_conc):
         c_label = f"{concentrations[ci]:.2e} M"
-        with st.expander(f"{icon} {type_label} — Concentration {ci + 1} : {c_label}", expanded=False):
+        with st.expander(
+            f"{icon} {type_label} — Concentration {ci + 1} : {c_label}",
+            expanded=False,
+        ):
             elec_cols = st.columns(n_elec)
             for e in range(1, n_elec + 1):
                 with elec_cols[e - 1]:
-                    reps, probe = _render_file_block(
-                        label=f"Électrode {e}",
-                        prefix=pfx,
-                        conc_idx=ci,
-                        elec_idx=e,
-                        n_rep=n_rep,
-                        signal_type=signal_type,
+                    files = st.file_uploader(
+                        f"Électrode {e} — réplicats",
+                        type=["csv", "txt"],
+                        accept_multiple_files=True,
+                        key=_sk(pfx, signal_type, f"c{ci}_e{e}"),
                     )
-                    result[f"electrode_{e}"][ci] = reps
-                    result[f"probe_{e}"][ci] = probe
+                    if files:
+                        st.markdown(
+                            f":green[{len(files)} fichier(s) chargé(s)]",
+                            help="\n".join(f.name for f in files),
+                        )
+                    else:
+                        st.caption("Glisser les réplicats ici")
+                    result[f"electrode_{e}"][ci] = files if files else []
 
     return result
 
@@ -179,33 +185,51 @@ def _render_signal_block(
 # Comptage des fichiers pour l'indicateur de progression
 # ---------------------------------------------------------------------------
 
-def _count_files(signal_dict: dict | None, n_conc: int, n_elec: int, n_rep: int) -> tuple[int, int]:
-    """Retourne (fichiers_uploadés, total_attendu) pour un bloc signal."""
-    if signal_dict is None:
+def _count_files(
+    calib_dict: dict | None,
+    probe_dict: dict | None,
+    n_conc: int,
+    n_elec: int,
+) -> tuple[int, int]:
+    """
+    Retourne (fichiers_uploadés, total_attendu).
+    Total = n_elec probes + n_conc × n_elec créneaux calibration (≥ 1 fichier chacun).
+    """
+    if calib_dict is None:
         return 0, 0
 
-    # total : n_conc × n_elec × (n_rep + 1 probe)
-    total = n_conc * n_elec * (n_rep + 1)
-    uploaded = 0
+    # Probes : un par électrode
+    total_probes = n_elec
+    uploaded_probes = 0
+    if probe_dict:
+        for e in range(1, n_elec + 1):
+            if probe_dict.get(f"electrode_{e}") is not None:
+                uploaded_probes += 1
 
+    # Calibration : au moins un fichier par créneau (conc × élec)
+    total_calib = n_conc * n_elec
+    uploaded_calib = 0
     for e in range(1, n_elec + 1):
-        reps_list = signal_dict.get(f"electrode_{e}", [])
-        probe_list = signal_dict.get(f"probe_{e}", [])
+        reps_list = calib_dict.get(f"electrode_{e}", [])
         for ci in range(n_conc):
-            reps = reps_list[ci] if ci < len(reps_list) else []
-            if reps:
-                uploaded += sum(1 for f in reps if f is not None)
-            probe = probe_list[ci] if ci < len(probe_list) else None
-            if probe is not None:
-                uploaded += 1
+            files = reps_list[ci] if ci < len(reps_list) else []
+            if files:  # liste non-vide
+                uploaded_calib += 1
 
+    total    = total_probes + total_calib
+    uploaded = uploaded_probes + uploaded_calib
     return uploaded, total
 
 
-def _all_required_uploaded(signal_dict: dict | None, n_conc: int, n_elec: int, n_rep: int) -> bool:
-    if signal_dict is None:
+def _all_required_uploaded(
+    calib_dict: dict | None,
+    probe_dict: dict | None,
+    n_conc: int,
+    n_elec: int,
+) -> bool:
+    if calib_dict is None:
         return True  # non requis dans ce mode
-    up, total = _count_files(signal_dict, n_conc, n_elec, n_rep)
+    up, total = _count_files(calib_dict, probe_dict, n_conc, n_elec)
     return up >= total
 
 
@@ -217,34 +241,30 @@ def render_data_input(mode: str, prefix: str = "main") -> dict:
     """
     Composant Streamlit d'entrée des données expérimentales.
 
-    Affiche les trois étapes décrites dans PROJECT.md §5 et retourne
-    un dict structuré prêt à être consommé par les pages A, B, C et D.
-
     Parameters
     ----------
     mode : str
-        'eis_only' — upload EIS uniquement
-        'cv_only'  — upload CV uniquement
-        'both'     — upload EIS + CV (page C comparatif)
+        'eis_only' | 'cv_only' | 'both'
     prefix : str
-        Préfixe pour les clés session_state. Doit être unique par page
-        si plusieurs instances coexistent. Défaut : 'main'.
+        Préfixe unique pour les clés session_state (évite les collisions).
 
     Returns
     -------
-    dict avec les clés :
-        concentrations   : list[float]   — en molaire
+    dict :
+        concentrations   : list[float]
         n_electrodes     : int
-        n_replicats      : int
-        calibration      : dict
-            eis          : dict | None
-            cv           : dict | None
+        n_replicats      : int   (valeur saisie, maintenant indicative)
+        probe            : {
+            "eis": {"electrode_1": file|None, ...} | None,
+            "cv":  {"electrode_1": file|None, ...} | None,
+        }
+        calibration      : {
+            "eis": {"electrode_1": [[files], ...], ...} | None,
+            "cv":  {"electrode_1": [[files], ...], ...} | None,
+        }
         validation       : dict | None
-            concentrations : list[float]
-            eis          : dict | None
-            cv           : dict | None
-        ready            : bool   — True si tous les fichiers obligatoires sont uploadés
-        run_clicked      : bool   — True si l'utilisateur a cliqué sur "Lancer l'analyse"
+        ready            : bool
+        run_clicked      : bool
     """
     if mode not in ("eis_only", "cv_only", "both"):
         raise ValueError(f"mode doit être 'eis_only', 'cv_only' ou 'both', reçu '{mode}'")
@@ -272,7 +292,7 @@ def render_data_input(mode: str, prefix: str = "main") -> dict:
         )
     with col3:
         n_rep = st.number_input(
-            "Réplicats par électrode",
+            "Réplicats par électrode (indicatif)",
             min_value=1, max_value=6, value=3, step=1,
             key=_sk(prefix, "n_rep"),
         )
@@ -289,34 +309,51 @@ def render_data_input(mode: str, prefix: str = "main") -> dict:
     st.markdown("---")
 
     # -------------------------------------------------------------------
-    # Étape 2 — Upload des fichiers de calibration
+    # Étape 2a — Références probe (une mesure par électrode)
     # -------------------------------------------------------------------
     st.subheader("Étape 2 — Fichiers de calibration")
+    st.markdown("#### 🔬 Références probe (une mesure par électrode, commune à toutes les concentrations)")
 
+    probe_eis: dict | None = None
+    probe_cv:  dict | None = None
+
+    if use_eis:
+        if mode == "both":
+            st.markdown("**⚡ Probe EIS**")
+        probe_eis = _render_probe_section(prefix, "eis", n_elec)
+
+    if use_cv:
+        if mode == "both":
+            st.markdown("**📈 Probe CV**")
+        probe_cv = _render_probe_section(prefix, "cv", n_elec)
+
+    st.markdown("#### 📂 Mesures d'hybridation (glisser les réplicats par concentration)")
+
+    # -------------------------------------------------------------------
+    # Étape 2b — Calibration par concentration
+    # -------------------------------------------------------------------
     eis_calib: dict | None = None
     cv_calib:  dict | None = None
 
     if use_eis:
         if mode == "both":
-            st.markdown("#### ⚡ Spectres EIS")
+            st.markdown("##### ⚡ Spectres EIS")
         eis_calib = _render_signal_block(
             prefix=prefix,
             signal_type="eis",
             n_conc=n_conc,
             n_elec=n_elec,
-            n_rep=n_rep,
             concentrations=concentrations,
         )
 
     if use_cv:
         if mode == "both":
-            st.markdown("#### 📈 Courbes CV")
+            st.markdown("##### 📈 Courbes CV")
         cv_calib = _render_signal_block(
             prefix=prefix,
             signal_type="cv",
             n_conc=n_conc,
             n_elec=n_elec,
-            n_rep=n_rep,
             concentrations=concentrations,
         )
 
@@ -347,29 +384,36 @@ def render_data_input(mode: str, prefix: str = "main") -> dict:
             st.markdown("**Concentrations de validation**")
             val_concentrations = _render_concentration_inputs(val_prefix, n_val)
 
+            st.markdown("**🔬 Probe validation**")
+            val_probe_eis = _render_probe_section(
+                prefix, "eis", n_elec, key_prefix=val_prefix + "_probe_eis"
+            )
+            val_probe_cv = _render_probe_section(
+                prefix, "cv", n_elec, key_prefix=val_prefix + "_probe_cv"
+            )
+
             val_eis = _render_signal_block(
                 prefix=prefix,
                 signal_type="eis",
                 n_conc=n_val,
                 n_elec=n_elec,
-                n_rep=n_rep,
                 concentrations=val_concentrations,
-                val_prefix=val_prefix + "_eis",
+                key_prefix=val_prefix + "_eis",
             )
             val_cv = _render_signal_block(
                 prefix=prefix,
                 signal_type="cv",
                 n_conc=n_val,
                 n_elec=n_elec,
-                n_rep=n_rep,
                 concentrations=val_concentrations,
-                val_prefix=val_prefix + "_cv",
+                key_prefix=val_prefix + "_cv",
             )
 
             validation = {
                 "concentrations": val_concentrations,
+                "probe": {"eis": val_probe_eis, "cv": val_probe_cv},
                 "eis": val_eis,
-                "cv": val_cv,
+                "cv":  val_cv,
             }
 
     # -------------------------------------------------------------------
@@ -377,22 +421,21 @@ def render_data_input(mode: str, prefix: str = "main") -> dict:
     # -------------------------------------------------------------------
     st.markdown("---")
 
-    up_eis, tot_eis = _count_files(eis_calib, n_conc, n_elec, n_rep)
-    up_cv,  tot_cv  = _count_files(cv_calib,  n_conc, n_elec, n_rep)
+    up_eis, tot_eis = _count_files(eis_calib, probe_eis, n_conc, n_elec)
+    up_cv,  tot_cv  = _count_files(cv_calib,  probe_cv,  n_conc, n_elec)
     uploaded = up_eis + up_cv
     total    = tot_eis + tot_cv
 
     if total > 0:
         progress = uploaded / total
         st.progress(progress, text=f"Fichiers chargés : {uploaded} / {total}")
-
         if uploaded < total:
             missing = total - uploaded
             st.caption(f"⚠️  {missing} fichier(s) obligatoire(s) manquant(s)")
 
     ready = (
-        _all_required_uploaded(eis_calib, n_conc, n_elec, n_rep)
-        and _all_required_uploaded(cv_calib, n_conc, n_elec, n_rep)
+        _all_required_uploaded(eis_calib, probe_eis, n_conc, n_elec)
+        and _all_required_uploaded(cv_calib, probe_cv, n_conc, n_elec)
     )
 
     run_clicked = st.button(
@@ -410,6 +453,10 @@ def render_data_input(mode: str, prefix: str = "main") -> dict:
         "concentrations": concentrations,
         "n_electrodes": n_elec,
         "n_replicats": n_rep,
+        "probe": {
+            "eis": probe_eis,
+            "cv":  probe_cv,
+        },
         "calibration": {
             "eis": eis_calib,
             "cv":  cv_calib,
