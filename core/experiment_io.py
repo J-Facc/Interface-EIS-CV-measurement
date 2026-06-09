@@ -2,14 +2,14 @@
 ======================
 Sauvegarde et chargement d'une session expérimentale complète (ZIP).
 
-Format ZIP :
-  experiment.yaml   — métadonnées + exclusions + flags
-  probe/eis/electrode_1/rep_0.bin  — bytes bruts des fichiers probe EIS
-  probe/cv/electrode_1/rep_0.bin   — bytes bruts des fichiers probe CV
-  calibration/eis/electrode_1/conc_0_rep_0.bin
-  calibration/cv/electrode_1/conc_0_rep_0.bin
-  validation/eis/electrode_1/conc_0_rep_0.bin   (optionnel)
-  validation/cv/electrode_1/conc_0_rep_0.bin    (optionnel)
+Format ZIP v2 :
+  experiment.yaml   — métadonnées + exclusions + file_map
+  probe/eis/electrode_1/probe_eis_e1_r1.txt
+  probe/cv/electrode_1/probe_cv_e1_r1.txt
+  calibration/eis/electrode_1/eis_e1_1.00e-08M_r1.txt
+  calibration/cv/electrode_1/cv_e1_1.00e-08M_r1.txt
+  validation/eis/electrode_1/eis_e1_val_1.00e-08M_r1.txt  (optionnel)
+  validation/cv/electrode_1/cv_e1_val_1.00e-08M_r1.txt   (optionnel)
 
 Aucun import Streamlit — logique métier pure.
 """
@@ -41,31 +41,118 @@ def save_experiment(
     Parameters
     ----------
     experiment : dict conforme à la structure définie dans pages/0_import.py
-        probe structure : {sig_type: {electrode_k: [BytesIO, ...]}}
+        probe       : {sig_type: {electrode_k: [BytesIO, ...]}}
+        calibration : {sig_type: {electrode_k: [[BytesIO, ...], ...]}}
+        validation  : {sig_type: {electrode_k: [[BytesIO, ...], ...]}} ou None
     exclusions : dict 2D {e_str: {modality: {ci: [bool]}}}
     deleted_points : dict {inner_label: [int]} — points exclus par spectre EIS
-    preprocessing_done : bool — si True, le ZIP peut être rechargé directement
-        en état post-prétraitement (exclusions seront réappliquées au rechargement)
+    preprocessing_done : bool
 
     Returns
     -------
     bytes — contenu du fichier ZIP
     """
+    mode           = experiment.get("mode", "both")
+    concentrations = experiment.get("concentrations", [])
+    n_elec         = int(experiment.get("n_electrodes", 2))
+    sig_types      = _sig_types_for_mode(mode)
+
+    file_map: Dict[str, Any] = {
+        "probe": {},
+        "calibration": {s: {} for s in ["eis", "cv"]},
+        "validation":  {s: {} for s in ["eis", "cv"]},
+    }
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
 
+        # ── probe : {sig_type: {electrode_k: [BytesIO, ...]}} ────────────
+        probe = experiment.get("probe") or {}
+        for sig_type in sig_types:
+            elec_dict = probe.get(sig_type) or {}
+            file_map["probe"][sig_type] = {}
+            for e in range(1, n_elec + 1):
+                elec_key = f"electrode_{e}"
+                e_label  = f"e{e}"
+                rep_list = elec_dict.get(elec_key) or []
+                paths: List[str] = []
+                for ri, bio in enumerate(rep_list):
+                    if bio is None:
+                        continue
+                    data = _read_bytesio(bio)
+                    if data:
+                        fname    = f"probe_{sig_type}_{e_label}_r{ri + 1}.txt"
+                        zip_path = f"probe/{sig_type}/{elec_key}/{fname}"
+                        zf.writestr(zip_path, data)
+                        paths.append(zip_path)
+                file_map["probe"][sig_type][elec_key] = paths
+
+        # ── calibration : {sig_type: {electrode_k: [[BytesIO,...], ...]}} ─
+        calibration = experiment.get("calibration") or {}
+        for sig_type in sig_types:
+            elec_dict = calibration.get(sig_type) or {}
+            file_map["calibration"][sig_type] = {}
+            for e in range(1, n_elec + 1):
+                elec_key  = f"electrode_{e}"
+                e_label   = f"e{e}"
+                conc_list = elec_dict.get(elec_key) or []
+                elec_paths: List[List[str]] = []
+                for ci, rep_list in enumerate(conc_list):
+                    conc_val = concentrations[ci] if ci < len(concentrations) else 0.0
+                    conc_str = f"{conc_val:.2e}M"
+                    rep_paths: List[str] = []
+                    for ri, bio in enumerate(rep_list or []):
+                        if bio is None:
+                            continue
+                        data = _read_bytesio(bio)
+                        if data:
+                            fname    = f"{sig_type}_{e_label}_{conc_str}_r{ri + 1}.txt"
+                            zip_path = f"calibration/{sig_type}/{elec_key}/{fname}"
+                            zf.writestr(zip_path, data)
+                            rep_paths.append(zip_path)
+                    elec_paths.append(rep_paths)
+                file_map["calibration"][sig_type][elec_key] = elec_paths
+
+        # ── validation (optionnel) ────────────────────────────────────────
+        validation = experiment.get("validation") or {}
+        if validation:
+            for sig_type in sig_types:
+                elec_dict = (validation.get(sig_type) or {})
+                file_map["validation"][sig_type] = {}
+                for e in range(1, n_elec + 1):
+                    elec_key  = f"electrode_{e}"
+                    e_label   = f"e{e}"
+                    conc_list = elec_dict.get(elec_key) or []
+                    elec_paths_v: List[List[str]] = []
+                    for ci, rep_list in enumerate(conc_list):
+                        conc_val = concentrations[ci] if ci < len(concentrations) else 0.0
+                        conc_str = f"{conc_val:.2e}M"
+                        rep_paths_v: List[str] = []
+                        for ri, bio in enumerate(rep_list or []):
+                            if bio is None:
+                                continue
+                            data = _read_bytesio(bio)
+                            if data:
+                                fname    = f"{sig_type}_{e_label}_val_{conc_str}_r{ri + 1}.txt"
+                                zip_path = f"validation/{sig_type}/{elec_key}/{fname}"
+                                zf.writestr(zip_path, data)
+                                rep_paths_v.append(zip_path)
+                        elec_paths_v.append(rep_paths_v)
+                    file_map["validation"][sig_type][elec_key] = elec_paths_v
+
         # ── métadonnées YAML ──────────────────────────────────────────────
         meta: Dict[str, Any] = {
-            "name":             experiment.get("name", ""),
-            "date":             experiment.get("date", datetime.now().strftime("%Y-%m-%d")),
-            "mode":             experiment.get("mode", "both"),
-            "concentrations":   [float(c) for c in experiment.get("concentrations", [])],
-            "n_electrodes":     int(experiment.get("n_electrodes", 2)),
-            "n_replicats":      int(experiment.get("n_replicats", 3)),
+            "name":               experiment.get("name", ""),
+            "date":               experiment.get("date", datetime.now().strftime("%Y-%m-%d")),
+            "mode":               mode,
+            "concentrations":     [float(c) for c in concentrations],
+            "n_electrodes":       n_elec,
+            "n_replicats":        int(experiment.get("n_replicats", 3)),
             "preprocessing_done": bool(preprocessing_done),
+            "file_map":           file_map,
         }
 
-        # Sérialiser les exclusions 2D {e_str: {modality: {ci: [bool]}}}
+        # Exclusions
         if exclusions:
             excl_serial: Dict[str, Any] = {}
             for e_str, mod_dict in exclusions.items():
@@ -91,61 +178,6 @@ def save_experiment(
 
         zf.writestr("experiment.yaml", yaml.dump(meta, allow_unicode=True))
 
-        # ── probe : {sig_type: {electrode_k: [BytesIO, ...]}} ────────────
-        probe = experiment.get("probe") or {}
-        for sig_type, elec_dict in probe.items():
-            if not isinstance(elec_dict, dict):
-                continue
-            for elec_key, rep_list in elec_dict.items():
-                for ri, bio in enumerate(rep_list or []):
-                    if bio is None:
-                        continue
-                    data = _read_bytesio(bio)
-                    if data:
-                        zf.writestr(f"probe/{sig_type}/{elec_key}/rep_{ri}.bin", data)
-
-        # ── calibration ───────────────────────────────────────────────────
-        calibration = experiment.get("calibration") or {}
-        for sig_type, elec_dict in calibration.items():
-            if not elec_dict:
-                continue
-            for elec_key, conc_list in elec_dict.items():
-                if not conc_list:
-                    continue
-                for ci, rep_list in enumerate(conc_list):
-                    if not rep_list:
-                        continue
-                    for ri, bio in enumerate(rep_list):
-                        if bio is None:
-                            continue
-                        data = _read_bytesio(bio)
-                        if data:
-                            zf.writestr(
-                                f"calibration/{sig_type}/{elec_key}/conc_{ci}_rep_{ri}.bin",
-                                data,
-                            )
-
-        # ── validation (optionnel) ────────────────────────────────────────
-        validation = experiment.get("validation") or {}
-        for sig_type, elec_dict in (validation or {}).items():
-            if not elec_dict:
-                continue
-            for elec_key, conc_list in elec_dict.items():
-                if not conc_list:
-                    continue
-                for ci, rep_list in enumerate(conc_list):
-                    if not rep_list:
-                        continue
-                    for ri, bio in enumerate(rep_list):
-                        if bio is None:
-                            continue
-                        data = _read_bytesio(bio)
-                        if data:
-                            zf.writestr(
-                                f"validation/{sig_type}/{elec_key}/conc_{ci}_rep_{ri}.bin",
-                                data,
-                            )
-
     return buf.getvalue()
 
 
@@ -161,8 +193,8 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
     """
     Désérialise un ZIP (produit par save_experiment) en dict experiment.
 
-    Tous les fichiers binaires sont renvoyés comme io.BytesIO,
-    identiques à ce que Streamlit renvoie via st.file_uploader.
+    Supporte le format v2 (file_map dans experiment.yaml) et le format v1
+    (rep_N.bin) pour la rétrocompatibilité.
 
     Returns
     -------
@@ -183,59 +215,119 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
 
         meta = yaml.safe_load(zf.read("experiment.yaml").decode("utf-8"))
 
-        n_elec  = int(meta.get("n_electrodes", 2))
-        n_concs = len(meta.get("concentrations", []))
-        mode    = meta.get("mode", "both")
+        n_elec     = int(meta.get("n_electrodes", 2))
+        n_concs    = len(meta.get("concentrations", []))
+        mode       = meta.get("mode", "both")
+        sig_types  = _sig_types_for_mode(mode)
+        file_map   = meta.get("file_map")
 
-        sig_types = _sig_types_for_mode(mode)
+        def _read_bio(path: str) -> Optional[io.BytesIO]:
+            """Lit un fichier du ZIP et retourne un BytesIO positionné en 0."""
+            try:
+                data = zf.read(path)
+                bio  = io.BytesIO(data)
+                bio.seek(0)
+                bio.name = path.split("/")[-1]
+                return bio
+            except KeyError:
+                return None
 
-        # ── probe : {sig_type: {electrode_k: [BytesIO, ...]}} ────────────
-        probe: Dict[str, Any] = {}
-        for sig_type in sig_types:
-            probe[sig_type] = {}
-            for e in range(1, n_elec + 1):
-                elec_key = f"electrode_{e}"
-                reps = _load_rep_list(zf, names, f"probe/{sig_type}/{elec_key}")
-                probe[sig_type][elec_key] = reps
-
-        # ── calibration ───────────────────────────────────────────────────
-        calibration: Dict[str, Any] = {st_: None for st_ in ["eis", "cv"]}
-        for sig_type in sig_types:
-            elec_dict: Dict[str, List] = {}
-            for e in range(1, n_elec + 1):
-                elec_key = f"electrode_{e}"
-                conc_list = []
-                for ci in range(n_concs):
-                    reps = _load_rep_list(
-                        zf, names,
-                        f"calibration/{sig_type}/{elec_key}/conc_{ci}",
-                    )
-                    conc_list.append(reps)
-                elec_dict[elec_key] = conc_list
-            calibration[sig_type] = elec_dict
-
-        # ── validation (optionnel) ────────────────────────────────────────
-        has_validation = any(n.startswith("validation/") for n in names)
-        validation: Optional[Dict] = None
-        if has_validation:
-            validation = {}
+        if file_map:
+            # ── Format v2 : reconstruction via file_map ───────────────────
+            probe: Dict[str, Any] = {}
             for sig_type in sig_types:
-                elec_dict_v = {}
+                probe[sig_type] = {}
                 for e in range(1, n_elec + 1):
                     elec_key = f"electrode_{e}"
-                    conc_list = []
-                    ci = 0
-                    while True:
-                        prefix = f"validation/{sig_type}/{elec_key}/conc_{ci}"
-                        reps = _load_rep_list(zf, names, prefix)
-                        if not reps:
-                            break
-                        conc_list.append(reps)
-                        ci += 1
-                    elec_dict_v[elec_key] = conc_list
-                validation[sig_type] = elec_dict_v
+                    paths    = (file_map.get("probe", {})
+                                       .get(sig_type, {})
+                                       .get(elec_key, []))
+                    probe[sig_type][elec_key] = [
+                        b for p in paths if (b := _read_bio(p)) is not None
+                    ]
 
-        # ── exclusions et points supprimés (optionnel) ────────────────────
+            calibration: Dict[str, Any] = {st_: None for st_ in ["eis", "cv"]}
+            for sig_type in sig_types:
+                elec_dict: Dict[str, List] = {}
+                for e in range(1, n_elec + 1):
+                    elec_key  = f"electrode_{e}"
+                    conc_list = (file_map.get("calibration", {})
+                                         .get(sig_type, {})
+                                         .get(elec_key, []))
+                    elec_dict[elec_key] = [
+                        [b for p in rep_paths if (b := _read_bio(p)) is not None]
+                        for rep_paths in conc_list
+                    ]
+                calibration[sig_type] = elec_dict
+
+            has_validation = bool(
+                file_map.get("validation") and any(
+                    file_map["validation"].get(s)
+                    for s in sig_types
+                )
+            )
+            validation: Optional[Dict] = None
+            if has_validation:
+                validation = {}
+                for sig_type in sig_types:
+                    elec_dict_v: Dict[str, List] = {}
+                    for e in range(1, n_elec + 1):
+                        elec_key  = f"electrode_{e}"
+                        conc_list = (file_map.get("validation", {})
+                                             .get(sig_type, {})
+                                             .get(elec_key, []))
+                        elec_dict_v[elec_key] = [
+                            [b for p in rep_paths if (b := _read_bio(p)) is not None]
+                            for rep_paths in conc_list
+                        ]
+                    validation[sig_type] = elec_dict_v
+
+        else:
+            # ── Format v1 : reconstruction via chemins rep_N.bin ─────────
+            probe = {}
+            for sig_type in sig_types:
+                probe[sig_type] = {}
+                for e in range(1, n_elec + 1):
+                    elec_key = f"electrode_{e}"
+                    reps = _load_rep_list_v1(zf, names, f"probe/{sig_type}/{elec_key}")
+                    probe[sig_type][elec_key] = reps
+
+            calibration = {st_: None for st_ in ["eis", "cv"]}
+            for sig_type in sig_types:
+                elec_dict = {}
+                for e in range(1, n_elec + 1):
+                    elec_key  = f"electrode_{e}"
+                    conc_list = []
+                    for ci in range(n_concs):
+                        reps = _load_rep_list_v1(
+                            zf, names,
+                            f"calibration/{sig_type}/{elec_key}/conc_{ci}",
+                        )
+                        conc_list.append(reps)
+                    elec_dict[elec_key] = conc_list
+                calibration[sig_type] = elec_dict
+
+            has_validation = any(n.startswith("validation/") for n in names)
+            validation = None
+            if has_validation:
+                validation = {}
+                for sig_type in sig_types:
+                    elec_dict_v = {}
+                    for e in range(1, n_elec + 1):
+                        elec_key  = f"electrode_{e}"
+                        conc_list = []
+                        ci = 0
+                        while True:
+                            prefix = f"validation/{sig_type}/{elec_key}/conc_{ci}"
+                            reps   = _load_rep_list_v1(zf, names, prefix)
+                            if not reps:
+                                break
+                            conc_list.append(reps)
+                            ci += 1
+                        elec_dict_v[elec_key] = conc_list
+                    validation[sig_type] = elec_dict_v
+
+        # ── exclusions et points supprimés ────────────────────────────────
         raw_exclusions = meta.get("exclusions") or {}
         exclusions_out: Dict[str, Any] = {}
         if raw_exclusions:
@@ -248,7 +340,6 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
                         for ci_key, excl_list in (ci_dict or {}).items():
                             ci = "probe" if ci_key == "probe" else int(ci_key)
                             exclusions_out[e_str][modality][ci] = list(excl_list)
-            # Ancien format {group_label: list[int]} ignoré (incompatible)
 
         raw_deleted = meta.get("deleted_points") or {}
         deleted_points_out = {k: list(v) for k, v in raw_deleted.items()} if raw_deleted else {}
@@ -343,12 +434,12 @@ def _read_bytesio(obj: Any) -> bytes:
         return b""
 
 
-def _load_rep_list(
+def _load_rep_list_v1(
     zf: zipfile.ZipFile,
     names: set,
     prefix: str,
 ) -> List[io.BytesIO]:
-    """Charge tous les réplicats rep_0.bin, rep_1.bin, … pour un préfixe donné."""
+    """Format v1 : charge rep_0.bin, rep_1.bin, … pour un préfixe donné."""
     reps: List[io.BytesIO] = []
     ri = 0
     while True:
@@ -356,7 +447,8 @@ def _load_rep_list(
         if path not in names:
             break
         data = zf.read(path)
-        bio = io.BytesIO(data)
+        bio  = io.BytesIO(data)
+        bio.seek(0)
         bio.name = f"rep_{ri}.bin"
         reps.append(bio)
         ri += 1
