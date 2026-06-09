@@ -530,11 +530,6 @@ def _render_results(predictions: dict, session_data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    st.set_page_config(
-        page_title="Inférence — Concentration inconnue",
-        page_icon="🔬",
-        layout="wide",
-    )
     st.title("🔬 Inférence de concentration")
     st.caption("Prédit la concentration d'une mesure inconnue à partir d'une session de calibration.")
 
