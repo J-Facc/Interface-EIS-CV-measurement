@@ -511,7 +511,7 @@ def _render_results(predictions: dict, session_data: dict) -> None:
             fig = _plot_prediction_on_calibration(m, predictions[m], session_data)
             if fig:
                 with col:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
     methods_b = [m for m in predictions if m.startswith("B")]
     if methods_b:

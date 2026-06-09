@@ -125,7 +125,7 @@ def render_eis_tabs(session: EISSession, config: dict, validation_results=None) 
         else:
             st.markdown("#### Récapitulatif")
             fig_table = validation_summary_table(validation_results, theme_mode="light")
-            st.plotly_chart(fig_table, use_container_width=True)
+            st.plotly_chart(fig_table, width='stretch')
 
             st.markdown("#### Résidus par spectre")
             labels_kk = list(validation_results.keys())
@@ -137,7 +137,7 @@ def render_eis_tabs(session: EISSession, config: dict, validation_results=None) 
                 theme_mode="light",
                 residual_threshold_pct=getattr(config, "kk_residual_pct", 2.0),
             )
-            st.plotly_chart(fig_res, use_container_width=True)
+            st.plotly_chart(fig_res, width='stretch')
 
             for kk in vr.replicates:
                 if kk.warning:

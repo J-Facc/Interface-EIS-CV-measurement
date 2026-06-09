@@ -479,11 +479,11 @@ def main() -> None:
 
     with tab_volt:
         st.subheader("Voltammogrammes — Superposition par concentration")
-        st.plotly_chart(_fig_voltammograms(result), use_container_width=True)
+        st.plotly_chart(_fig_voltammograms(result), width='stretch')
 
     with tab_pic:
         st.subheader("Signal normalisé ΔI_norm vs concentration")
-        st.plotly_chart(_fig_pic_redox(result), use_container_width=True)
+        st.plotly_chart(_fig_pic_redox(result), width='stretch')
 
         # Résumé rapide des pics probe
         pp = result["probe_peaks"]
@@ -497,7 +497,7 @@ def main() -> None:
         if ols is None:
             st.warning("Moins de 3 points de calibration valides — régression impossible.")
         else:
-            st.plotly_chart(_fig_calibration(ols), use_container_width=True)
+            st.plotly_chart(_fig_calibration(ols), width='stretch')
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("R²",      f"{ols['r2']:.4f}")
             c2.metric("Pente a", f"{ols['slope']:.4f}")
@@ -518,7 +518,7 @@ Une bande large aux extrémités indique que les points extrêmes ont plus d'inf
 
     with tab_params:
         st.subheader("Paramètres extraits par concentration et électrode")
-        st.plotly_chart(_fig_params_table(result), use_container_width=True)
+        st.plotly_chart(_fig_params_table(result), width='stretch')
 
     with tab_export:
         st.subheader("Télécharger les résultats")

@@ -17,7 +17,10 @@ import streamlit as st
 
 from core.loader import load_spectrum
 from core.cv_loader import load_cv_file
+from core.models import EISSpectrum
+from core.cv_models import CVScan
 from core.validator import validate_spectrum, validate_replicate_group, KKResult
+from plotting.eis_plots import nyquist_figure as _nyquist_figure
 
 
 # ─────────────────────────────────────────────
@@ -193,31 +196,82 @@ def _visualize_eis(
         st.info("Aucun spectre chargé pour cette sélection.")
         return
 
-    # Exclusion checkboxes
+    # Exclusion checkboxes (courbes entières)
     _render_exclusion_checkboxes(reps, group_label, exclusions)
 
-    # Nyquist superposé
-    fig_ny = go.Figure()
+    # Nyquist superposé avec mode édition par réplicat
+    st.markdown("**Diagramme de Nyquist**")
     for ri, sp in enumerate(reps):
-        excluded = _is_excluded(group_label, ri, exclusions)
-        dash = "dot" if excluded else "solid"
-        opacity = 0.35 if excluded else 1.0
-        name = f"R{ri+1}" + (" [Exclu]" if excluded else "")
-        fig_ny.add_trace(go.Scatter(
-            x=sp.Zre, y=sp.Zim,
-            mode="lines+markers",
-            name=name,
-            line=dict(dash=dash),
-            opacity=opacity,
-            marker=dict(size=4),
-        ))
-    fig_ny.update_layout(
-        title="Nyquist — Réplicats superposés",
-        xaxis_title="Re(Z) (Ω)",
-        yaxis_title="Im(Z) (Ω)",
-        legend_title="Réplicat",
-    )
-    st.plotly_chart(fig_ny, use_container_width=True)
+        excluded_curve = _is_excluded(group_label, ri, exclusions)
+        spectrum_label = f"{group_label}_r{ri}"
+
+        edit_mode = st.toggle(
+            f"✏️ Mode suppression de points — R{ri+1}",
+            key=f"edit_{spectrum_label}",
+        )
+
+        if edit_mode:
+            fig = _nyquist_figure(spectrum=sp, selection_mode=True)
+            event = st.plotly_chart(
+                fig,
+                width='stretch',
+                key=f"nyquist_edit_{spectrum_label}",
+                on_select="rerun",
+            )
+
+            selected_points = []
+            if event and event.selection and event.selection.points:
+                selected_points = [
+                    p['point_index'] for p in event.selection.points
+                ]
+
+            if selected_points:
+                st.warning(
+                    f"{len(selected_points)} point(s) sélectionné(s) : "
+                    f"indices {selected_points}"
+                )
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button(
+                        "🗑️ Supprimer ces points",
+                        key=f"del_{spectrum_label}",
+                    ):
+                        key = f"deleted_points_{spectrum_label}"
+                        existing = st.session_state.get(key, [])
+                        st.session_state[key] = list(
+                            set(existing + selected_points)
+                        )
+                        st.success(f"Points supprimés du spectre R{ri+1}")
+                        st.rerun()
+
+                with col_b:
+                    key = f"deleted_points_{spectrum_label}"
+                    if st.session_state.get(key):
+                        if st.button(
+                            "↩️ Restaurer tous les points",
+                            key=f"restore_{spectrum_label}",
+                        ):
+                            st.session_state[key] = []
+                            st.rerun()
+
+            key = f"deleted_points_{spectrum_label}"
+            deleted = st.session_state.get(key, [])
+            if deleted:
+                st.info(
+                    f"Points actuellement exclus de R{ri+1} : "
+                    f"indices {sorted(deleted)}"
+                )
+        else:
+            key = f"deleted_points_{spectrum_label}"
+            deleted = st.session_state.get(key, [])
+            opacity = 0.35 if excluded_curve else 1.0
+            fig = _nyquist_figure(
+                spectrum=sp,
+                excluded_indices=deleted if deleted else None,
+                selection_mode=False,
+            )
+            fig.update_traces(opacity=opacity)
+            st.plotly_chart(fig, width='stretch', key=f"nyquist_view_{spectrum_label}")
 
     # Bode
     fig_bode = go.Figure()
@@ -240,7 +294,52 @@ def _visualize_eis(
         yaxis_title="|Z| (Ω)",
         yaxis_type="log",
     )
-    st.plotly_chart(fig_bode, use_container_width=True)
+    st.plotly_chart(fig_bode, width='stretch')
+
+
+def _cv_figure_single(
+    sc,
+    excluded_indices: list = None,
+    selection_mode: bool = False,
+) -> go.Figure:
+    """Plotly figure for a single CV scan with optional point exclusion highlighting."""
+    fig = go.Figure()
+    E = np.array(sc.E)
+    I = np.array(sc.I) * 1e6
+
+    if excluded_indices:
+        excl_set = set(excluded_indices)
+        keep_idx = [i for i in range(len(E)) if i not in excl_set]
+        excl_idx = sorted(excl_set)
+        fig.add_trace(go.Scatter(
+            x=E[keep_idx], y=I[keep_idx],
+            mode="lines+markers",
+            name=sc.label,
+            marker=dict(size=4),
+        ))
+        fig.add_trace(go.Scatter(
+            x=E[excl_idx], y=I[excl_idx],
+            mode="markers",
+            name="Points exclus",
+            marker=dict(color="lightgray", size=5, symbol="x",
+                        line=dict(width=1, color="gray")),
+        ))
+    else:
+        fig.add_trace(go.Scatter(
+            x=E, y=I,
+            mode="lines+markers",
+            name=sc.label,
+            marker=dict(size=4),
+        ))
+
+    fig.update_layout(
+        title=f"CV — {sc.label}",
+        xaxis_title="Potentiel E (V)",
+        yaxis_title="Courant I (µA)",
+    )
+    if selection_mode:
+        fig.update_layout(dragmode="select", clickmode="event+select")
+    return fig
 
 
 def _visualize_cv(
@@ -276,24 +375,74 @@ def _visualize_cv(
 
     _render_exclusion_checkboxes(reps, group_label, exclusions)
 
-    fig = go.Figure()
+    st.markdown("**Voltammogrammes**")
     for ri, sc in enumerate(reps):
-        excluded = _is_excluded(group_label, ri, exclusions)
-        dash = "dot" if excluded else "solid"
-        opacity = 0.35 if excluded else 1.0
-        name = f"R{ri+1}" + (" [Exclu]" if excluded else "")
-        fig.add_trace(go.Scatter(
-            x=sc.E, y=np.array(sc.I) * 1e6,
-            mode="lines", name=name,
-            line=dict(dash=dash),
-            opacity=opacity,
-        ))
-    fig.update_layout(
-        title="Voltammogrammes — Réplicats superposés",
-        xaxis_title="Potentiel E (V)",
-        yaxis_title="Courant I (µA)",
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        excluded_curve = _is_excluded(group_label, ri, exclusions)
+        spectrum_label = f"{group_label}_r{ri}"
+
+        edit_mode = st.toggle(
+            f"✏️ Mode suppression de points — R{ri+1}",
+            key=f"edit_{spectrum_label}",
+        )
+
+        if edit_mode:
+            fig = _cv_figure_single(sc, selection_mode=True)
+            event = st.plotly_chart(
+                fig,
+                width='stretch',
+                key=f"cv_edit_{spectrum_label}",
+                on_select="rerun",
+            )
+
+            selected_points = []
+            if event and event.selection and event.selection.points:
+                selected_points = [
+                    p['point_index'] for p in event.selection.points
+                ]
+
+            if selected_points:
+                st.warning(
+                    f"{len(selected_points)} point(s) sélectionné(s) : "
+                    f"indices {selected_points}"
+                )
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button(
+                        "🗑️ Supprimer ces points",
+                        key=f"del_{spectrum_label}",
+                    ):
+                        key = f"deleted_points_{spectrum_label}"
+                        existing = st.session_state.get(key, [])
+                        st.session_state[key] = list(
+                            set(existing + selected_points)
+                        )
+                        st.success(f"Points supprimés de R{ri+1}")
+                        st.rerun()
+
+                with col_b:
+                    key = f"deleted_points_{spectrum_label}"
+                    if st.session_state.get(key):
+                        if st.button(
+                            "↩️ Restaurer tous les points",
+                            key=f"restore_{spectrum_label}",
+                        ):
+                            st.session_state[key] = []
+                            st.rerun()
+
+            key = f"deleted_points_{spectrum_label}"
+            deleted = st.session_state.get(key, [])
+            if deleted:
+                st.info(
+                    f"Points actuellement exclus de R{ri+1} : "
+                    f"indices {sorted(deleted)}"
+                )
+        else:
+            key = f"deleted_points_{spectrum_label}"
+            deleted = st.session_state.get(key, [])
+            opacity = 0.35 if excluded_curve else 1.0
+            fig = _cv_figure_single(sc, excluded_indices=deleted if deleted else None)
+            fig.update_traces(opacity=opacity)
+            st.plotly_chart(fig, width='stretch', key=f"cv_view_{spectrum_label}")
 
 
 def _render_exclusion_checkboxes(reps, group_label: str, exclusions: dict) -> None:
@@ -467,7 +616,7 @@ def _plot_kk_residuals(kk: KKResult) -> None:
         xaxis_type="log",
         yaxis_title="Résidu normalisé (%)",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_cv_validation(cv_scans: dict, experiment: dict, exclusions: dict) -> None:
@@ -527,19 +676,60 @@ def _cv_validation_row(sc, e, ci, ri, conc, group_label, excluded):
 # Résumé et validation finale
 # ─────────────────────────────────────────────
 
+def _collect_all_spectrum_labels(experiment: dict) -> list:
+    """Return all spectrum_label strings (used as deleted_points keys) in the experiment."""
+    labels = []
+    mode = experiment.get("mode", "both")
+    n_elec = experiment.get("n_electrodes", 2)
+    concentrations = experiment.get("concentrations") or []
+
+    if mode in ("eis_only", "both"):
+        for e in range(1, n_elec + 1):
+            elec_key = f"electrode_{e}"
+            probe_reps = ((experiment.get("probe") or {}).get("eis") or {}).get(elec_key) or []
+            for ri in range(len(probe_reps)):
+                group_label = f"probe_{elec_key}"
+                labels.append(f"{group_label}_r{ri}")
+            cal = ((experiment.get("calibration") or {}).get("eis") or {}).get(elec_key) or []
+            for ci, rep_list in enumerate(cal):
+                group_label = f"eis_{elec_key}_c{ci}"
+                for ri in range(len(rep_list or [])):
+                    labels.append(f"{group_label}_r{ri}")
+
+    if mode in ("cv_only", "both"):
+        for e in range(1, n_elec + 1):
+            elec_key = f"electrode_{e}"
+            probe_reps = ((experiment.get("probe") or {}).get("cv") or {}).get(elec_key) or []
+            for ri in range(len(probe_reps)):
+                group_label = f"cv_probe_{elec_key}"
+                labels.append(f"{group_label}_r{ri}")
+            cal = ((experiment.get("calibration") or {}).get("cv") or {}).get(elec_key) or []
+            for ci, rep_list in enumerate(cal):
+                group_label = f"cv_{elec_key}_c{ci}"
+                for ri in range(len(rep_list or [])):
+                    labels.append(f"{group_label}_r{ri}")
+
+    return labels
+
+
 def _section_final_validation(experiment: dict, exclusions: dict) -> None:
     st.divider()
     st.subheader("📋 Résumé et validation finale")
 
-    # Compter le nombre total de spectres
     n_total  = _count_spectra(experiment)
-    n_exclu  = sum(len(v) for v in exclusions.values())
-    n_retenu = max(n_total - n_exclu, 0)
+    n_curves_excluded = sum(len(v) for v in exclusions.values())
+    n_retenu = max(n_total - n_curves_excluded, 0)
 
-    st.markdown(
-        f"**{n_exclu} spectre(s) exclu(s)** sur {n_total} — "
-        f"**{n_retenu} spectre(s) retenus** pour l'analyse."
+    all_spectrum_labels = _collect_all_spectrum_labels(experiment)
+    total_points_excluded = sum(
+        len(st.session_state.get(f"deleted_points_{lbl}", []))
+        for lbl in all_spectrum_labels
     )
+
+    st.markdown("#### Résumé des modifications")
+    st.write(f"- {n_curves_excluded} courbe(s) complète(s) exclue(s)")
+    st.write(f"- {total_points_excluded} point(s) individuel(s) exclu(s)")
+    st.write(f"- {n_retenu} spectre(s) retenus pour l'analyse")
 
     if st.button(
         "✅ Valider le prétraitement et passer à l'analyse",
@@ -548,6 +738,13 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
     ):
         exp_clean = _apply_exclusions(experiment, exclusions)
         st.session_state["experiment_clean"] = exp_clean
+        # Store point exclusions separately so downstream can apply them
+        point_exclusions = {
+            lbl: st.session_state[f"deleted_points_{lbl}"]
+            for lbl in all_spectrum_labels
+            if st.session_state.get(f"deleted_points_{lbl}")
+        }
+        st.session_state["point_exclusions"] = point_exclusions
         st.success(
             "✅ Prétraitement validé. Rendez-vous dans les pages "
             "**EIS seule**, **CV seule**, **Comparatif** ou **Prédiction**."
