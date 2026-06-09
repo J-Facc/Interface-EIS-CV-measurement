@@ -1,147 +1,69 @@
-"""EIS Analyzer — Streamlit entry point.
+"""EIS Analyzer v3 — point d'entrée Streamlit.
 
-All application state lives in st.session_state['session'] (EISSession).
-No global mutable state outside of session_state.
+Configure la navigation multipage et initialise les clés de session_state
+partagées (theme_mode, comparison_report, eis_session).
+`st.set_page_config` est appelé une seule fois ici ; les pages ne doivent
+pas le rappeler.
 """
 
 import streamlit as st
 
-from core.config import load_config, config_to_dict
-from core.pipeline import run_pipeline
-from core.cv_pipeline import run_cv_pipeline
-from core.cv_models import CVSession
-from ui.sidebar import render_sidebar
-from ui.tabs import render_eis_tabs, render_cv_tabs
-
 st.set_page_config(
     page_title="EIS Analyzer",
-    page_icon="⚡",
+    page_icon="⚗️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-_DEFAULT_CONFIG = config_to_dict(load_config())
+# ---------------------------------------------------------------------------
+# Initialisation des clés de session partagées
+# ---------------------------------------------------------------------------
 
-
-def _merge_overrides(base: dict, overrides: dict) -> dict:
-    """Apply user physical-parameter overrides to a config copy."""
-    cfg = {k: dict(v) if isinstance(v, dict) else v for k, v in base.items()}
-    cfg.setdefault("conditions", {})
-    cfg.setdefault("geometry", {})
-    cfg.setdefault("physics", {})
-
-    key_map = {
-        "Fv": "conditions",
-        "xe": "geometry",
-        "h": "geometry",
-        "d": "geometry",
-        "T": "physics",
-        "C0": "physics",
+def _init_shared_state() -> None:
+    """Crée les clés partagées si elles n'existent pas encore."""
+    defaults = {
+        "theme_mode": "light",        # "light" | "dark"
+        "eis_session": None,          # EISSession (page A)
+        "eis_config": None,
+        "eis_validation": None,
+        "comparison_report": None,    # dict retourné par compute_full_report (page C)
+        "comparison_session_data": None,  # session_data brut pour predict_from_session (page D)
     }
-    for key, value in overrides.items():
-        section = key_map.get(key)
-        if section:
-            cfg[section][key] = value
-    return cfg
+    for key, default in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default
 
 
-def main() -> None:
-    mode = st.radio(
-        "Interface",
-        ["⚡ EIS", "📈 CV"],
-        horizontal=True,
-        key="mode",
-        label_visibility="collapsed",
-    )
+_init_shared_state()
 
-    if mode == "⚡ EIS":
-        file_assignments, active_models, run_clicked, phys_overrides = render_sidebar("eis")
-        cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
+# ---------------------------------------------------------------------------
+# Toggle jour / nuit — sidebar, visible depuis toutes les pages
+# ---------------------------------------------------------------------------
 
-        if run_clicked:
-            if not file_assignments:
-                st.warning("⚠️ Veuillez charger au moins un fichier CSV.")
-                return
-            if not active_models:
-                st.warning("⚠️ Sélectionnez au moins un modèle de fit.")
-                return
-            with st.spinner("Analyse EIS en cours…"):
-                try:
-                    session, validation_results = run_pipeline(
-                        file_assignments=file_assignments,
-                        config=cfg,
-                        active_models=active_models,
-                    )
-                    st.session_state["session"] = session
-                    st.session_state["config"] = cfg
-                    st.session_state["validation_results"] = validation_results
-                    st.success(f"✅ Analyse terminée — {len(session.groups)} groupe(s).")
-                except Exception as exc:
-                    st.error(f"❌ Erreur : {exc}")
-                    return
+with st.sidebar:
+    current_theme = st.session_state["theme_mode"]
+    label = "🌙 Mode sombre" if current_theme == "light" else "☀️ Mode clair"
+    if st.button(label, key="__theme_toggle__", use_container_width=True):
+        st.session_state["theme_mode"] = "dark" if current_theme == "light" else "light"
+        st.rerun()
 
-        if "session" not in st.session_state:
-            st.markdown(
-                """
-## Bienvenue dans EIS Analyzer
+# ---------------------------------------------------------------------------
+# Navigation multipage
+# ---------------------------------------------------------------------------
 
-Analysez vos spectres d'impédance électrochimique (EIS) pour des biosenseurs
-microfluidiques ADN/ARN.
+pg = st.navigation(
+    {
+        "Analyse": [
+            st.Page("pages/A_eis.py", title="EIS seule",  icon="📡"),
+            st.Page("pages/B_cv.py",  title="CV seule",   icon="📈"),
+        ],
+        "Comparaison": [
+            st.Page("pages/C_comparatif.py", title="Comparatif", icon="⚖️"),
+        ],
+        "Inférence": [
+            st.Page("pages/D_inference.py", title="Prédiction", icon="🎯"),
+        ],
+    }
+)
 
-**Pour démarrer :**
-1. Chargez vos fichiers CSV dans la sidebar (gauche).
-2. Assignez chaque fichier à une étape : *bare*, *probe* ou *hybridation*.
-3. Saisissez la concentration pour les fichiers d'hybridation.
-4. Sélectionnez les modèles de fit souhaités.
-5. Cliquez sur **▶ Analyser EIS**.
-
----
-**Modèles disponibles :**
-- **Fit circulaire** — lecture géométrique rapide, aucun paramètre physique
-- **Randles contraint** — Re fixé, 3 paramètres libres (Rct, Qdl, α)
-- **Randles complet** — 8 paramètres libres, pondération Modulus
-- **DRT (FFT)** — distribution des temps de relaxation via FFT
-"""
-            )
-            return
-
-        render_eis_tabs(
-            st.session_state["session"],
-            st.session_state.get("config", cfg),
-            validation_results=st.session_state.get("validation_results"),
-        )
-
-    else:  # mode CV
-        cv_assignments, run_clicked_cv = render_sidebar("cv")
-
-        if run_clicked_cv:
-            if not cv_assignments:
-                st.warning("⚠️ Veuillez charger au moins un fichier CV.")
-                return
-            with st.spinner("Analyse CV en cours…"):
-                try:
-                    cv_session = run_cv_pipeline(cv_assignments)
-                    st.session_state["cv_session"] = cv_session
-                    st.success("✅ Analyse CV terminée.")
-                except Exception as exc:
-                    st.error(f"❌ Erreur CV : {exc}")
-                    return
-
-        if "cv_session" not in st.session_state:
-            st.markdown(
-                """
-## Voltampérométrie cyclique
-
-**Pour démarrer :**
-1. Chargez vos fichiers CV dans la sidebar (Bare, Probe, Hybridations).
-2. Saisissez les concentrations.
-3. Cliquez sur **▶ Analyser CV**.
-"""
-            )
-            return
-
-        render_cv_tabs(st.session_state["cv_session"])
-
-
-if __name__ == "__main__":
-    main()
+pg.run()

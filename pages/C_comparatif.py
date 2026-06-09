@@ -834,11 +834,6 @@ def _colorscale(n: int) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    st.set_page_config(
-        page_title="Comparaison des méthodes",
-        page_icon="📊",
-        layout="wide",
-    )
     st.title("📊 Comparaison des 6 méthodes d'extraction de concentration")
     st.caption(
         "A1 (ΔI_CV) · A2 (Rct fit) · A3 (Rct DRT) · "

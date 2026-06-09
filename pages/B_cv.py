@@ -442,7 +442,6 @@ def _export_scans_csv(result: dict) -> bytes:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    st.set_page_config(page_title="Analyse CV", page_icon="📈", layout="wide")
     st.title("📈 Analyse CV — Voltammétrie cyclique")
     st.caption("Extraction des pics redox · Normalisation probe · Calibration OLS")
 
