@@ -57,6 +57,58 @@ def _check_import() -> None:
         st.stop()
 
 
+def _init_exclusions(experiment: dict) -> None:
+    """
+    Initialise st.session_state['exclusions'] si absent ou incomplet.
+    Structure : {e_str: {modality: {ci: [False, ...]}}}
+    """
+    if "exclusions" not in st.session_state:
+        st.session_state["exclusions"] = {}
+
+    excl = st.session_state["exclusions"]
+    mode           = experiment.get("mode", "both")
+    concentrations = experiment.get("concentrations", [])
+    n_electrodes   = experiment.get("n_electrodes", 2)
+
+    modalities: list = []
+    if mode in ("eis_only", "both"):
+        modalities.append("eis")
+    if mode in ("cv_only", "both"):
+        modalities.append("cv")
+
+    for elec_idx in range(1, n_electrodes + 1):
+        e_str    = f"e{elec_idx}"
+        elec_key = f"electrode_{elec_idx}"
+        e_dict   = excl.setdefault(e_str, {})
+
+        for mod in modalities:
+            mod_dict = e_dict.setdefault(mod, {})
+
+            # Probe
+            if "probe" not in mod_dict:
+                probe_reps = (
+                    (experiment.get("probe") or {})
+                    .get(mod, {})
+                    .get(elec_key) or []
+                )
+                mod_dict["probe"] = [False] * len(probe_reps)
+
+            # Calibration
+            cal_concs = (
+                (experiment.get("calibration") or {})
+                .get(mod, {})
+                .get(elec_key) or []
+            )
+            for c_idx in range(len(concentrations)):
+                if c_idx not in mod_dict:
+                    reps   = cal_concs[c_idx] if c_idx < len(cal_concs) else []
+                    n_reps = len(reps)
+                    mod_dict[c_idx] = [False] * n_reps
+
+    if "deleted_points" not in st.session_state:
+        st.session_state["deleted_points"] = {}
+
+
 # ─────────────────────────────────────────────
 # Chargement des spectres / scans
 # ─────────────────────────────────────────────
@@ -766,8 +818,7 @@ def main() -> None:
     concentrations = experiment.get("concentrations") or []
     n_elec         = experiment.get("n_electrodes", 2)
 
-    if "exclusions" not in st.session_state:
-        st.session_state["exclusions"] = {}
+    _init_exclusions(experiment)
     exclusions: dict = st.session_state["exclusions"]
 
     # ── Sélecteur d'électrode ────────────────────────────────────────────────
