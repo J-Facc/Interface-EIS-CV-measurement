@@ -536,7 +536,7 @@ def _section1_data_quality(report: dict, session_data: dict) -> None:
                 xaxis_title="ΔZre_norm", yaxis_title="ΔZim_norm",
                 height=350, margin=dict(t=30),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         with col_cv:
             st.markdown("**Courbes CV — Courant normalisé**")
@@ -557,7 +557,7 @@ def _section1_data_quality(report: dict, session_data: dict) -> None:
                 xaxis_title="Potentiel E (V)", yaxis_title="ΔI_norm",
                 height=350, margin=dict(t=30),
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
 
         # Variabilité probe
         st.markdown("**Stabilité des réplicats probe (σ_probe)**")
@@ -621,7 +621,7 @@ def _section2_calibration(report: dict) -> None:
                 st.markdown(f"**{m}**")
                 fig = res.get("calibration_fig")
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                 _metric_with_help("RMSECV", res.get("rmsecv"), ".3f", "décades", "rmsecv_rmsep")
 
         # Méthodes B — 3 colonnes
@@ -636,7 +636,7 @@ def _section2_calibration(report: dict) -> None:
                 st.markdown(f"**{m}** (k={res.get('n_components', '?')} composantes)")
                 fig = res.get("calibration_fig")
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                 _metric_with_help("RMSECV", res.get("rmsecv"), ".3f", "décades", "rmsecv_rmsep")
                 with st.expander("ℹ️  Interpréter le scree plot"):
                     st.markdown(_INTERPRET["scree"])
@@ -647,7 +647,7 @@ def _section3_variance(report: dict) -> None:
     with st.expander("Section 3 — Décomposition de la variance", expanded=False):
         fig = report["figures"].get("variance_decomposition")
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         import pandas as pd
         rows = []
@@ -688,7 +688,7 @@ def _section4_validation(report: dict) -> None:
     with st.expander("Section 4 — Performance prédictive (validation)", expanded=False):
         fig = report["figures"].get("predicted_vs_true")
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         # Tableau RMSEP / Biais / CI_95 / RPD
         import pandas as pd
@@ -771,7 +771,7 @@ def _section5_loadings(report: dict, session_data: dict) -> None:
             tabs = st.tabs([k for k in loadings_figs.keys()])
             for tab, (key, fig) in zip(tabs, loadings_figs.items()):
                 with tab:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                     with st.expander("ℹ️  Interpréter les loadings"):
                         st.markdown(_INTERPRET["loadings"])
 

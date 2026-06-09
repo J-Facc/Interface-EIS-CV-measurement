@@ -29,13 +29,93 @@ def _spectrum_label(sp: EISSpectrum) -> str:
 
 # ── Nyquist ────────────────────────────────────────────────────────────────────
 
-def nyquist_figure(session: EISSession) -> go.Figure:
-    """Nyquist plot. X = Re(Z), Y = -Im(Z) > 0 (upper-right quadrant)."""
+def nyquist_figure(
+    session: EISSession = None,
+    spectrum=None,
+    excluded_indices: list = None,
+    selection_mode: bool = False,
+) -> go.Figure:
+    """Nyquist plot. X = Re(Z), Y = -Im(Z) > 0 (upper-right quadrant).
+
+    Can be called with a full EISSession (session=) or a single EISSpectrum
+    (spectrum=) for the pretraitement point-editing mode.
+    """
     theme = get_theme("light")
     colors = theme["colors"]
     dashes = theme["fit_dash"]
     fig = go.Figure()
 
+    # ── Single-spectrum mode (pretraitement editing) ──────────────────────────
+    if spectrum is not None:
+        sp = spectrum
+        color = colors[0]
+        lbl = sp.label
+
+        if excluded_indices:
+            excl_set = set(excluded_indices)
+            keep_idx = [i for i in range(len(sp.f)) if i not in excl_set]
+            excl_idx = sorted(excl_set)
+
+            fig.add_trace(go.Scatter(
+                x=sp.Zre[keep_idx], y=sp.Zim[keep_idx],
+                mode="markers",
+                name=f"{lbl} — exp",
+                marker=dict(color=color, size=6, symbol="circle"),
+                customdata=[[sp.f[i], i] for i in keep_idx],
+                hovertemplate=(
+                    f"<b>{lbl}</b><br>"
+                    "Re(Z) = %{x:.1f} Ω<br>"
+                    "−Im(Z) = %{y:.1f} Ω<br>"
+                    "f = %{customdata[0]:.3e} Hz<br>"
+                    "index = %{customdata[1]}<extra></extra>"
+                ),
+            ))
+            fig.add_trace(go.Scatter(
+                x=sp.Zre[excl_idx], y=sp.Zim[excl_idx],
+                mode="markers",
+                name="Points exclus",
+                marker=dict(color="lightgray", size=6, symbol="x", line=dict(width=1, color="gray")),
+                customdata=[[sp.f[i], i] for i in excl_idx],
+                hovertemplate=(
+                    "<b>Exclu</b><br>"
+                    "Re(Z) = %{x:.1f} Ω<br>"
+                    "−Im(Z) = %{y:.1f} Ω<br>"
+                    "f = %{customdata[0]:.3e} Hz<br>"
+                    "index = %{customdata[1]}<extra></extra>"
+                ),
+            ))
+        else:
+            fig.add_trace(go.Scatter(
+                x=sp.Zre, y=sp.Zim,
+                mode="markers",
+                name=f"{lbl} — exp",
+                marker=dict(color=color, size=6, symbol="circle"),
+                customdata=[[f, i] for i, f in enumerate(sp.f)],
+                hovertemplate=(
+                    f"<b>{lbl}</b><br>"
+                    "Re(Z) = %{x:.1f} Ω<br>"
+                    "−Im(Z) = %{y:.1f} Ω<br>"
+                    "f = %{customdata[0]:.3e} Hz<br>"
+                    "index = %{customdata[1]}<extra></extra>"
+                ),
+            ))
+
+        fig.update_layout(
+            title=f"Nyquist — {lbl}",
+            xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
+            yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"),
+            legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+            hovermode="closest",
+        )
+        if selection_mode:
+            fig.update_layout(
+                dragmode="select",
+                clickmode="event+select",
+            )
+        apply_theme_to_figure(fig, "light")
+        return fig
+
+    # ── Full session mode ─────────────────────────────────────────────────────
     all_spectra: list = []
     if session.bare:
         all_spectra.append(session.bare)
