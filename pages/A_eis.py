@@ -39,6 +39,12 @@ def main() -> None:
     st.title("📡 Analyse EIS — Spectroscopie d'impédance")
     st.caption("Fit Randles · DRT · Validation Kramers-Kronig · Calibration OLS")
 
+    if "experiment_clean" not in st.session_state or st.session_state["experiment_clean"] is None:
+        st.warning("⚠️ Importez et prétraitez vos données avant l'analyse.")
+        st.page_link("pages/0_import.py", label="Aller à l'import", icon="📂")
+        st.stop()
+        return
+
     file_assignments, active_models, run_clicked, phys_overrides = render_sidebar("eis")
     cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
 

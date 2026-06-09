@@ -446,6 +446,12 @@ def main() -> None:
     st.title("📈 Analyse CV — Voltammétrie cyclique")
     st.caption("Extraction des pics redox · Normalisation probe · Calibration OLS")
 
+    if "experiment_clean" not in st.session_state or st.session_state["experiment_clean"] is None:
+        st.warning("⚠️ Importez et prétraitez vos données avant l'analyse.")
+        st.page_link("pages/0_import.py", label="Aller à l'import", icon="📂")
+        st.stop()
+        return
+
     # --- Saisie des données ---
     data = render_data_input(mode="cv_only", prefix="page_B")
 

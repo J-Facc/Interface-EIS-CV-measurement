@@ -533,6 +533,12 @@ def main() -> None:
     st.title("🔬 Inférence de concentration")
     st.caption("Prédit la concentration d'une mesure inconnue à partir d'une session de calibration.")
 
+    if "experiment_clean" not in st.session_state or st.session_state["experiment_clean"] is None:
+        st.warning("⚠️ Importez et prétraitez vos données avant l'analyse.")
+        st.page_link("pages/0_import.py", label="Aller à l'import", icon="📂")
+        st.stop()
+        return
+
     # -----------------------------------------------------------------------
     # Étape 1 — Source du modèle de calibration
     # -----------------------------------------------------------------------
