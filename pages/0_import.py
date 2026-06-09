@@ -95,6 +95,12 @@ def _section_load_existing() -> None:
             st.session_state[_sk("conc_params")] = params
             # Stocker l'expérience chargée pour pré-remplir les uploaders
             st.session_state[_sk("loaded_exp")] = exp
+            # Restaurer les exclusions et points supprimés si présents dans le ZIP
+            if exp.get("exclusions"):
+                st.session_state["exclusions"] = exp["exclusions"]
+            if exp.get("deleted_points"):
+                for lbl, pts in exp["deleted_points"].items():
+                    st.session_state[f"deleted_points_{lbl}"] = pts
             st.success(
                 f"✅ Expérience chargée : **{exp.get('name', '—')}** ({exp.get('date', '—')})"
             )

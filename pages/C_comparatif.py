@@ -17,8 +17,6 @@ from fits.registry import get_model
 from comparison.report import compute_full_report
 from comparison.plots import plot_pls_loadings
 from comparison.metrics import compute_sigma_probe
-from ui.data_input import render_data_input
-
 _CONFIG = None
 
 
@@ -198,7 +196,7 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
 
     Parameters
     ----------
-    data : dict retourné par render_data_input(mode='both')
+    data : dict experiment_clean (st.session_state['experiment_clean'])
     progress_cb : callable(float, str) pour mettre à jour la barre Streamlit
 
     Returns
@@ -368,6 +366,10 @@ def _load_session_data(data: dict, progress_cb) -> dict | None:
     val_out = None
     val_data = data.get("validation")
     if val_data:
+        # S'assurer que val_data a un champ "concentrations"
+        if "concentrations" not in val_data or not val_data["concentrations"]:
+            val_data = dict(val_data)
+            val_data["concentrations"] = list(concs)
         progress_cb(0.88, "Chargement des données de validation…")
         val_out = _load_validation_data(val_data, config, freq_grid, pot_grid,
                                         Zre_probe, Zim_probe, I_probe_grid,
@@ -886,37 +888,57 @@ def main() -> None:
         "B1 (PLS CV) · B2 (PLS EIS) · B3 (PLS EIS+CV)"
     )
 
-    if "experiment_clean" not in st.session_state or st.session_state["experiment_clean"] is None:
-        st.warning("⚠️ Importez et prétraitez vos données avant l'analyse.")
-        st.page_link("pages/0_import.py", label="Aller à l'import", icon="📂")
+    # Vérification que les données sont disponibles
+    if not st.session_state.get("preprocessing_done", False):
+        st.warning(
+            "⚠️ Aucune donnée disponible. "
+            "Importez et prétraitez vos données d'abord."
+        )
+        st.page_link("pages/0_import.py", label="→ Aller à l'import", icon="📂")
         st.stop()
         return
 
-    # ---- Entrée des données ----
-    data = render_data_input(mode="both", prefix="page_C")
+    # Récupérer les données prétraitées
+    experiment = st.session_state["experiment_clean"]
 
-    if not data["run_clicked"]:
-        st.info("Complétez l'upload des fichiers EIS et CV, puis cliquez sur **▶ Lancer l'analyse**.")
+    # Récupérer les résultats de validation KK si disponibles
+    validation_results = st.session_state.get("validation_results", None)  # noqa: F841
+
+    if experiment.get("mode") not in ("both", None):
+        st.warning(
+            "⚠️ La comparaison des 6 méthodes nécessite des données EIS **et** CV. "
+            "Vérifiez le mode d'acquisition (page Import)."
+        )
+
+    if st.button("↺ Relancer l'analyse", key="comp_rerun_btn"):
+        st.session_state["comparison_report"]       = None
+        st.session_state["comparison_session_data"] = None
+        st.rerun()
+
+    if st.session_state.get("comparison_session_data") is None:
+        progress_bar = st.progress(0, text="Initialisation…")
+
+        def _progress(frac: float, msg: str):
+            progress_bar.progress(min(frac, 1.0), text=msg)
+
+        with st.spinner("Analyse en cours…"):
+            session_data = _load_all_data_safe(experiment, _progress)
+
+        if session_data is None:
+            progress_bar.empty()
+            return
+
+        _progress(0.97, "Calcul des métriques comparatives…")
+        report = compute_full_report(session_data)
+        st.session_state["comparison_report"]       = report
+        st.session_state["comparison_session_data"] = session_data
+        progress_bar.progress(1.0, text="Analyse terminée ✓")
+
+    report       = st.session_state["comparison_report"]
+    session_data = st.session_state["comparison_session_data"]
+
+    if report is None or session_data is None:
         return
-
-    # ---- Calcul du rapport ----
-    progress_bar = st.progress(0, text="Initialisation…")
-
-    def _progress(frac: float, msg: str):
-        progress_bar.progress(min(frac, 1.0), text=msg)
-
-    with st.spinner("Analyse en cours…"):
-        session_data = _load_all_data_safe(data, _progress)
-
-    if session_data is None:
-        progress_bar.empty()
-        return
-
-    _progress(0.97, "Calcul des métriques comparatives…")
-    report = compute_full_report(session_data)
-    st.session_state["comparison_report"]      = report
-    st.session_state["comparison_session_data"] = session_data
-    progress_bar.progress(1.0, text="Analyse terminée ✓")
 
     # ---- Affichage du rapport ----
     _render_report(report, session_data)

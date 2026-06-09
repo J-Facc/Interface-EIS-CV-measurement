@@ -14,7 +14,6 @@ from scipy.signal import find_peaks
 
 from core.cv_loader import load_cv_file, average_cv_replicates
 from core.cv_models import CVScan
-from ui.data_input import render_data_input
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +71,7 @@ def _normalize_peak(I_pic_hyb: float, I_pic_probe: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Chargement des fichiers depuis le dict data_input
+# Chargement des fichiers depuis experiment_clean
 # ---------------------------------------------------------------------------
 
 def _load_scan_from_file(uploaded_file, label: str, concentration: float, step: str) -> CVScan | None:
@@ -94,7 +93,7 @@ def _run_cv_analysis(data: dict) -> dict | None:
 
     Parameters
     ----------
-    data : dict retourné par render_data_input(mode='cv_only')
+    data : dict experiment_clean (st.session_state['experiment_clean'])
 
     Returns
     -------
@@ -446,27 +445,37 @@ def main() -> None:
     st.title("📈 Analyse CV — Voltammétrie cyclique")
     st.caption("Extraction des pics redox · Normalisation probe · Calibration OLS")
 
-    if "experiment_clean" not in st.session_state or st.session_state["experiment_clean"] is None:
-        st.warning("⚠️ Importez et prétraitez vos données avant l'analyse.")
-        st.page_link("pages/0_import.py", label="Aller à l'import", icon="📂")
+    # Vérification que les données sont disponibles
+    if not st.session_state.get("preprocessing_done", False):
+        st.warning(
+            "⚠️ Aucune donnée disponible. "
+            "Importez et prétraitez vos données d'abord."
+        )
+        st.page_link("pages/0_import.py", label="→ Aller à l'import", icon="📂")
         st.stop()
         return
 
-    # --- Saisie des données ---
-    data = render_data_input(mode="cv_only", prefix="page_B")
+    # Récupérer les données prétraitées
+    experiment = st.session_state["experiment_clean"]
 
-    if not data["run_clicked"]:
-        st.info("Complétez l'upload des fichiers puis cliquez sur **▶ Lancer l'analyse**.")
-        return
+    # Récupérer les résultats de validation KK si disponibles
+    validation_results = st.session_state.get("validation_results", None)  # noqa: F841
 
-    # --- Analyse ---
-    with st.spinner("Chargement et analyse des courbes CV…"):
-        result = _run_cv_analysis(data)
+    if st.button("↺ Relancer l'analyse", key="cv_rerun_btn"):
+        st.session_state.pop("cv_result", None)
+        st.session_state.pop("cv_ols", None)
+        st.rerun()
 
-    if result is None:
-        return
+    if "cv_result" not in st.session_state:
+        with st.spinner("Chargement et analyse des courbes CV…"):
+            result = _run_cv_analysis(experiment)
+        if result is None:
+            return
+        st.session_state["cv_result"] = result
+        st.session_state["cv_ols"]    = _ols_calibration(result["groups"])
 
-    ols = _ols_calibration(result["groups"])
+    result = st.session_state["cv_result"]
+    ols    = st.session_state.get("cv_ols")
 
     # --- Onglets ---
     tab_volt, tab_pic, tab_calib, tab_params, tab_export = st.tabs([

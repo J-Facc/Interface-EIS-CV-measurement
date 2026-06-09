@@ -533,11 +533,21 @@ def main() -> None:
     st.title("🔬 Inférence de concentration")
     st.caption("Prédit la concentration d'une mesure inconnue à partir d'une session de calibration.")
 
-    if "experiment_clean" not in st.session_state or st.session_state["experiment_clean"] is None:
-        st.warning("⚠️ Importez et prétraitez vos données avant l'analyse.")
-        st.page_link("pages/0_import.py", label="Aller à l'import", icon="📂")
+    # Vérification que les données sont disponibles
+    if not st.session_state.get("preprocessing_done", False):
+        st.warning(
+            "⚠️ Aucune donnée disponible. "
+            "Importez et prétraitez vos données d'abord."
+        )
+        st.page_link("pages/0_import.py", label="→ Aller à l'import", icon="📂")
         st.stop()
         return
+
+    # Récupérer les données prétraitées
+    experiment = st.session_state["experiment_clean"]
+
+    # Récupérer les résultats de validation KK si disponibles
+    validation_results = st.session_state.get("validation_results", None)  # noqa: F841
 
     # -----------------------------------------------------------------------
     # Étape 1 — Source du modèle de calibration

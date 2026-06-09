@@ -30,7 +30,9 @@ def _init_shared_state() -> None:
         "experiment": None,
         "experiment_clean": None,
         "import_validated": False,
+        "preprocessing_done": False,
         "exclusions": {},
+        "validation_results": None,
     }
     for key, default in defaults.items():
         if key not in st.session_state:

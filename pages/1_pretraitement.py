@@ -9,6 +9,7 @@ Nouvelle interface (refonte complète) :
 from __future__ import annotations
 
 import copy
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -601,8 +602,107 @@ def _apply_exclusions(experiment: dict, exclusions: dict) -> dict:
     return exp_clean
 
 
-def _section_final_validation(experiment: dict, exclusions: dict) -> None:
+def _run_kk_validation(exp_clean: dict, exclusions: dict) -> None:
+    """Lance la validation KK sur tous les groupes EIS de l'expérience nettoyée."""
+    from core.validator import validate_replicate_group
+
+    mode = exp_clean.get("mode", "both")
+    if mode not in ("eis_only", "both"):
+        return
+
+    n_elec = exp_clean.get("n_electrodes", 2)
+    concentrations = exp_clean.get("concentrations") or []
+    validation_results: dict = {}
+
+    eis_spectra = _load_eis_spectra(exp_clean)
+
+    for e in range(1, n_elec + 1):
+        elec_key = f"electrode_{e}"
+
+        # Probe
+        probe_reps = eis_spectra["probe"].get(elec_key) or []
+        active_probe = [
+            sp for ri, sp in enumerate(probe_reps)
+            if not _is_excluded(f"probe_{elec_key}", ri, exclusions)
+        ]
+        if active_probe:
+            vr = validate_replicate_group(
+                [np.array(sp.f) for sp in active_probe],
+                [np.array(sp.Zre) for sp in active_probe],
+                [np.array(sp.Zim) for sp in active_probe],
+                label=f"probe_{elec_key}",
+            )
+            validation_results[f"probe_{elec_key}"] = vr
+
+        # Calibration
+        cal_reps_list = eis_spectra["calibration"].get(elec_key) or []
+        for ci, reps in enumerate(cal_reps_list):
+            gl = f"eis_{elec_key}_c{ci}"
+            active = [
+                sp for ri, sp in enumerate(reps)
+                if not _is_excluded(gl, ri, exclusions)
+            ]
+            if active:
+                conc = concentrations[ci] if ci < len(concentrations) else 0.0
+                label = f"e{e}_{_format_conc(conc)}"
+                vr = validate_replicate_group(
+                    [np.array(sp.f) for sp in active],
+                    [np.array(sp.Zre) for sp in active],
+                    [np.array(sp.Zim) for sp in active],
+                    label=label,
+                )
+                validation_results[gl] = vr
+
+    st.session_state["validation_results"] = validation_results
+
+
+def _section_save(experiment: dict, exclusions: dict, all_labels: list) -> None:
+    """Section de sauvegarde de l'expérience prétraitée (ZIP téléchargeable)."""
+    from core.experiment_io import save_experiment
+
     st.divider()
+    st.markdown("### 💾 Sauvegarder l'expérience prétraitée")
+    st.caption(
+        "Sauvegarde les données originales + les exclusions de courbes "
+        "et de points. Rechargeable depuis la page Import."
+    )
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        save_name = st.text_input(
+            "Nom de la sauvegarde",
+            value=experiment.get("name", "experience") or "experience",
+            key="save_name_pretraitement",
+        )
+    with col2:
+        st.write("")
+        st.write("")
+        save_clicked = st.button("💾 Sauvegarder", key="save_pretraitement")
+
+    if save_clicked and save_name:
+        deleted_points = {
+            lbl: st.session_state[f"deleted_points_{lbl}"]
+            for lbl in all_labels
+            if st.session_state.get(f"deleted_points_{lbl}")
+        }
+        zip_bytes = save_experiment(
+            experiment,
+            exclusions=exclusions,
+            deleted_points=deleted_points,
+        )
+        st.download_button(
+            label=f"📥 Télécharger {save_name}.zip",
+            data=zip_bytes,
+            file_name=f"{save_name}.zip",
+            mime="application/zip",
+            key="download_pretraitement",
+        )
+        st.success(f"Prêt à télécharger : {save_name}.zip")
+
+    st.divider()
+
+
+def _section_final_validation(experiment: dict, exclusions: dict) -> None:
     st.subheader("📋 Résumé et validation finale")
 
     n_total = _count_spectra(experiment)
@@ -620,6 +720,8 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
     col_b.metric("Points exclus", n_pts_excl)
     col_c.metric("Spectres retenus", n_kept)
 
+    _section_save(experiment, exclusions, all_labels)
+
     if st.button(
         "✅ Valider le prétraitement et passer à l'analyse",
         key="preproc_validate_btn",
@@ -627,12 +729,21 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
     ):
         exp_clean = _apply_exclusions(experiment, exclusions)
         st.session_state["experiment_clean"] = exp_clean
+        st.session_state["preprocessing_done"] = True
+        # Réinitialiser les sessions d'analyse pour forcer un recalcul
+        for key in ("eis_session", "eis_validation", "comparison_report", "comparison_session_data"):
+            st.session_state[key] = None
         point_exclusions = {
             lbl: st.session_state[f"deleted_points_{lbl}"]
             for lbl in all_labels
             if st.session_state.get(f"deleted_points_{lbl}")
         }
         st.session_state["point_exclusions"] = point_exclusions
+
+        # Lancer la validation KK sur les spectres EIS actifs
+        if experiment.get("mode") in ("eis_only", "both"):
+            _run_kk_validation(exp_clean, exclusions)
+
         st.success(
             "✅ Prétraitement validé. Rendez-vous dans les pages "
             "**EIS seule**, **CV seule**, **Comparatif** ou **Prédiction**."
