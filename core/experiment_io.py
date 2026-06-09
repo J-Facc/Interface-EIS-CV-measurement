@@ -28,13 +28,15 @@ import yaml
 # Sauvegarde
 # ─────────────────────────────────────────────
 
-def save_experiment(experiment: Dict[str, Any]) -> bytes:
+def save_experiment(experiment: Dict[str, Any], exclusions: Optional[Dict] = None, deleted_points: Optional[Dict] = None) -> bytes:
     """
     Sérialise un dict experiment dans un ZIP en mémoire.
 
     Parameters
     ----------
     experiment : dict conforme à la structure définie dans pages/0_import.py
+    exclusions : dict[group_label -> set/list of int] — réplicats exclus
+    deleted_points : dict[label -> list[int]] — points exclus par spectre
 
     Returns
     -------
@@ -44,7 +46,7 @@ def save_experiment(experiment: Dict[str, Any]) -> bytes:
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
 
         # ── métadonnées YAML ──────────────────────────────────────────────
-        meta = {
+        meta: Dict[str, Any] = {
             "name":         experiment.get("name", ""),
             "date":         experiment.get("date", datetime.now().strftime("%Y-%m-%d")),
             "mode":         experiment.get("mode", "both"),
@@ -52,6 +54,21 @@ def save_experiment(experiment: Dict[str, Any]) -> bytes:
             "n_electrodes": int(experiment.get("n_electrodes", 2)),
             "n_replicats":  int(experiment.get("n_replicats", 3)),
         }
+
+        # Sérialiser les exclusions (set → list pour YAML)
+        if exclusions:
+            meta["exclusions"] = {
+                k: sorted(int(i) for i in v)
+                for k, v in exclusions.items()
+                if v
+            }
+        if deleted_points:
+            meta["deleted_points"] = {
+                k: sorted(int(i) for i in v)
+                for k, v in deleted_points.items()
+                if v
+            }
+
         zf.writestr("experiment.yaml", yaml.dump(meta, allow_unicode=True))
 
         # ── probe ─────────────────────────────────────────────────────────
@@ -193,16 +210,25 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
                     elec_dict[elec_key] = conc_list
                 validation[sig_type] = elec_dict
 
+        # ── exclusions et points supprimés (optionnel) ────────────────────
+        raw_exclusions = meta.get("exclusions") or {}
+        exclusions_out = {k: set(v) for k, v in raw_exclusions.items()} if raw_exclusions else {}
+
+        raw_deleted = meta.get("deleted_points") or {}
+        deleted_points_out = {k: list(v) for k, v in raw_deleted.items()} if raw_deleted else {}
+
         return {
-            "name":         meta.get("name", ""),
-            "date":         meta.get("date", ""),
-            "mode":         mode,
+            "name":           meta.get("name", ""),
+            "date":           meta.get("date", ""),
+            "mode":           mode,
             "concentrations": meta.get("concentrations", []),
-            "n_electrodes": n_elec,
-            "n_replicats":  int(meta.get("n_replicats", 3)),
-            "probe":        probe,
-            "calibration":  calibration,
-            "validation":   validation,
+            "n_electrodes":   n_elec,
+            "n_replicats":    int(meta.get("n_replicats", 3)),
+            "probe":          probe,
+            "calibration":    calibration,
+            "validation":     validation,
+            "exclusions":     exclusions_out,
+            "deleted_points": deleted_points_out,
         }
 
 
