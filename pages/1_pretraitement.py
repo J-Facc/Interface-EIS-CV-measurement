@@ -804,6 +804,60 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
 
 
 # ─────────────────────────────────────────────
+# Export des graphiques du prétraitement
+# ─────────────────────────────────────────────
+
+def _section_export_graphs(experiment: dict, exclusions: dict) -> None:
+    """Section d'export HTML/PDF des graphiques du prétraitement."""
+    st.markdown("### 📊 Exporter les graphiques du prétraitement")
+
+    validation_results = st.session_state.get("validation_results")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("📄 Exporter en HTML", key="export_pretraitement_html"):
+            try:
+                from comparison.pretraitement_report import generate_pretraitement_report_html
+                html_content = generate_pretraitement_report_html(
+                    experiment, exclusions, validation_results
+                )
+                st.download_button(
+                    label="📥 Télécharger le rapport HTML",
+                    data=html_content,
+                    file_name="pretraitement_rapport.html",
+                    mime="text/html",
+                    key="dl_pretraitement_html",
+                )
+            except Exception as exc:
+                st.error(f"Erreur lors de la génération HTML : {exc}")
+
+    with col2:
+        if st.button("📑 Exporter en PDF", key="export_pretraitement_pdf"):
+            try:
+                from comparison.pretraitement_report import generate_pretraitement_report_pdf
+                pdf_bytes = generate_pretraitement_report_pdf(
+                    experiment, exclusions, validation_results
+                )
+                if pdf_bytes:
+                    st.download_button(
+                        label="📥 Télécharger le rapport PDF",
+                        data=pdf_bytes,
+                        file_name="pretraitement_rapport.pdf",
+                        mime="application/pdf",
+                        key="dl_pretraitement_pdf",
+                    )
+                else:
+                    st.info(
+                        "Export PDF non disponible (weasyprint requis). "
+                        "Utilisez l'export HTML et imprimez depuis le navigateur "
+                        "(Ctrl+P → Enregistrer en PDF)."
+                    )
+            except Exception as exc:
+                st.error(f"Erreur lors de la génération PDF : {exc}")
+
+
+# ─────────────────────────────────────────────
 # Page principale
 # ─────────────────────────────────────────────
 
@@ -892,6 +946,7 @@ def main() -> None:
         )
 
     _section_final_validation(experiment, exclusions)
+    _section_export_graphs(experiment, exclusions)
 
 
 if __name__ == "__main__":
