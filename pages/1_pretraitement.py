@@ -807,54 +807,44 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
 # Export des graphiques du prétraitement
 # ─────────────────────────────────────────────
 
+def _collect_deleted_points() -> dict:
+    """Collecte tous les deleted_points depuis st.session_state."""
+    return {
+        k: v for k, v in st.session_state.items()
+        if k.startswith("deleted_points_") and v
+    }
+
+
 def _section_export_graphs(experiment: dict, exclusions: dict) -> None:
-    """Section d'export HTML/PDF des graphiques du prétraitement."""
-    st.markdown("### 📊 Exporter les graphiques du prétraitement")
+    """Section d'export HTML du rapport de prétraitement (miroir de la page)."""
+    st.markdown("### 📊 Exporter le rapport de prétraitement")
 
-    validation_results = st.session_state.get("validation_results")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("📄 Exporter en HTML", key="export_pretraitement_html"):
+    if st.button("📄 Exporter le rapport prétraitement (HTML)", key="export_pretraitement_html"):
+        with st.spinner("Génération du rapport…"):
             try:
                 from comparison.pretraitement_report import generate_pretraitement_report_html
                 html_content = generate_pretraitement_report_html(
-                    experiment, exclusions, validation_results
+                    experiment=experiment,
+                    exclusions=exclusions,
+                    deleted_points=_collect_deleted_points(),
+                    validation_results=st.session_state.get("validation_results"),
+                    experiment_clean=st.session_state.get("experiment_clean"),
                 )
+                exp_name = experiment.get("name", "pretraitement") or "pretraitement"
                 st.download_button(
                     label="📥 Télécharger le rapport HTML",
-                    data=html_content,
-                    file_name="pretraitement_rapport.html",
+                    data=html_content.encode("utf-8"),
+                    file_name=f"pretraitement_{exp_name}.html",
                     mime="text/html",
                     key="dl_pretraitement_html",
                 )
+                st.success("Rapport généré — ouvrez le fichier dans un navigateur.")
+                st.info(
+                    "Pour un PDF : ouvrez le HTML dans Chrome ou Firefox, "
+                    "puis Ctrl+P → Enregistrer en PDF."
+                )
             except Exception as exc:
                 st.error(f"Erreur lors de la génération HTML : {exc}")
-
-    with col2:
-        if st.button("📑 Exporter en PDF", key="export_pretraitement_pdf"):
-            try:
-                from comparison.pretraitement_report import generate_pretraitement_report_pdf
-                pdf_bytes = generate_pretraitement_report_pdf(
-                    experiment, exclusions, validation_results
-                )
-                if pdf_bytes:
-                    st.download_button(
-                        label="📥 Télécharger le rapport PDF",
-                        data=pdf_bytes,
-                        file_name="pretraitement_rapport.pdf",
-                        mime="application/pdf",
-                        key="dl_pretraitement_pdf",
-                    )
-                else:
-                    st.info(
-                        "Export PDF non disponible (weasyprint requis). "
-                        "Utilisez l'export HTML et imprimez depuis le navigateur "
-                        "(Ctrl+P → Enregistrer en PDF)."
-                    )
-            except Exception as exc:
-                st.error(f"Erreur lors de la génération PDF : {exc}")
 
 
 # ─────────────────────────────────────────────
