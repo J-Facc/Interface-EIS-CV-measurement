@@ -9,6 +9,8 @@ from core.models import EISSession, EISSpectrum
 from plotting.theme import get_theme, apply_theme_to_figure
 
 
+import plotly.colors as _pc
+
 _SUP_MAP = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
 
 
@@ -163,6 +165,72 @@ def nyquist_figure(
         yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"),
         legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0, yanchor="top"),
         hovermode="closest",
+    )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
+# ── Nyquist par électrode ──────────────────────────────────────────────────────
+
+def _conc_color(concentration: float, c_min: float, c_max: float) -> str:
+    """Couleur log-interpolée violet→rouge pour une concentration donnée."""
+    if c_min > 0 and c_max > 0 and c_min < c_max:
+        t = (np.log10(concentration) - np.log10(c_min)) / (np.log10(c_max) - np.log10(c_min))
+    else:
+        t = 0.5
+    t = float(np.clip(t, 0, 1))
+    return _pc.sample_colorscale("plasma", [t])[0]
+
+
+def nyquist_figure_electrode(
+    spectra: list,
+    title: str = "",
+) -> go.Figure:
+    """Nyquist pour une électrode : une trace par concentration, couleur log-scale.
+
+    Parameters
+    ----------
+    spectra : list de dicts avec clés "label", "Zre", "Zim", "concentration".
+              Passer le probe avec concentration=0 pour l'afficher en noir.
+    title   : titre du graphique.
+    """
+    fig = go.Figure()
+
+    pos = [s for s in spectra if s["concentration"] > 0]
+    c_vals = [s["concentration"] for s in pos]
+    c_min  = min(c_vals) if c_vals else 1e-12
+    c_max  = max(c_vals) if c_vals else 1e-8
+
+    for s in spectra:
+        conc = s["concentration"]
+        Zre  = np.asarray(s["Zre"])
+        Zim  = np.asarray(s["Zim"])
+        lbl  = s["label"]
+
+        if conc <= 0:
+            color = "black"
+        else:
+            color = _conc_color(conc, c_min, c_max)
+
+        fig.add_trace(go.Scatter(
+            x=Zre, y=Zim,
+            mode="markers",
+            name=lbl,
+            marker=dict(color=color, size=5, symbol="circle"),
+            hovertemplate=(
+                f"<b>{lbl}</b><br>"
+                "Re(Z) = %{x:.1f} Ω<br>"
+                "−Im(Z) = %{y:.1f} Ω<extra></extra>"
+            ),
+        ))
+
+    fig.update_layout(
+        title=title or "Diagramme de Nyquist",
+        xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
+        yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"),
+        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+        hovermode="closest",
+        margin=dict(r=120),
     )
     apply_theme_to_figure(fig, "light")
     return fig

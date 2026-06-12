@@ -14,6 +14,7 @@ from scipy.signal import find_peaks
 
 from core.cv_loader import load_cv_file, average_cv_replicates
 from core.cv_models import CVScan
+from plotting.cv_plots import cv_figure_electrode
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +199,8 @@ def _run_cv_analysis(data: dict) -> dict | None:
 
 def _ols_calibration(groups: list) -> dict | None:
     """
-    Régression OLS : log10([c]) = a·ΔI_norm + b
+    Régression OLS : ΔI_norm = a·log10([c]) + b
+    Axes : X = log10([c]), Y = |ΔI_norm|
 
     Retourne None si moins de 3 points valides.
     """
@@ -211,8 +213,8 @@ def _ols_calibration(groups: list) -> dict | None:
     if len(concs) < 3:
         return None
 
-    x = np.array(norms)
-    y = np.log10(concs)
+    x = np.log10(concs)
+    y = np.abs(np.array(norms))
 
     res = stats.linregress(x, y)
     n = len(x)
@@ -334,7 +336,7 @@ def _fig_calibration(ols: dict) -> go.Figure:
     fig.add_annotation(
         xref="paper", yref="paper", x=0.04, y=0.96,
         text=(
-            f"<b>OLS</b> : log([c]) = {ols['slope']:.3f}·ΔI_norm "
+            f"<b>OLS</b> : ΔI_norm = {ols['slope']:.3f}·log([c]) "
             f"+ {ols['intercept']:.3f}<br>"
             f"R² = {ols['r2']:.4f} — n = {ols['n']} points"
         ),
@@ -344,8 +346,8 @@ def _fig_calibration(ols: dict) -> go.Figure:
     )
     fig.update_layout(
         title="Calibration CV — Régression OLS",
-        xaxis_title="ΔI_norm",
-        yaxis_title="log₁₀([c] / M)",
+        xaxis_title="log₁₀([c] / M)",
+        yaxis_title="ΔI_norm = |ΔI| / |I_probe|",
     )
     return fig
 
@@ -388,6 +390,44 @@ def _fig_params_table(result: dict) -> go.Figure:
     )])
     fig.update_layout(title="Paramètres extraits par concentration et électrode")
     return fig
+
+
+def _build_electrode_scan_list(result: dict, electrode: int) -> list:
+    """Construit la liste de dicts pour cv_figure_electrode() pour une électrode."""
+    scans = []
+    probe = result["probe_scan"]
+    scans.append({"label": "Probe", "E": probe.E, "I": probe.I, "concentration": 0.0})
+    for grp in result["groups"]:
+        avg = grp.get(f"avg_e{electrode}")
+        if avg is not None:
+            exp = int(np.floor(np.log10(grp["concentration"]))) if grp["concentration"] > 0 else 0
+            mant = grp["concentration"] / 10 ** exp if grp["concentration"] > 0 else 0
+            lbl = f"C = {mant:.0f}×10{str(exp).translate(str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻'))} M"
+            scans.append({"label": lbl, "E": avg.E, "I": avg.I, "concentration": grp["concentration"]})
+    return scans
+
+
+def _build_average_scan_list(result: dict) -> list:
+    """Construit la liste de scans moyens (E1+E2) pour cv_figure_electrode()."""
+    scans = []
+    probe = result["probe_scan"]
+    scans.append({"label": "Probe", "E": probe.E, "I": probe.I, "concentration": 0.0})
+    for grp in result["groups"]:
+        avg1 = grp.get("avg_e1")
+        avg2 = grp.get("avg_e2")
+        if avg1 is None and avg2 is None:
+            continue
+        if avg1 is not None and avg2 is not None and len(avg1.E) == len(avg2.E):
+            E = avg1.E
+            I = (avg1.I + avg2.I) / 2
+        else:
+            src = avg1 if avg1 is not None else avg2
+            E, I = src.E, src.I
+        exp = int(np.floor(np.log10(grp["concentration"]))) if grp["concentration"] > 0 else 0
+        mant = grp["concentration"] / 10 ** exp if grp["concentration"] > 0 else 0
+        lbl = f"C = {mant:.0f}×10{str(exp).translate(str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻'))} M"
+        scans.append({"label": lbl, "E": E, "I": I, "concentration": grp["concentration"]})
+    return scans
 
 
 def _concentration_colorscale(n: int) -> list[str]:
@@ -487,8 +527,29 @@ def main() -> None:
     ])
 
     with tab_volt:
-        st.subheader("Voltammogrammes — Superposition par concentration")
-        st.plotly_chart(_fig_voltammograms(result), width='stretch')
+        st.subheader("Voltammogrammes — Électrode 1 · Électrode 2 · Moyenne")
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col1:
+            scans1 = _build_electrode_scan_list(result, 1)
+            if len(scans1) > 1:
+                st.plotly_chart(cv_figure_electrode(scans1, title="Électrode 1"),
+                                use_container_width=True, key="cv_e1")
+            else:
+                st.info("Aucune donnée — Électrode 1")
+        with col2:
+            scans2 = _build_electrode_scan_list(result, 2)
+            if len(scans2) > 1:
+                st.plotly_chart(cv_figure_electrode(scans2, title="Électrode 2"),
+                                use_container_width=True, key="cv_e2")
+            else:
+                st.info("Aucune donnée — Électrode 2")
+        with col3:
+            scans_avg = _build_average_scan_list(result)
+            if len(scans_avg) > 1:
+                st.plotly_chart(cv_figure_electrode(scans_avg, title="Moyenne E1 + E2"),
+                                use_container_width=True, key="cv_avg")
+            else:
+                st.info("Moyenne non disponible")
 
     with tab_pic:
         st.subheader("Signal normalisé ΔI_norm vs concentration")
@@ -502,7 +563,7 @@ def main() -> None:
         col3.metric("E_mid probe", f"{pp['E_mid']*1e3:.1f} mV")
 
     with tab_calib:
-        st.subheader("Calibration OLS — log₁₀([c]) ~ ΔI_norm")
+        st.subheader("Calibration OLS — ΔI_norm ~ log₁₀([c])")
         if ols is None:
             st.warning("Moins de 3 points de calibration valides — régression impossible.")
         else:
@@ -515,7 +576,7 @@ def main() -> None:
 
             with st.expander("ℹ️  Interpréter la calibration OLS"):
                 st.markdown("""
-**Modèle :** log₁₀([c]) = a·ΔI_norm + b
+**Modèle :** ΔI_norm = a·log₁₀([c]) + b
 
 - **R² > 0.99** — calibration excellente, signal proportionnel à log([c])
 - **R² 0.95–0.99** — acceptable selon la gamme de concentration
