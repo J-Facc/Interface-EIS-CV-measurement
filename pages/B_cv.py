@@ -533,21 +533,21 @@ def main() -> None:
             scans1 = _build_electrode_scan_list(result, 1)
             if len(scans1) > 1:
                 st.plotly_chart(cv_figure_electrode(scans1, title="Électrode 1"),
-                                use_container_width=True, key="cv_e1")
+                                width='stretch', key="cv_e1")
             else:
                 st.info("Aucune donnée — Électrode 1")
         with col2:
             scans2 = _build_electrode_scan_list(result, 2)
             if len(scans2) > 1:
                 st.plotly_chart(cv_figure_electrode(scans2, title="Électrode 2"),
-                                use_container_width=True, key="cv_e2")
+                                width='stretch', key="cv_e2")
             else:
                 st.info("Aucune donnée — Électrode 2")
         with col3:
             scans_avg = _build_average_scan_list(result)
             if len(scans_avg) > 1:
                 st.plotly_chart(cv_figure_electrode(scans_avg, title="Moyenne E1 + E2"),
-                                use_container_width=True, key="cv_avg")
+                                width='stretch', key="cv_avg")
             else:
                 st.info("Moyenne non disponible")
 

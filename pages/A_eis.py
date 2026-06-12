@@ -135,19 +135,19 @@ def _render_three_nyquist(experiment: dict) -> None:
     with col1:
         if specs_e1:
             st.plotly_chart(nyquist_figure_electrode(specs_e1, title="Électrode 1"),
-                            use_container_width=True, key="nyq_e1")
+                            width='stretch', key="nyq_e1")
         else:
             st.info("Aucun spectre EIS — Électrode 1")
     with col2:
         if specs_e2:
             st.plotly_chart(nyquist_figure_electrode(specs_e2, title="Électrode 2"),
-                            use_container_width=True, key="nyq_e2")
+                            width='stretch', key="nyq_e2")
         else:
             st.info("Aucun spectre EIS — Électrode 2")
     with col3:
         if specs_avg:
             st.plotly_chart(nyquist_figure_electrode(specs_avg, title="Moyenne E1 + E2"),
-                            use_container_width=True, key="nyq_avg")
+                            width='stretch', key="nyq_avg")
         else:
             st.info("Moyenne non disponible")
 
