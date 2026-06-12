@@ -360,7 +360,7 @@ def _edit_replicate_dialog(
         fig.update_layout(height=400, title=None, margin=dict(t=10, b=40, l=50, r=20))
         event = st.plotly_chart(
             fig,
-            use_container_width=True,
+            width='stretch',
             key=f"dialog_nyquist_{e_str}_{modality}_c{ci}_r{ri}",
             on_select="rerun",
         )
@@ -489,7 +489,7 @@ def _concentration_block(
             st.markdown("**EIS — Nyquist**")
             st.plotly_chart(
                 _superposed_nyquist(reps_eis, e_str, ci, exclusions),
-                use_container_width=True,
+                width='stretch',
                 key=f"nyq_{e_str}_c{ci}",
             )
             st.divider()
@@ -512,7 +512,7 @@ def _concentration_block(
             st.markdown("**CV — I(E)**")
             st.plotly_chart(
                 _superposed_cv(reps_cv, e_str, ci, exclusions),
-                use_container_width=True,
+                width='stretch',
                 key=f"cv_{e_str}_c{ci}",
             )
             st.divider()
@@ -622,7 +622,7 @@ def _render_average_panel(
 
         if groups_eis:
             st.plotly_chart(_average_nyquist(groups_eis),
-                            use_container_width=True, key=f"avg_nyq_{e_str}")
+                            width='stretch', key=f"avg_nyq_{e_str}")
 
     if mode in ("cv_only", "both"):
         groups_cv: list = []
@@ -639,7 +639,7 @@ def _render_average_panel(
 
         if groups_cv:
             st.plotly_chart(_average_cv(groups_cv),
-                            use_container_width=True, key=f"avg_cv_{e_str}")
+                            width='stretch', key=f"avg_cv_{e_str}")
 
 
 # ─────────────────────────────────────────────
