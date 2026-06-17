@@ -9,7 +9,7 @@ Deux objectifs :
   2. Détecter un drift inter-réplicats
      → si les résidus KK divergent systématiquement entre réplicats
 
-Dépendance : impedance.py  (pip install impedance)
+Implémentation Lin-KK native : fits/kk_validation.py
 Aucun import Streamlit — logique métier pure.
 """
 
@@ -24,9 +24,9 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────
+# ──────────────────────────────────────
 # Structures de données
-# ─────────────────────────────────────────────
+# ──────────────────────────────────────
 
 @dataclass
 class KKResult:
@@ -74,9 +74,9 @@ class ValidationResult:
     sigma_im: Optional[np.ndarray] = None
 
 
-# ─────────────────────────────────────────────
+# ──────────────────────────────────────
 # Paramètres par défaut
-# ─────────────────────────────────────────────
+# ──────────────────────────────────────
 
 # Seuil µ au-delà duquel le fit KK est considéré sur-ajusté (Schönleber 2014)
 MU_THRESHOLD = 0.85
@@ -93,9 +93,9 @@ INVALID_FRACTION_REJECT = 0.25  # 25 %
 DRIFT_CV_THRESHOLD = 0.5
 
 
-# ─────────────────────────────────────────────
+# ──────────────────────────────────────
 # Validation d'un spectre unique
-# ─────────────────────────────────────────────
+# ──────────────────────────────────────
 
 def validate_spectrum(
     frequencies: np.ndarray,
@@ -118,13 +118,7 @@ def validate_spectrum(
     -------
     KKResult avec résidus, µ, plage valide, verdict
     """
-    try:
-        from impedance.validation import linKK
-    except ImportError as exc:
-        raise ImportError(
-            "Le package 'impedance' est requis pour la validation KK.\n"
-            "Ajoutez 'impedance' à requirements.txt et relancez."
-        ) from exc
+    from fits.kk_validation import linKK
 
     # lin-KK attend les fréquences en ordre croissant et Z'' < 0 (convention impedance.py)
     sort_idx = np.argsort(frequencies)
@@ -250,9 +244,9 @@ def _find_valid_range(
     return float(frequencies[best_start]), float(frequencies[best_end])
 
 
-# ─────────────────────────────────────────────
+# ──────────────────────────────────────
 # Validation d'un groupe de réplicats
-# ─────────────────────────────────────────────
+# ──────────────────────────────────────
 
 def validate_replicate_group(
     frequencies_list: List[np.ndarray],
