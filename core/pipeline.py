@@ -55,6 +55,16 @@ def _build_weights(spectrum, config) -> np.ndarray:
     return 1.0 / (alpha * Z_mod)**2
 
 
+def _run_kk(spectrum, config, label: str) -> Optional[dict]:
+    """Calcule la validation Kramers-Kronig (fits/kk_validation.py) pour un spectre."""
+    from fits.kk_validation import kramers_kronig_check
+    try:
+        return kramers_kronig_check(spectrum, config)
+    except Exception as e:
+        log.error(f"kramers_kronig_check [{label}] failed: {e}")
+        return None
+
+
 def run_pipeline(
     file_assignments: list,
     config: dict,
@@ -140,10 +150,14 @@ def run_pipeline(
     for label, sp in [("bare", session.bare), ("probe", session.probe)]:
         if sp is None:
             continue
+        kk = _run_kk(sp, config, label)
         for model in models:
             try:
                 weights = _build_weights(sp, config)
                 fr = model.fit(sp, config, weights=weights)
+                if kk is not None:
+                    fr.kk_passed = kk["kk_passed"]
+                    fr.kk_residuals = kk
                 sp.fit_results[model.name] = fr
                 log.info(
                     f"Fit '{model.name}' [{label}]: "
@@ -156,11 +170,15 @@ def run_pipeline(
         sp_list = hybridization[conc]
         spectrum = average_replicates(sp_list) if len(sp_list) > 1 else sp_list[0]
 
+        kk = _run_kk(spectrum, config, f"hyb_{conc:.2e}")
         fit_results = {}
         for model in models:
             try:
                 weights = _build_weights(spectrum, config)
                 fr = model.fit(spectrum, config, weights=weights)
+                if kk is not None:
+                    fr.kk_passed = kk["kk_passed"]
+                    fr.kk_residuals = kk
                 fit_results[model.name] = fr
                 log.info(
                     f"Fit '{model.name}' [{conc:.2e} M]: "
