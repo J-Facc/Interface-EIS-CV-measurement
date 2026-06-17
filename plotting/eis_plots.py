@@ -29,7 +29,7 @@ def _spectrum_label(sp: EISSpectrum) -> str:
     return f"[{mant:.1f}×10{_sup(exp)} M]"
 
 
-# ── Nyquist ────────────────────────────────────────────────────────────────────
+# ── Nyquist ───────────────────────────────────────────────────────────────────────────
 
 def nyquist_figure(
     session: EISSession = None,
@@ -47,7 +47,7 @@ def nyquist_figure(
     dashes = theme["fit_dash"]
     fig = go.Figure()
 
-    # ── Single-spectrum mode (pretraitement editing) ──────────────────────────
+    # ── Single-spectrum mode (pretraitement editing) ────────────────────────
     if spectrum is not None:
         sp = spectrum
         color = colors[0]
@@ -117,7 +117,7 @@ def nyquist_figure(
         apply_theme_to_figure(fig, "light")
         return fig
 
-    # ── Full session mode ─────────────────────────────────────────────────────
+    # ── Full session mode ───────────────────────────────────────────────
     all_spectra: list = []
     if session.bare:
         all_spectra.append(session.bare)
@@ -170,7 +170,7 @@ def nyquist_figure(
     return fig
 
 
-# ── Nyquist par électrode ──────────────────────────────────────────────────────
+# ── Nyquist par électrode ─────────────────────────────────────────────────────────
 
 def _conc_color(concentration: float, c_min: float, c_max: float) -> str:
     """Couleur log-interpolée violet→rouge pour une concentration donnée."""
@@ -236,7 +236,7 @@ def nyquist_figure_electrode(
     return fig
 
 
-# ── Bode ───────────────────────────────────────────────────────────────────────
+# ── Bode ───────────────────────────────────────────────────────────────────────────
 
 def bode_figure(session: EISSession) -> go.Figure:
     theme = get_theme("light")
@@ -272,7 +272,7 @@ def bode_figure(session: EISSession) -> go.Figure:
     return fig
 
 
-# ── DRT ────────────────────────────────────────────────────────────────────────
+# ── DRT ───────────────────────────────────────────────────────────────────────────
 
 def drt_figure(session: EISSession, log_y: bool = True) -> go.Figure:
     """Distribution des temps de relaxation — axe ln(τ), convention Bissessur (2026).
@@ -309,57 +309,42 @@ def drt_figure(session: EISSession, log_y: bool = True) -> go.Figure:
         apply_theme_to_figure(fig, "light")
         return fig
 
+    x_title = r"$\ln(\tau/\tau_0)$,  $\tau_0 = 1\,\mathrm{s}$"
+    y_title = r"$\ln(\Gamma(\tau)/\Gamma_0)$,  $\Gamma_0 = 1\,\Omega$"
+
     for lbl, fr, color_idx in all_items:
         color = colors[color_idx % len(colors)]
 
-        # Axe X : ln(τ) si disponible (v3), sinon log(τ) converti
-        if "ln_tau" in fr.params and len(fr.params["ln_tau"]) > 0:
-            x_vals  = np.array(fr.params["ln_tau"])
-            x_title = "ln(τ)   [τ = 1/(2πf), s]"
-        else:
-            tau_raw = np.array(fr.params.get("tau", []))
-            x_vals  = np.log(tau_raw + 1e-30)
-            x_title = "ln(τ)  (s)"
+        tau   = getattr(fr, "drt_tau", None)
+        gamma = getattr(fr, "drt_gamma", None)
 
-        gamma = np.array(fr.params.get("gamma", []))
-        if len(x_vals) == 0 or len(gamma) == 0:
+        if tau is None or gamma is None or len(tau) == 0 or len(gamma) == 0:
             continue
 
-        if log_y:
-            y_vals  = np.log(np.abs(gamma) + 1e-300)
-            y_title = "ln(|γ(τ)|)"
-        else:
-            y_vals  = gamma
-            y_title = "γ(τ)  [Ω]"
+        S     = np.log(np.asarray(tau) + 1e-300)
+        lnGam = np.log(np.asarray(gamma) + 1e-300)
 
         fig.add_trace(go.Scatter(
-            x=x_vals, y=y_vals, mode="lines", name=lbl,
+            x=S, y=lnGam, mode="lines", name=lbl,
             line=dict(color=color, width=2),
             hovertemplate=(
                 f"<b>{lbl}</b><br>"
                 "ln(τ) = %{x:.3f}<br>"
-                f"{y_title} = %{{y:.4f}}<extra></extra>"
+                "ln(Γ) = %{y:.4f}<extra></extra>"
             ),
         ))
 
-        # Marqueurs de pics
-        tau_peaks = fr.params.get("tau_peaks", [])
-        if tau_peaks:
-            ln_pk = np.log(np.array(tau_peaks))
-            g_pk  = np.interp(ln_pk, x_vals, gamma)
-            y_pk  = np.log(np.clip(g_pk, 1e-30, None)) if log_y else g_pk
-            fig.add_trace(go.Scatter(
-                x=ln_pk, y=y_pk, mode="markers",
-                name=f"{lbl} pics",
-                marker=dict(symbol="diamond", size=9, color=color,
-                            line=dict(width=1.5, color="white")),
-                customdata=tau_peaks,
-                hovertemplate=(
-                    f"<b>Pic · {lbl}</b><br>"
-                    "τ = %{customdata:.3e} s<br>"
-                    f"{y_title} = %{{y:.4f}}<extra></extra>"
-                ),
-            ))
+    if not any(
+        getattr(fr, "drt_tau", None) is not None and len(fr.drt_tau) > 0
+        for _, fr, _ in all_items
+    ):
+        fig.add_annotation(
+            text="DRT non disponible",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=13),
+        )
+        apply_theme_to_figure(fig, "light")
+        return fig
 
     # Titre avec λ du dernier spectre
     lam_info = ""
@@ -449,7 +434,7 @@ def drt_lambda_diag_figure(fit_result, label: str = "") -> go.Figure:
     return fig
 
 
-# ── Parameters table ───────────────────────────────────────────────────────────
+# ── Parameters table ──────────────────────────────────────────────────────────
 
 def params_table_figure(session: EISSession) -> go.Figure:
     """Table of Rct for bare, probe and each concentration, by model."""
@@ -509,7 +494,7 @@ def params_table_figure(session: EISSession) -> go.Figure:
     return fig
 
 
-# ── Calibration ────────────────────────────────────────────────────────────────
+# ── Calibration ─────────────────────────────────────────────────────────────
 
 def calibration_figure(session: EISSession) -> go.Figure:
     """Calibration: one regression curve per model + metrics table below.
@@ -649,6 +634,194 @@ def calibration_figure(session: EISSession) -> go.Figure:
         title="Calibration EIS — Signal normalisé vs log([c])",
         legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
         hovermode="closest",
+    )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
+# ── Kramers-Kronig (fits/kk_validation.py) ───────────────────────────────────
+
+def kk_figure(spectrum: EISSpectrum, kk_result: dict, label: str = "") -> go.Figure:
+    """Nyquist (mesuré vs reconstruction KK) + résidus normalisés (%) en sous-graphes.
+
+    Args:
+        spectrum: Spectre EIS d'origine.
+        kk_result: dict retourné par fits.kk_validation.kramers_kronig_check.
+        label: Nom affiché dans le titre.
+    """
+    fig = make_subplots(
+        rows=2, cols=1,
+        row_heights=[0.6, 0.4],
+        subplot_titles=["Nyquist — mesuré vs reconstruction KK", "Résidus normalisés (%)"],
+        vertical_spacing=0.12,
+    )
+
+    fig.add_trace(go.Scatter(
+        x=spectrum.Zre, y=spectrum.Zim, mode="markers", name="Mesuré",
+        marker=dict(color="#1a56db", size=7),
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=kk_result["Z_kk_re"], y=kk_result["Z_kk_im"], mode="lines", name="Reconstruction KK",
+        line=dict(color="#dc2626", width=2),
+    ), row=1, col=1)
+    fig.update_xaxes(title_text="Z' (Ω)", row=1, col=1)
+    fig.update_yaxes(title_text="-Z'' (Ω)", scaleanchor="x", row=1, col=1)
+
+    f = np.asarray(spectrum.f, dtype=float)
+    Zmod = np.sqrt(np.asarray(spectrum.Zre)**2 + np.asarray(spectrum.Zim)**2)
+    Zmod = np.where(Zmod > 0, Zmod, 1e-30)
+    res_re_pct = 100.0 * kk_result["residuals_re"] / Zmod
+    res_im_pct = 100.0 * kk_result["residuals_im"] / Zmod
+
+    fig.add_trace(go.Scatter(
+        x=f, y=res_re_pct, mode="markers+lines", name="Résidu Re",
+        line=dict(color="#1a56db", width=1), marker=dict(size=5),
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=f, y=res_im_pct, mode="markers+lines", name="Résidu Im",
+        line=dict(color="#db2777", width=1), marker=dict(size=5),
+    ), row=2, col=1)
+    fig.add_hline(y=0, line=dict(color="#9ca3af", width=0.5), row=2, col=1)
+    fig.update_xaxes(type="log", title_text="Fréquence (Hz)", row=2, col=1)
+    fig.update_yaxes(title_text="Résidu (%)", row=2, col=1)
+
+    verdict = "✅ KK validé" if kk_result["kk_passed"] else "❌ KK échoué"
+    fig.update_layout(
+        title=f"Validation Kramers-Kronig — {label} — {verdict} "
+              f"(max résidu={kk_result['max_residual']*100:.2f}%)",
+        legend=dict(orientation="h", y=-0.15),
+    )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
+# ── DRT Tikhonov / FFT — figures dédiées ───────────────────────────────────
+
+def _single_drt_figure(fit_result, label: str, title: str) -> go.Figure:
+    """ln(Γ) vs ln(τ/τ0) pour un seul FitResult DRT (Tikhonov ou FFT)."""
+    fig = go.Figure()
+    S = getattr(fit_result, "drt_S", None)
+    lnGamma = getattr(fit_result, "drt_lnGamma", None)
+
+    if S is None or lnGamma is None or len(S) == 0:
+        fig.add_annotation(
+            text="DRT non disponible.", xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False, font=dict(size=13),
+        )
+        apply_theme_to_figure(fig, "light")
+        return fig
+
+    fig.add_trace(go.Scatter(
+        x=np.asarray(S), y=np.asarray(lnGamma), mode="lines", name=label,
+        line=dict(color="#1a56db", width=2),
+    ))
+    err = fit_result.reconstruction_error
+    err_str = f" — ε={err*100:.2f}%" if err is not None else ""
+    fig.update_layout(
+        title=f"{title} — {label}{err_str}",
+        xaxis_title=r"$\ln(\tau/\tau_0)$",
+        yaxis_title=r"$\ln(\Gamma(\tau)/\Gamma_0)$",
+    )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
+def drt_tikhonov_figure(fit_result, label: str = "") -> go.Figure:
+    """ln(Γ) vs ln(τ) pour le modèle DRT Tikhonov + NNLS."""
+    return _single_drt_figure(fit_result, label, "DRT Tikhonov + NNLS")
+
+
+def drt_fft_figure(fit_result, label: str = "") -> go.Figure:
+    """ln(Γ) vs ln(τ) pour le modèle DRT FFT Wiener."""
+    return _single_drt_figure(fit_result, label, "DRT FFT Wiener")
+
+
+def drt_reconstruction_figure(spectrum: EISSpectrum, fit_result, label: str = "") -> go.Figure:
+    """Nyquist mesuré vs reconstruit par le modèle DRT, avec ε affiché."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=spectrum.Zre, y=spectrum.Zim, mode="markers", name="Mesuré",
+        marker=dict(color="#1a56db", size=7),
+    ))
+    fig.add_trace(go.Scatter(
+        x=fit_result.Zfit_re, y=fit_result.Zfit_im, mode="lines", name="Reconstruction DRT",
+        line=dict(color="#dc2626", width=2),
+    ))
+    fig.update_xaxes(title_text="Z' (Ω)")
+    fig.update_yaxes(title_text="-Z'' (Ω)", scaleanchor="x")
+
+    err = fit_result.reconstruction_error
+    err_str = f"ε = {err*100:.2f}%" if err is not None else "ε non disponible"
+    fig.update_layout(
+        title=f"Reconstruction DRT — {label} — {err_str}",
+        legend=dict(orientation="h", y=-0.15),
+    )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
+def calibration_drt_figure(session: EISSession, model_name: str = "drt_fft") -> go.Figure:
+    """Calibration log(Rct) vs log([c]) pour un modèle DRT, avec barres d'erreur et régression.
+
+    Côte à côte : nuage de points + droite de régression (gauche), résidus (droite).
+    """
+    concs, rcts, errs = [], [], []
+    for grp in session.groups:
+        if grp.concentration <= 0:
+            continue
+        fr = grp.fit_results.get(model_name)
+        if fr is None or fr.Rct <= 0:
+            continue
+        concs.append(grp.concentration)
+        rcts.append(fr.Rct)
+        errs.append(fr.reconstruction_error or 0.0)
+
+    if len(concs) < 2:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Pas assez de points (min. 2 concentrations positives avec fit DRT).",
+            showarrow=False, font=dict(size=13),
+        )
+        apply_theme_to_figure(fig, "light")
+        return fig
+
+    log_c = np.log10(concs)
+    log_rct = np.log10(rcts)
+    reg = stats.linregress(log_c, log_rct)
+    log_c_line = np.linspace(log_c.min(), log_c.max(), 200)
+    y_line = reg.slope * log_c_line + reg.intercept
+
+    fig = make_subplots(rows=1, cols=2, subplot_titles=[
+        "log(Rct) vs log([c])", "Résidus de régression",
+    ])
+
+    yerr = np.array(errs) * np.array(rcts) / (np.array(rcts) * np.log(10.0))
+    fig.add_trace(go.Scatter(
+        x=log_c, y=log_rct, mode="markers", name="Données",
+        error_y=dict(type="data", array=yerr, visible=True),
+        marker=dict(color="#1a56db", size=9),
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=log_c_line, y=y_line, mode="lines",
+        name=f"R²={reg.rvalue**2:.3f}  y={reg.slope:.3f}x+{reg.intercept:.3f}",
+        line=dict(color="#dc2626", width=2),
+    ), row=1, col=1)
+
+    residuals = log_rct - (reg.slope * log_c + reg.intercept)
+    fig.add_trace(go.Scatter(
+        x=log_c, y=residuals, mode="markers", name="Résidus",
+        marker=dict(color="#7c3aed", size=9), showlegend=False,
+    ), row=1, col=2)
+    fig.add_hline(y=0, line=dict(color="#9ca3af", width=1), row=1, col=2)
+
+    fig.update_xaxes(title_text="log([c] / M)", row=1, col=1)
+    fig.update_yaxes(title_text="log(Rct / Ω)", row=1, col=1)
+    fig.update_xaxes(title_text="log([c] / M)", row=1, col=2)
+    fig.update_yaxes(title_text="Résidu log(Rct)", row=1, col=2)
+
+    fig.update_layout(
+        title=f"Calibration DRT ({model_name}) — log(Rct) vs log([c])",
+        legend=dict(orientation="h", y=-0.2),
     )
     apply_theme_to_figure(fig, "light")
     return fig
