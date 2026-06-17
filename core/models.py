@@ -63,6 +63,15 @@ class FitResult:
 # Incertitude sur Rct propagée depuis σ(f)
     # Renseigné dans un second temps (sprint 2)
     Rct_sigma: Optional[float] = None
+    # DRT (Tikhonov+NNLS ou FFT Wiener) — renseigné par fits/drt_tikhonov.py / fits/drt_fft.py
+    drt_tau: Optional[np.ndarray] = None
+    drt_gamma: Optional[np.ndarray] = None
+    drt_S: Optional[np.ndarray] = None
+    drt_lnGamma: Optional[np.ndarray] = None
+    reconstruction_error: Optional[float] = None
+    # Validation Kramers-Kronig (fits/kk_validation.py)
+    kk_passed: Optional[bool] = None
+    kk_residuals: Optional[dict] = None
 
 
 @dataclass
