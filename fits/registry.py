@@ -11,7 +11,7 @@ def _discover() -> None:
     """Import all submodules in fits/ and register BaseFitModel subclasses."""
     if _registry:
         return
-    skip = {"base", "physics", "registry"}
+    skip = {"base", "physics", "registry", "kk_validation"}
     for _finder, mod_name, _ispkg in pkgutil.iter_modules(fits.__path__):
         if mod_name in skip or mod_name.startswith("_"):
             continue

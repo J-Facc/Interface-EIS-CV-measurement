@@ -52,6 +52,9 @@ class FitSettings(BaseModel):
     n_monte_carlo: int = 1000
     bounds_randles_full: BoundsRandlesFull = Field(default_factory=BoundsRandlesFull)
     drt: DRTSettings = Field(default_factory=DRTSettings)
+    drt_wiener_W: float = 1.0e-8
+    drt_n_z: int = 10000
+    drt_kk_tol: float = 0.05
 
 
 class ExportSettings(BaseModel):

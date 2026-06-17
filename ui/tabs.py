@@ -1,5 +1,6 @@
 """Streamlit tab rendering: Nyquist, Bode, DRT, Paramètres, Calibration, Export, CV."""
 
+import numpy as np
 import streamlit as st
 
 from core.models import EISSession
@@ -10,6 +11,11 @@ from plotting.eis_plots import (
     drt_figure,
     params_table_figure,
     calibration_figure,
+    kk_figure,
+    drt_tikhonov_figure,
+    drt_fft_figure,
+    drt_reconstruction_figure,
+    calibration_drt_figure,
 )
 from plotting.cv_plots import cv_current_figure, cv_calibration_figure
 from plotting.kk_plots import residuals_figure, validation_summary_table
@@ -48,18 +54,111 @@ def render_eis_tabs(session: EISSession, config: dict, validation_results=None) 
 
     with tab_drt:
         st.subheader("Distribution des temps de relaxation (DRT)")
-        has_drt = (
-            any("drt_fft" in grp.fit_results for grp in session.groups)
-            or (session.bare is not None and "drt_fft" in session.bare.fit_results)
-            or (session.probe is not None and "drt_fft" in session.probe.fit_results)
+
+        spectra_by_label = {}
+        if session.bare is not None:
+            spectra_by_label["Bare"] = session.bare
+        if session.probe is not None:
+            spectra_by_label["Probe"] = session.probe
+        for grp in session.groups:
+            spectra_by_label[f"{grp.concentration:.2e} M"] = grp.spectrum
+
+        has_drt = any(
+            "drt_fft" in sp.fit_results or "drt_tikhonov" in sp.fit_results
+            for sp in spectra_by_label.values()
         )
-        if has_drt:
-            st.plotly_chart(drt_figure(session), width='stretch')
-        else:
+
+        if not has_drt:
             st.info(
-                "Activez **DRT (FFT)** dans la sidebar pour afficher "
-                "la distribution des temps de relaxation."
+                "Activez **DRT Tikhonov + NNLS** et/ou **DRT FFT Wiener** dans la "
+                "sidebar pour afficher la distribution des temps de relaxation."
             )
+        else:
+            st.plotly_chart(drt_figure(session), width='stretch')
+
+            sel_label = st.selectbox(
+                "Spectre", list(spectra_by_label.keys()), key="drt_spectrum_select",
+            )
+            sel_sp = spectra_by_label[sel_label]
+
+            with st.expander("1️⃣ Validation Kramers-Kronig", expanded=False):
+                kk_result = None
+                for fr in sel_sp.fit_results.values():
+                    if fr.kk_residuals is not None:
+                        kk_result = fr.kk_residuals
+                        break
+                if kk_result is None:
+                    st.info("Validation KK non disponible pour ce spectre.")
+                else:
+                    st.plotly_chart(
+                        kk_figure(sel_sp, kk_result, label=sel_label), width='stretch',
+                    )
+
+            with st.expander("2️⃣ DRT Tikhonov + NNLS", expanded=False):
+                fr_tik = sel_sp.fit_results.get("drt_tikhonov")
+                if fr_tik is None:
+                    st.info("Activez **DRT Tikhonov + NNLS** dans la sidebar.")
+                else:
+                    st.plotly_chart(
+                        drt_tikhonov_figure(fr_tik, label=sel_label), width='stretch',
+                    )
+
+            with st.expander("3️⃣ DRT FFT Wiener", expanded=False):
+                fr_fft = sel_sp.fit_results.get("drt_fft")
+                if fr_fft is None:
+                    st.info("Activez **DRT FFT Wiener** dans la sidebar.")
+                else:
+                    w_log10 = st.slider(
+                        "Filtre Wiener W (log₁₀) — re-calcul en direct",
+                        min_value=-10.0, max_value=-5.0,
+                        value=float(np.log10(fr_fft.params.get("W", 1e-8))),
+                        step=0.5, key="drt_fft_w_log10_live",
+                    )
+                    live_W = 10 ** w_log10
+                    if abs(live_W - fr_fft.params.get("W", 1e-8)) / fr_fft.params.get("W", 1e-8) > 1e-9:
+                        from fits.registry import get_model
+                        live_config = dict(config)
+                        live_fit_cfg = dict(live_config.get("fit", {}))
+                        live_fit_cfg["drt_wiener_W"] = live_W
+                        live_config["fit"] = live_fit_cfg
+                        fr_fft = get_model("drt_fft").fit(sel_sp, live_config)
+                    st.plotly_chart(
+                        drt_fft_figure(fr_fft, label=sel_label), width='stretch',
+                    )
+
+            with st.expander("4️⃣ Comparaison reconstruction", expanded=False):
+                cols_rec = st.columns(2)
+                if fr_tik is not None:
+                    cols_rec[0].plotly_chart(
+                        drt_reconstruction_figure(sel_sp, fr_tik, label=f"{sel_label} — Tikhonov"),
+                        width='stretch',
+                    )
+                if fr_fft is not None:
+                    cols_rec[1].plotly_chart(
+                        drt_reconstruction_figure(sel_sp, fr_fft, label=f"{sel_label} — FFT Wiener"),
+                        width='stretch',
+                    )
+                if fr_tik is None and fr_fft is None:
+                    st.info("Aucun modèle DRT actif pour ce spectre.")
+
+            with st.expander("5️⃣ Calibration DRT", expanded=False):
+                drt_model_choice = st.selectbox(
+                    "Modèle DRT", ["drt_fft", "drt_tikhonov"], key="drt_calib_model",
+                )
+                has_hyb_drt = sum(
+                    1 for g in session.groups
+                    if g.concentration > 0 and drt_model_choice in g.fit_results
+                ) >= 2
+                if has_hyb_drt:
+                    st.plotly_chart(
+                        calibration_drt_figure(session, model_name=drt_model_choice),
+                        width='stretch',
+                    )
+                else:
+                    st.info(
+                        "Chargez au moins **2 spectres d'hybridation** avec un fit "
+                        f"`{drt_model_choice}` pour tracer la calibration DRT."
+                    )
 
     with tab_params:
         st.subheader("Paramètres extraits")
