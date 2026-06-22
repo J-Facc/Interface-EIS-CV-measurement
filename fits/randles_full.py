@@ -7,13 +7,14 @@ from fits.base import BaseFitModel
 from fits.physics import Z_randles_full
 from core.models import EISSpectrum, FitResult
 
-_PARAM_NAMES = ["Re", "Re_prime", "Cb", "Rct", "Qdl", "alpha", "ZD0", "D_eff"]
+_PARAM_NAMES = ["Re", "Re_prime", "Cb", "Rct", "Qdl", "alpha", "R_D", "tau_d"]
 
 
 class RandlesFullModel(BaseFitModel):
     """Full Randles fit with 8 free parameters.
 
-    Parameters: Re, R'e, Cb, Rct, Qdl, α, ZD0, D_eff.
+    Parameters: Re, R'e, Cb, Rct, Qdl, α, R_D, tau_d.
+    Diffusion element: bounded diffusion Z_D = R_D · tanh(√(jω·τ_d)) / √(jω·τ_d).
     Weighting: Modulus weighting w = 1 / (alpha_noise · |Z|).
     Optimiser: scipy.optimize.least_squares with TRF algorithm.
     """
@@ -22,11 +23,11 @@ class RandlesFullModel(BaseFitModel):
     label = "Randles complet"
     description = (
         "Circuit Randles complet avec 8 paramètres libres "
-        "(Re, R'e, Cb, Rct, Qdl, α, ZD0, D_eff). Pondération Modulus."
+        "(Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d). Pondération Modulus."
     )
 
     def initial_guess(self, spectrum: EISSpectrum, config: dict) -> dict:
-        """Estimate initial values from spectrum extrema and config defaults.
+        """Estimate initial values from spectrum extrema.
 
         Args:
             spectrum: EIS spectrum.
@@ -37,7 +38,11 @@ class RandlesFullModel(BaseFitModel):
         """
         Re_est = max(float(np.min(spectrum.Zre)), 100.0)
         Rct_est = max(float(np.max(spectrum.Zre)) - Re_est, 500.0)
-        D = float(config.get("physics", {}).get("D_FeIII", 7.2e-10))
+
+        # tau_d initial guess: inverse of the low-frequency knee frequency
+        f_min = float(np.min(spectrum.f)) if len(spectrum.f) else 1.0
+        tau_d_est = 1.0 / (2.0 * np.pi * f_min) if f_min > 0 else 1.0
+
         return {
             "Re": Re_est,
             "Re_prime": max(Re_est * 0.05, 1.0),
@@ -45,8 +50,8 @@ class RandlesFullModel(BaseFitModel):
             "Rct": Rct_est,
             "Qdl": 1e-6,
             "alpha": 0.85,
-            "ZD0": 500.0,
-            "D_eff": D,
+            "R_D": 0.2 * Rct_est,
+            "tau_d": tau_d_est,
         }
 
     def bounds(self, config: dict) -> tuple:
@@ -62,12 +67,12 @@ class RandlesFullModel(BaseFitModel):
         defaults_lo = {
             "Re": 100.0, "Re_prime": 1.0, "Cb": 1e-12,
             "Rct": 100.0, "Qdl": 1e-12, "alpha": 0.6,
-            "ZD0": 10.0, "D_eff": 1e-11,
+            "R_D": 10.0, "tau_d": 1e-4,
         }
         defaults_hi = {
             "Re": 1e5, "Re_prime": 1e5, "Cb": 1e-4,
             "Rct": 1e9, "Qdl": 1e-4, "alpha": 1.0,
-            "ZD0": 1e6, "D_eff": 1e-8,
+            "R_D": 1e6, "tau_d": 1e3,
         }
 
         lo, hi = {}, {}
@@ -89,14 +94,6 @@ class RandlesFullModel(BaseFitModel):
         """
         omega = 2.0 * np.pi * spectrum.f
 
-        geom = config.get("geometry", {})
-        cond = config.get("conditions", {})
-
-        xe = float(geom.get("xe", 30e-6))
-        h = float(geom.get("h", 60e-6))
-        d = float(geom.get("d", 300e-6))
-        Fv = float(cond.get("Fv", 5e-10))
-
         guess = self.initial_guess(spectrum, config)
         lo, hi = self.bounds(config)
 
@@ -113,9 +110,8 @@ class RandlesFullModel(BaseFitModel):
         weight = np.sqrt(_w)
 
         def residuals(x):
-            Re, Re_p, Cb, Rct, Qdl, alpha_p, ZD0, D_eff = x
-            Z = Z_randles_full(omega, Re, Re_p, Cb, Rct, Qdl, alpha_p,
-                               ZD0, xe, D_eff, Fv, h, d)
+            Re, Re_p, Cb, Rct, Qdl, alpha_p, R_D, tau_d = x
+            Z = Z_randles_full(omega, Re, Re_p, Cb, Rct, Qdl, alpha_p, R_D, tau_d)
             return np.concatenate([
                 (Z.real - spectrum.Zre) * weight,
                 (Z.imag - spectrum.Zim) * weight,
@@ -148,9 +144,8 @@ class RandlesFullModel(BaseFitModel):
         params = dict(zip(_PARAM_NAMES, x_fit))
         params_std = dict(zip(_PARAM_NAMES, std))
 
-        Re, Re_p, Cb, Rct, Qdl, alpha_p, ZD0, D_eff = x_fit
-        Z_fit = Z_randles_full(omega, Re, Re_p, Cb, Rct, Qdl, alpha_p,
-                               ZD0, xe, D_eff, Fv, h, d)
+        Re, Re_p, Cb, Rct, Qdl, alpha_p, R_D, tau_d = x_fit
+        Z_fit = Z_randles_full(omega, Re, Re_p, Cb, Rct, Qdl, alpha_p, R_D, tau_d)
 
         res_re = spectrum.Zre - Z_fit.real
         res_im = spectrum.Zim + Z_fit.imag

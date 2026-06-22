@@ -1,131 +1,28 @@
 """Shared electrochemical physics functions for EIS fit models.
 
-All formulas follow Poujouly (2022) and Deslouis et al. for convection-diffusion
-impedance in a rectangular microchannel with laminar flow.
+Diffusion element follows the bounded-diffusion (Bissessur) formulation for a
+microfluidic channel; the rest of the circuit follows standard Randles theory.
 """
 
 import numpy as np
 
 
-def alpha_h(Fv: float, h: float, d: float) -> float:
-    """Compute wall shear gradient for a rectangular microchannel.
-
-    Args:
-        Fv: Volumetric flow rate (m³/s).
-        h: Channel height (m).
-        d: Channel width (m).
-
-    Returns:
-        alpha_h (m⁻¹·s⁻¹).
-    """
-    return 6.0 * Fv / (h ** 2 * d)
-
-
-def sigma_reduced(omega: np.ndarray, xe: float, D: float, ah: float) -> np.ndarray:
-    """Compute dimensionless reduced frequency sigma.
+def Z_D(omega: np.ndarray, R_D: float, tau_d: float) -> np.ndarray:
+    """Bounded diffusion impedance (microfluidic channel, Bissessur formulation).
 
     Args:
         omega: Angular frequency array (rad/s).
-        xe: Electrode width (m).
-        D: Diffusion coefficient (m²/s).
-        ah: Wall shear gradient alpha_h (m⁻¹·s⁻¹).
+        R_D: Diffusion resistance (Ω).
+        tau_d: Characteristic diffusion time (s).
 
     Returns:
-        sigma (dimensionless).
+        Complex impedance array (Ω). Handles omega→0 by L'Hopital limit (→ R_D).
     """
-    return omega * (xe ** 2 / (D * ah ** 2)) ** (1.0 / 3.0)
-
-
-def ZD_modulus_LF(sigma: np.ndarray, ZD0: float) -> np.ndarray:
-    """Low-frequency modulus of convection-diffusion impedance.
-
-    Valid for sigma < 1.
-
-    Args:
-        sigma: Reduced frequency (dimensionless).
-        ZD0: DC impedance limit (Ω).
-
-    Returns:
-        |Z_D| (Ω).
-    """
-    denom = 1.0 + 0.433 * sigma ** 2 - 0.0084 * sigma ** 4
-    denom = np.maximum(denom, 1e-12)
-    return ZD0 / np.sqrt(denom)
-
-
-def ZD_phase_LF(sigma: np.ndarray) -> np.ndarray:
-    """Low-frequency phase of convection-diffusion impedance.
-
-    Args:
-        sigma: Reduced frequency (dimensionless).
-
-    Returns:
-        arg(Z_D) in radians (negative — capacitive behaviour).
-    """
-    return -np.arctan(0.5527 * sigma * (1.0 - 0.071 * sigma ** 2 + 0.0023 * sigma ** 4))
-
-
-def ZD_modulus_HF(sigma: np.ndarray, ZD0: float) -> np.ndarray:
-    """High-frequency modulus of convection-diffusion impedance.
-
-    Valid for sigma >= 1 (Warburg-like regime).
-
-    Args:
-        sigma: Reduced frequency (dimensionless).
-        ZD0: DC impedance limit (Ω).
-
-    Returns:
-        |Z_D| (Ω).
-    """
-    return ZD0 * (0.80755 / sigma ** 0.5) * (1.0 + 0.1768 / sigma ** 1.5)
-
-
-def ZD_complex(
-    omega: np.ndarray,
-    ZD0: float,
-    xe: float,
-    D: float,
-    Fv: float,
-    h: float,
-    d: float,
-) -> np.ndarray:
-    """Complex convection-diffusion impedance Z_D(omega), unified LF/HF regime.
-
-    Switches from LF expansion (sigma < 1) to HF Warburg-like expansion
-    (sigma >= 1) to avoid divergence of the polynomial LF formula.
-
-    Args:
-        omega: Angular frequency array (rad/s).
-        ZD0: DC impedance limit (Ω).
-        xe: Electrode width (m).
-        D: Diffusion coefficient (m²/s).
-        Fv: Volumetric flow rate (m³/s).
-        h: Channel height (m).
-        d: Channel width (m).
-
-    Returns:
-        Complex impedance array Z_D (Ω).
-    """
-    ah = alpha_h(Fv, h, d)
-    sigma = sigma_reduced(omega, xe, D, ah)
-
-    Z = np.zeros(len(omega), dtype=complex)
-
-    lf = sigma < 1.0
-    hf = ~lf
-
-    if np.any(lf):
-        mod = ZD_modulus_LF(sigma[lf], ZD0)
-        phase = ZD_phase_LF(sigma[lf])
-        Z[lf] = mod * np.exp(1j * phase)
-
-    if np.any(hf):
-        mod = ZD_modulus_HF(sigma[hf], ZD0)
-        # HF asymptote: phase → -45° (Warburg), with small correction at intermediate sigma
-        phase_hf = -np.pi / 4.0 * np.ones(np.sum(hf))
-        Z[hf] = mod * np.exp(1j * phase_hf)
-
-    return Z
+    x = np.sqrt(1j * omega * tau_d)
+    # éviter division par zéro à basse fréquence : tanh(x)/x → 1 quand x→0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = np.where(np.abs(x) < 1e-8, 1.0, np.tanh(x) / x)
+    return R_D * ratio
 
 
 def Z_randles_full(
@@ -136,49 +33,34 @@ def Z_randles_full(
     Rct: float,
     Qdl: float,
     alpha: float,
-    ZD0: float,
-    xe: float,
-    D: float,
-    Fv: float,
-    h: float,
-    d: float,
+    R_D: float,
+    tau_d: float,
 ) -> np.ndarray:
-    """Full Randles circuit: Re — [R'e // Cb] — [Rct // CPE(Qdl,alpha)] — ZD.
+    """Modified Randles circuit with bounded diffusion inside the charge-transfer branch.
+
+    Z_eq = R'e + (Rct + Z_D) / [1 + Qdl·(jω)^alpha·(Rct + Z_D)]
+    Z    = Re + Z_eq / [1 + jω·Cb·Z_eq]
 
     Args:
         omega: Angular frequency array (rad/s).
         Re: Solution resistance (Ω).
-        Re_prime: Parallel branch resistance (Ω).
-        Cb: Blocking capacitance (F).
-        Rct: Charge transfer resistance (Ω).
-        Qdl: CPE pre-factor (S·sᵅ).
-        alpha: CPE exponent (0.6–1.0, dimensionless).
-        ZD0: DC diffusion impedance (Ω).
-        xe: Electrode width (m).
-        D: Effective diffusion coefficient (m²/s).
-        Fv: Volumetric flow rate (m³/s).
-        h: Channel height (m).
-        d: Channel width (m).
+        Re_prime: Series resistance inside Z_eq (Ω).
+        Cb: Bypass capacitance (F).
+        Rct: Charge-transfer resistance (Ω).
+        Qdl: CPE pre-factor (S·s^alpha).
+        alpha: CPE exponent (dimensionless, 0 < alpha <= 1).
+        R_D: Diffusion resistance (Ω).
+        tau_d: Diffusion characteristic time (s).
 
     Returns:
-        Complex total impedance Z (Ω), shape = (len(omega),).
+        Complex impedance array Z (Ω), shape = omega.shape.
     """
     jw = 1j * omega
-
-    # Parallel R'e // Cb branch
-    Z_Cb = 1.0 / (jw * Cb)
-    Z_branch1 = (Re_prime * Z_Cb) / (Re_prime + Z_Cb)
-
-    # CPE element: 1 / (Qdl * (jω)^alpha)
-    Z_CPE = 1.0 / (Qdl * (jw) ** alpha)
-
-    # Diffusion-convection element
-    Z_D = ZD_complex(omega, ZD0, xe, D, Fv, h, d)
-
-    # Rct // CPE, then series with ZD
-    Z_interface = (Rct * Z_CPE) / (Rct + Z_CPE) + Z_D
-
-    return Re + Z_branch1 + Z_interface
+    Zd = Z_D(omega, R_D, tau_d)
+    num = Rct + Zd
+    denom = 1.0 + Qdl * (jw ** alpha) * (Rct + Zd)
+    Z_eq = Re_prime + num / denom
+    return Re + Z_eq / (1.0 + jw * Cb * Z_eq)
 
 
 def Rct_bare_theory(T: float, S: float, k0: float, C0: float) -> float:
