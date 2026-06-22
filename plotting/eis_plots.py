@@ -236,6 +236,54 @@ def nyquist_figure_electrode(
     return fig
 
 
+def nyquist_normalized_figure(
+    spectra: list,
+    title: str = "",
+) -> go.Figure:
+    """Nyquist normalisé : trace Zre_norm vs Zim_norm pour chaque concentration.
+
+    Parameters
+    ----------
+    spectra : list de dicts avec clés "label", "Zre_norm", "Zim_norm", "concentration".
+    title   : titre du graphique.
+    """
+    fig = go.Figure()
+
+    c_vals = [s["concentration"] for s in spectra if s["concentration"] > 0]
+    c_min  = min(c_vals) if c_vals else 1e-12
+    c_max  = max(c_vals) if c_vals else 1e-8
+
+    for s in spectra:
+        conc     = s["concentration"]
+        Zre_norm = np.asarray(s["Zre_norm"])
+        Zim_norm = np.asarray(s["Zim_norm"])
+        lbl      = s["label"]
+        color    = _conc_color(conc, c_min, c_max)
+
+        fig.add_trace(go.Scatter(
+            x=Zre_norm, y=Zim_norm,
+            mode="markers",
+            name=lbl,
+            marker=dict(color=color, size=5, symbol="circle"),
+            hovertemplate=(
+                f"<b>{lbl}</b><br>"
+                "|ΔRe(Z)/Re(Z)_probe| = %{x:.3f}<br>"
+                "|ΔIm(Z)/Im(Z)_probe| = %{y:.3f}<extra></extra>"
+            ),
+        ))
+
+    fig.update_layout(
+        title=title or "Diagramme de Nyquist normalisé",
+        xaxis=dict(title="|ΔRe(Z)/Re(Z)_probe|", rangemode="tozero"),
+        yaxis=dict(title="|ΔIm(Z)/Im(Z)_probe|", rangemode="tozero"),
+        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+        hovermode="closest",
+        margin=dict(r=120),
+    )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
 # ── Bode ───────────────────────────────────────────────────────────────────────────
 
 def bode_figure(session: EISSession) -> go.Figure:

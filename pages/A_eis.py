@@ -11,7 +11,7 @@ import streamlit as st
 from core.config import load_config, config_to_dict
 from core.loader import load_spectrum, average_replicates
 from core.pipeline import run_pipeline
-from plotting.eis_plots import nyquist_figure_electrode
+from plotting.eis_plots import nyquist_figure_electrode, nyquist_normalized_figure, _spectrum_label
 from ui.tabs import render_eis_tabs
 
 _DEFAULT_CONFIG = config_to_dict(load_config())
@@ -109,27 +109,83 @@ def _load_electrode_spectra(experiment: dict, elec_idx: int) -> list:
     return result
 
 
-def _render_three_nyquist(experiment: dict) -> None:
-    """Affiche 3 graphes Nyquist côte à côte : E1, E2, Moyenne."""
+def _build_normalized_session(sessions: dict) -> dict:
+    """Combine les sessions par électrode en spectres normalisés par concentration.
+
+    Retourne {label_concentration: {"Zre_norm": array, "Zim_norm": array, "concentration": float}}
+    en moyennant les versions normalisées de chaque électrode disponible.
+    """
+    def _normalize_electrode(session) -> dict:
+        """Zre_norm/Zim_norm = |(Z_probe - Z_Ci) / Z_probe|, point à point, par concentration."""
+        probe = session.probe if session is not None else None
+        if probe is None:
+            return {}
+        out = {}
+        for grp in session.groups:
+            sp = grp.spectrum
+            if len(sp.f) == len(probe.f):
+                Zre_c, Zim_c = np.asarray(sp.Zre), np.asarray(sp.Zim)
+            else:
+                log_f_probe = np.log10(np.asarray(probe.f, dtype=float))
+                log_f_c     = np.log10(np.asarray(sp.f, dtype=float))
+                order = np.argsort(log_f_c)
+                Zre_c = np.interp(log_f_probe, log_f_c[order], np.asarray(sp.Zre)[order])
+                Zim_c = np.interp(log_f_probe, log_f_c[order], np.asarray(sp.Zim)[order])
+
+            Zre_probe = np.asarray(probe.Zre)
+            Zim_probe = np.asarray(probe.Zim)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                Zre_norm = np.abs((Zre_probe - Zre_c) / Zre_probe)
+                Zim_norm = np.abs((Zim_probe - Zim_c) / Zim_probe)
+
+            out[grp.concentration] = {
+                "label":         _spectrum_label(grp.spectrum),
+                "Zre_norm":      Zre_norm,
+                "Zim_norm":      Zim_norm,
+                "concentration": grp.concentration,
+            }
+        return out
+
+    norm_e1 = _normalize_electrode(sessions.get(1))
+    norm_e2 = _normalize_electrode(sessions.get(2))
+
+    if not norm_e1 and not norm_e2:
+        return {}
+    if not norm_e2:
+        return norm_e1
+    if not norm_e1:
+        return norm_e2
+
+    result = {}
+    all_concs = set(norm_e1) | set(norm_e2)
+    for conc in all_concs:
+        d1 = norm_e1.get(conc)
+        d2 = norm_e2.get(conc)
+        if d1 is not None and d2 is not None and len(d1["Zre_norm"]) == len(d2["Zre_norm"]):
+            result[conc] = {
+                "label":         d1["label"],
+                "Zre_norm":      (d1["Zre_norm"] + d2["Zre_norm"]) / 2,
+                "Zim_norm":      (d1["Zim_norm"] + d2["Zim_norm"]) / 2,
+                "concentration": conc,
+            }
+        else:
+            result[conc] = d1 if d1 is not None else d2
+    return result
+
+
+def _render_three_nyquist(experiment: dict, sessions: dict) -> None:
+    """Affiche 3 graphes Nyquist côte à côte : E1, E2, Normalisé E1+E2."""
     if experiment.get("mode") not in ("eis_only", "both"):
         return
 
     specs_e1 = _load_electrode_spectra(experiment, 1)
     specs_e2 = _load_electrode_spectra(experiment, 2) if experiment.get("n_electrodes", 2) >= 2 else []
 
-    # Moyenne : pour chaque entrée, moyenne Zre/Zim entre E1 et E2
-    specs_avg = []
-    for s1 in specs_e1:
-        match = next((s2 for s2 in specs_e2 if abs(s2["concentration"] - s1["concentration"]) < 1e-30), None)
-        if match is not None and len(s1["Zre"]) == len(match["Zre"]):
-            specs_avg.append({
-                "label": s1["label"],
-                "Zre": (np.asarray(s1["Zre"]) + np.asarray(match["Zre"])) / 2,
-                "Zim": (np.asarray(s1["Zim"]) + np.asarray(match["Zim"])) / 2,
-                "concentration": s1["concentration"],
-            })
-        else:
-            specs_avg.append(s1)
+    normalized = _build_normalized_session(sessions)
+    specs_norm = [
+        {"label": d["label"], "Zre_norm": d["Zre_norm"], "Zim_norm": d["Zim_norm"], "concentration": d["concentration"]}
+        for d in sorted(normalized.values(), key=lambda d: d["concentration"])
+    ] if normalized else []
 
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
@@ -145,18 +201,17 @@ def _render_three_nyquist(experiment: dict) -> None:
         else:
             st.info("Aucun spectre EIS — Électrode 2")
     with col3:
-        if specs_avg:
-            st.plotly_chart(nyquist_figure_electrode(specs_avg, title="Moyenne E1 + E2"),
-                            width='stretch', key="nyq_avg")
+        if specs_norm:
+            st.plotly_chart(nyquist_normalized_figure(specs_norm, title="Normalisé E1 + E2"),
+                            width='stretch', key="nyq_norm")
         else:
-            st.info("Moyenne non disponible")
+            st.info("Normalisation non disponible")
 
 
-def _build_file_assignments(experiment: dict) -> list:
-    """Convertit experiment_clean en liste de file_assignments pour run_pipeline."""
+def _build_file_assignments_electrode(experiment: dict, elec_idx: int) -> list:
+    """Convertit experiment_clean en liste de file_assignments pour une seule électrode."""
     mode = experiment.get("mode", "both")
     concentrations = experiment.get("concentrations") or []
-    n_elec = experiment.get("n_electrodes", 2)
     assignments = []
 
     if mode not in ("eis_only", "both"):
@@ -165,9 +220,22 @@ def _build_file_assignments(experiment: dict) -> list:
     probe_eis = (experiment.get("probe") or {}).get("eis") or {}
     cal_eis   = (experiment.get("calibration") or {}).get("eis") or {}
 
-    for e in range(1, n_elec + 1):
-        key = f"electrode_{e}"
-        for ri, bio in enumerate(probe_eis.get(key) or []):
+    key = f"electrode_{elec_idx}"
+    for ri, bio in enumerate(probe_eis.get(key) or []):
+        if bio is None:
+            continue
+        bio.seek(0)
+        content = bio.read()
+        bio.seek(0)
+        assignments.append({
+            "content":       content,
+            "filename":      f"probe_e{elec_idx}_r{ri + 1}.csv",
+            "step":          "probe",
+            "concentration": 0.0,
+        })
+    for ci, rep_list in enumerate(cal_eis.get(key) or []):
+        conc = concentrations[ci] if ci < len(concentrations) else 0.0
+        for ri, bio in enumerate(rep_list or []):
             if bio is None:
                 continue
             bio.seek(0)
@@ -175,24 +243,10 @@ def _build_file_assignments(experiment: dict) -> list:
             bio.seek(0)
             assignments.append({
                 "content":       content,
-                "filename":      f"probe_e{e}_r{ri + 1}.csv",
-                "step":          "probe",
-                "concentration": 0.0,
+                "filename":      f"e{elec_idx}_c{ci + 1}_r{ri + 1}.csv",
+                "step":          "hybridization",
+                "concentration": conc,
             })
-        for ci, rep_list in enumerate(cal_eis.get(key) or []):
-            conc = concentrations[ci] if ci < len(concentrations) else 0.0
-            for ri, bio in enumerate(rep_list or []):
-                if bio is None:
-                    continue
-                bio.seek(0)
-                content = bio.read()
-                bio.seek(0)
-                assignments.append({
-                    "content":       content,
-                    "filename":      f"e{e}_c{ci + 1}_r{ri + 1}.csv",
-                    "step":          "hybridization",
-                    "concentration": conc,
-                })
 
     return assignments
 
@@ -247,44 +301,58 @@ def main() -> None:
     cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
 
     if st.button("↺ Relancer l'analyse", key="eis_rerun_btn"):
-        st.session_state["eis_session"]    = None
-        st.session_state["eis_validation"] = None
+        st.session_state["eis_sessions"]    = None
+        st.session_state["eis_validations"] = None
         st.rerun()
 
-    if st.session_state.get("eis_session") is None:
-        file_assignments = _build_file_assignments(experiment)
-        if not file_assignments:
-            st.warning("⚠️ Aucun spectre EIS trouvé dans l'expérience. Vérifiez le prétraitement.")
-            return
+    if not st.session_state.get("eis_sessions"):
         if not active_models:
             st.warning("⚠️ Sélectionnez au moins un modèle de fit dans les paramètres ci-dessus.")
             return
+        n_elec = experiment.get("n_electrodes", 2)
+        sessions = {}
+        validations = {}
         with st.spinner("Analyse EIS en cours…"):
             try:
-                session, vr_pipeline = run_pipeline(
-                    file_assignments=file_assignments,
-                    config=cfg,
-                    active_models=active_models,
-                )
-                st.session_state["eis_session"]    = session
-                st.session_state["eis_config"]     = cfg
-                st.session_state["eis_validation"] = vr_pipeline or None
-                st.success(f"✅ Analyse terminée — {len(session.groups)} groupe(s).")
+                for e in range(1, n_elec + 1):
+                    file_assignments = _build_file_assignments_electrode(experiment, e)
+                    if not file_assignments:
+                        continue
+                    session, vr_pipeline = run_pipeline(
+                        file_assignments=file_assignments,
+                        config=cfg,
+                        active_models=active_models,
+                    )
+                    sessions[e] = session
+                    validations[e] = vr_pipeline or None
             except Exception as exc:
                 st.error(f"❌ Erreur lors de l'analyse EIS : {exc}")
                 return
 
-    if st.session_state.get("eis_session") is None:
+        if not sessions:
+            st.warning("⚠️ Aucun spectre EIS trouvé dans l'expérience. Vérifiez le prétraitement.")
+            return
+
+        st.session_state["eis_sessions"]    = sessions
+        st.session_state["eis_config"]      = cfg
+        st.session_state["eis_validations"] = validations
+        n_groups = sum(len(s.groups) for s in sessions.values())
+        st.success(f"✅ Analyse terminée — {n_groups} groupe(s) au total sur {len(sessions)} électrode(s).")
+
+    sessions = st.session_state.get("eis_sessions")
+    if not sessions:
         return
 
     # --- Diagrammes Nyquist par électrode ---
     st.markdown("### Diagrammes de Nyquist")
-    _render_three_nyquist(experiment)
+    _render_three_nyquist(experiment, sessions)
 
     st.divider()
 
-    vr = st.session_state.get("eis_validation") or validation_results
-    display_session = _filter_session_display(st.session_state["eis_session"])
+    validations = st.session_state.get("eis_validations") or {}
+    main_elec = next(iter(sorted(sessions)), None)
+    vr = validations.get(main_elec) or validation_results
+    display_session = _filter_session_display(sessions[main_elec])
     render_eis_tabs(
         display_session,
         st.session_state.get("eis_config", cfg),
