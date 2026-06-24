@@ -104,6 +104,11 @@ def run_pipeline(
     probe_spectra = []
     hybridization: dict = {}
     replicate_groups: dict = {}
+    # NOTE (ajout hors périmètre initial — réorganisation onglets EIS) :
+    # conserve les réplicats individuels (avant moyenne) par (step, conc),
+    # afin de pouvoir tracer DRT / reconstructions par réplicat (onglet DRT
+    # et onglet Reconstructions Nyquist). Fits appliqués ci-dessous.
+    replicate_spectra_by_key: dict = {}
 
     for (step, conc), fas in groups.items():
         loaded = []
@@ -134,6 +139,7 @@ def run_pipeline(
             "zre": [np.asarray(sp.Zre, dtype=float) for sp in loaded],
             "zim": [np.asarray(sp.Zim, dtype=float) for sp in loaded],
         }
+        replicate_spectra_by_key[(step, conc)] = loaded
 
         averaged = average_replicates(loaded) if len(loaded) > 1 else loaded[0]
 
@@ -146,6 +152,23 @@ def run_pipeline(
 
     session.bare = average_replicates(bare_spectra) if bare_spectra else None
     session.probe = average_replicates(probe_spectra) if probe_spectra else None
+
+    def _fit_replicates(reps: list) -> list:
+        """Applique tous les modèles actifs à chaque réplicat individuel."""
+        for sp in reps:
+            for model in models:
+                try:
+                    weights = _build_weights(sp, config)
+                    fr = model.fit(sp, config, weights=weights)
+                    sp.fit_results[model.name] = fr
+                except Exception as e:
+                    log.error(f"Fit réplicat '{model.name}' [{sp.label}] failed: {e}")
+        return reps
+
+    if ("bare", 0.0) in replicate_spectra_by_key:
+        session.bare_replicate_spectra = _fit_replicates(replicate_spectra_by_key[("bare", 0.0)])
+    if ("probe", 0.0) in replicate_spectra_by_key:
+        session.probe_replicate_spectra = _fit_replicates(replicate_spectra_by_key[("probe", 0.0)])
 
     for label, sp in [("bare", session.bare), ("probe", session.probe)]:
         if sp is None:
@@ -187,11 +210,14 @@ def run_pipeline(
             except Exception as e:
                 log.error(f"Fit '{model.name}' [{conc:.2e} M] failed: {e}")
 
+        rep_spectra = _fit_replicates(replicate_spectra_by_key.get(("hybridization", conc), []))
+
         session.groups.append(
             ConcentrationGroup(
                 concentration=conc,
                 spectrum=spectrum,
                 fit_results=fit_results,
+                replicate_spectra=rep_spectra,
             )
         )
 

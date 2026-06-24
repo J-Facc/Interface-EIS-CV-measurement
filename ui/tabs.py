@@ -1,4 +1,6 @@
-"""Streamlit tab rendering: Nyquist, Bode, DRT, Paramètres, Calibration, Export, CV."""
+"""Streamlit tab rendering — EIS (KK / DRT / Reconstructions / Calibration) and CV
+(Visualisation / Pic redox / Calibration).
+"""
 
 import numpy as np
 import streamlit as st
@@ -6,237 +8,70 @@ import streamlit as st
 from core.models import EISSession
 from core.cv_models import CVSession
 from plotting.eis_plots import (
-    nyquist_figure,
-    bode_figure,
     drt_figure,
-    params_table_figure,
-    calibration_figure,
-    kk_figure,
-    drt_tikhonov_figure,
-    drt_fft_figure,
+    drt_figure_multi,
+    drt_replicates_figure,
+    open_drt_matplotlib_window,
+    reconstruction_comparison_figure,
     drt_reconstruction_figure,
-    calibration_drt_figure,
+    drt_reconstruction_figure_dual,
+    open_reconstruction_matplotlib_window,
+    calibration_figure,
+    open_calibration_matplotlib_window,
 )
-from plotting.cv_plots import cv_current_figure, cv_calibration_figure
+from plotting.cv_plots import (
+    cv_current_figure,
+    cv_calibration_figure,
+    redox_peaks_figure,
+    open_cv_calibration_matplotlib_window,
+)
 from plotting.kk_plots import residuals_figure, validation_summary_table
-from exports.exporter import (
-    export_params_csv,
-    export_spectra_csv,
-    export_figure_html,
-    export_figure_png,
-    export_session_yaml,
-)
+from exports.exporter import export_calibration_csv, export_cv_calibration_csv
 
 
-def render_eis_tabs(session: EISSession, config: dict, validation_results=None) -> None:
-    """Render EIS analysis tabs: Nyquist, Bode, DRT, Paramètres, Calibration, Export, Validation KK."""
-    tab_nyq, tab_bode, tab_drt, tab_params, tab_calib, tab_export, tab7 = st.tabs([
-        "Nyquist", "Bode", "DRT", "Paramètres", "Calibration", "Export", "Validation KK",
-    ])
+# ─────────────────────────────────────────────────────────────────────────────
+# EIS
+# ─────────────────────────────────────────────────────────────────────────────
 
-    with tab_nyq:
-        # Badges de validité KK
-        if validation_results:
-            kk_cols = st.columns(min(len(validation_results), 6))
-            for kk_col, (kk_label, kk_vr) in zip(kk_cols, validation_results.items()):
-                if not kk_vr.all_valid:
-                    kk_col.error(f"❌ {kk_label}")
-                elif kk_vr.drift_detected:
-                    kk_col.warning(f"⚠ {kk_label}")
-                else:
-                    kk_col.success(f"✅ {kk_label}")
-        st.subheader("Diagramme de Nyquist")
-        st.plotly_chart(nyquist_figure(session), width='stretch')
+def _spectra_labels_for_session(session: EISSession) -> dict:
+    """label -> (replicate_spectra, average_spectrum_or_group) pour une session."""
+    out = {}
+    if session.bare is not None:
+        out["bare"] = (session.bare_replicate_spectra, session.bare)
+    if session.probe is not None:
+        out["probe"] = (session.probe_replicate_spectra, session.probe)
+    for grp in session.groups:
+        out[f"{grp.concentration:.2e}"] = (grp.replicate_spectra, grp.spectrum)
+    return out
 
-    with tab_bode:
-        st.subheader("Diagramme de Bode")
-        st.plotly_chart(bode_figure(session), width='stretch')
 
-    with tab_drt:
-        st.subheader("Distribution des temps de relaxation (DRT)")
+def _render_kk_tab(validations: dict) -> None:
+    """Onglet 1 — Validation KK, dupliqué par électrode."""
+    if not validations:
+        st.info("Lancez une analyse pour voir les résultats de validation.")
+        return
 
-        spectra_by_label = {}
-        if session.bare is not None:
-            spectra_by_label["Bare"] = session.bare
-        if session.probe is not None:
-            spectra_by_label["Probe"] = session.probe
-        for grp in session.groups:
-            spectra_by_label[f"{grp.concentration:.2e} M"] = grp.spectrum
+    electrodes = sorted(validations.keys())
+    elec_tabs = st.tabs([f"Électrode {e}" for e in electrodes])
 
-        has_drt = any(
-            "drt_fft" in sp.fit_results or "drt_tikhonov" in sp.fit_results
-            for sp in spectra_by_label.values()
-        )
+    for e, elec_tab in zip(electrodes, elec_tabs):
+        with elec_tab:
+            validation_results = validations.get(e)
+            if not validation_results:
+                st.info("Aucun résultat de validation pour cette électrode.")
+                continue
 
-        if not has_drt:
-            st.info(
-                "Activez **DRT Tikhonov + NNLS** et/ou **DRT FFT Wiener** dans la "
-                "sidebar pour afficher la distribution des temps de relaxation."
-            )
-        else:
-            st.plotly_chart(drt_figure(session), width='stretch')
-
-            sel_label = st.selectbox(
-                "Spectre", list(spectra_by_label.keys()), key="drt_spectrum_select",
-            )
-            sel_sp = spectra_by_label[sel_label]
-
-            with st.expander("1️⃣ Validation Kramers-Kronig", expanded=False):
-                kk_result = None
-                for fr in sel_sp.fit_results.values():
-                    if fr.kk_residuals is not None:
-                        kk_result = fr.kk_residuals
-                        break
-                if kk_result is None:
-                    st.info("Validation KK non disponible pour ce spectre.")
-                else:
-                    st.plotly_chart(
-                        kk_figure(sel_sp, kk_result, label=sel_label), width='stretch',
-                    )
-
-            with st.expander("2️⃣ DRT Tikhonov + NNLS", expanded=False):
-                fr_tik = sel_sp.fit_results.get("drt_tikhonov")
-                if fr_tik is None:
-                    st.info("Activez **DRT Tikhonov + NNLS** dans la sidebar.")
-                else:
-                    st.plotly_chart(
-                        drt_tikhonov_figure(fr_tik, label=sel_label), width='stretch',
-                    )
-
-            with st.expander("3️⃣ DRT FFT Wiener", expanded=False):
-                fr_fft = sel_sp.fit_results.get("drt_fft")
-                if fr_fft is None:
-                    st.info("Activez **DRT FFT Wiener** dans la sidebar.")
-                else:
-                    w_log10 = st.slider(
-                        "Filtre Wiener W (log₁₀) — re-calcul en direct",
-                        min_value=-10.0, max_value=-5.0,
-                        value=float(np.log10(fr_fft.params.get("W", 1e-8))),
-                        step=0.5, key="drt_fft_w_log10_live",
-                    )
-                    live_W = 10 ** w_log10
-                    if abs(live_W - fr_fft.params.get("W", 1e-8)) / fr_fft.params.get("W", 1e-8) > 1e-9:
-                        from fits.registry import get_model
-                        live_config = dict(config)
-                        live_fit_cfg = dict(live_config.get("fit", {}))
-                        live_fit_cfg["drt_wiener_W"] = live_W
-                        live_config["fit"] = live_fit_cfg
-                        fr_fft = get_model("drt_fft").fit(sel_sp, live_config)
-                    st.plotly_chart(
-                        drt_fft_figure(fr_fft, label=sel_label), width='stretch',
-                    )
-
-            with st.expander("4️⃣ Comparaison reconstruction", expanded=False):
-                cols_rec = st.columns(2)
-                if fr_tik is not None:
-                    cols_rec[0].plotly_chart(
-                        drt_reconstruction_figure(sel_sp, fr_tik, label=f"{sel_label} — Tikhonov"),
-                        width='stretch',
-                    )
-                if fr_fft is not None:
-                    cols_rec[1].plotly_chart(
-                        drt_reconstruction_figure(sel_sp, fr_fft, label=f"{sel_label} — FFT Wiener"),
-                        width='stretch',
-                    )
-                if fr_tik is None and fr_fft is None:
-                    st.info("Aucun modèle DRT actif pour ce spectre.")
-
-            with st.expander("5️⃣ Calibration DRT", expanded=False):
-                drt_model_choice = st.selectbox(
-                    "Modèle DRT", ["drt_fft", "drt_tikhonov"], key="drt_calib_model",
-                )
-                has_hyb_drt = sum(
-                    1 for g in session.groups
-                    if g.concentration > 0 and drt_model_choice in g.fit_results
-                ) >= 2
-                if has_hyb_drt:
-                    st.plotly_chart(
-                        calibration_drt_figure(session, model_name=drt_model_choice),
-                        width='stretch',
-                    )
-                else:
-                    st.info(
-                        "Chargez au moins **2 spectres d'hybridation** avec un fit "
-                        f"`{drt_model_choice}` pour tracer la calibration DRT."
-                    )
-
-    with tab_params:
-        st.subheader("Paramètres extraits")
-        st.plotly_chart(params_table_figure(session), width='stretch')
-
-    with tab_calib:
-        st.subheader("Courbe de calibration log(Rct) vs log([c])")
-        has_hyb = sum(1 for g in session.groups if g.concentration > 0) >= 2
-        if has_hyb:
-            st.plotly_chart(calibration_figure(session), width='stretch')
-        else:
-            st.info(
-                "Chargez au moins **2 spectres d'hybridation** avec "
-                "des concentrations positives pour tracer la calibration."
-            )
-
-    with tab_export:
-        st.subheader("Télécharger les résultats")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button(
-                label="📄 Paramètres CSV",
-                data=export_params_csv(session),
-                file_name="eis_params.csv",
-                mime="text/csv",
-            )
-            st.download_button(
-                label="📊 Spectres CSV",
-                data=export_spectra_csv(session),
-                file_name="eis_spectra.csv",
-                mime="text/csv",
-            )
-        with col2:
-            st.download_button(
-                label="🗂 Session YAML",
-                data=export_session_yaml(session),
-                file_name="eis_session.yaml",
-                mime="text/yaml",
-            )
-            nyq_fig = nyquist_figure(session)
-            st.download_button(
-                label="🌐 Nyquist HTML",
-                data=export_figure_html(nyq_fig),
-                file_name="nyquist.html",
-                mime="text/html",
-            )
-            try:
-                png_data = export_figure_png(nyq_fig, config)
-                st.download_button(
-                    label="🖼 Nyquist PNG",
-                    data=png_data,
-                    file_name="nyquist.png",
-                    mime="image/png",
-                )
-            except RuntimeError as exc:
-                st.caption(str(exc))
-
-    with tab7:
-        st.subheader("Validation Kramers-Kronig")
-
-        if not validation_results:
-            st.info("Lancez une analyse pour voir les résultats de validation.")
-        else:
             st.markdown("#### Récapitulatif")
             fig_table = validation_summary_table(validation_results, theme_mode="light")
-            st.plotly_chart(fig_table, width='stretch')
+            st.plotly_chart(fig_table, width='stretch', key=f"kk_table_e{e}")
 
             st.markdown("#### Résidus par spectre")
             labels_kk = list(validation_results.keys())
-            selected_kk = st.selectbox("Spectre", labels_kk, key="kk_select")
+            selected_kk = st.selectbox("Spectre", labels_kk, key=f"kk_select_e{e}")
             vr = validation_results[selected_kk]
 
-            fig_res = residuals_figure(
-                vr,
-                theme_mode="light",
-                residual_threshold_pct=getattr(config, "kk_residual_pct", 2.0),
-            )
-            st.plotly_chart(fig_res, width='stretch')
+            fig_res = residuals_figure(vr, theme_mode="light")
+            st.plotly_chart(fig_res, width='stretch', key=f"kk_res_e{e}")
 
             for kk in vr.replicates:
                 if kk.warning:
@@ -250,25 +85,246 @@ def render_eis_tabs(session: EISSession, config: dict, validation_results=None) 
                 )
 
 
-def render_cv_tabs(cv_session: CVSession) -> None:
-    """Render CV analysis tabs: Courbes I/E, Calibration."""
-    tab_ie, tab_calib = st.tabs(["📉 Courbes I/E", "📊 Calibration"])
+def _render_drt_tab(sessions: dict) -> None:
+    """Onglet 2 — Courbes DRT."""
+    st.subheader("Distribution des temps de relaxation (DRT)")
 
-    with tab_ie:
+    # (a) graphe global toutes électrodes
+    st.markdown("#### Moyenne — toutes électrodes")
+    st.plotly_chart(drt_figure_multi(sessions), width='stretch', key="drt_multi")
+
+    # (b) deux colonnes par électrode
+    st.markdown("#### Moyenne — par électrode")
+    electrodes = sorted(sessions.keys())
+    cols = st.columns(len(electrodes)) if electrodes else []
+    for e, col in zip(electrodes, cols):
+        with col:
+            st.plotly_chart(drt_figure(sessions[e]), width='stretch', key=f"drt_avg_e{e}")
+
+    # (c) onglets par électrode — réplicats + exclusions
+    st.markdown("#### Réplicats — sélection par spectre")
+    if "drt_exclusions" not in st.session_state:
+        st.session_state["drt_exclusions"] = {}
+
+    elec_tabs = st.tabs([f"Électrode {e}" for e in electrodes])
+    for e, elec_tab in zip(electrodes, elec_tabs):
+        with elec_tab:
+            session = sessions[e]
+            spectra_map = _spectra_labels_for_session(session)
+            if not spectra_map:
+                st.info("Aucun spectre disponible pour cette électrode.")
+                continue
+
+            sel_label = st.selectbox(
+                "Probe / concentration",
+                list(spectra_map.keys()),
+                key=f"drt_rep_select_e{e}",
+            )
+            reps, _avg_spectrum = spectra_map[sel_label]
+
+            if not reps:
+                st.info("Aucun réplicat individuel disponible pour ce spectre.")
+                continue
+
+            elec_excl = st.session_state["drt_exclusions"].setdefault(e, {})
+            excluded = elec_excl.setdefault(sel_label, [False] * len(reps))
+            if len(excluded) != len(reps):
+                excluded = [False] * len(reps)
+                elec_excl[sel_label] = excluded
+
+            rep_frs = [sp.fit_results.get("drt_fft") for sp in reps]
+            rep_frs_valid = [fr for fr in rep_frs if fr is not None]
+
+            st.plotly_chart(
+                drt_replicates_figure(rep_frs_valid, excluded, label=sel_label),
+                width='stretch', key=f"drt_rep_fig_e{e}",
+            )
+
+            changed = False
+            cbox_cols = st.columns(len(reps))
+            for i, col in enumerate(cbox_cols):
+                with col:
+                    new_val = st.checkbox(
+                        f"Inclure réplicat {i+1}",
+                        value=not excluded[i],
+                        key=f"drt_rep_incl_e{e}_{sel_label}_{i}",
+                    )
+                    if new_val == excluded[i]:
+                        excluded[i] = not new_val
+                        changed = True
+
+            if changed:
+                st.rerun()
+
+    # (d) bouton sauvegarde matplotlib
+    if st.button("🖼 Ouvrir fenêtre de sauvegarde", key="drt_matplotlib_btn"):
+        open_drt_matplotlib_window(sessions, st.session_state.get("drt_exclusions", {}))
+
+
+def _render_reconstruction_tab(sessions: dict) -> None:
+    """Onglet 3 — Reconstructions Nyquist (Randles vs DRT)."""
+    st.subheader("Reconstructions Nyquist — Randles vs DRT")
+
+    # (a) comparaison moyenne probe, toutes électrodes
+    st.plotly_chart(reconstruction_comparison_figure(sessions), width='stretch', key="recon_multi")
+
+    # (b) onglets par électrode
+    electrodes = sorted(sessions.keys())
+    elec_tabs = st.tabs([f"Électrode {e}" for e in electrodes])
+    for e, elec_tab in zip(electrodes, elec_tabs):
+        with elec_tab:
+            session = sessions[e]
+            if session.probe is not None:
+                fr_r = session.probe.fit_results.get("randles_full")
+                fr_d = session.probe.fit_results.get("drt_fft")
+                st.plotly_chart(
+                    drt_reconstruction_figure_dual(
+                        session.probe, fr_drt=fr_d, fr_randles=fr_r, label="Probe (moyenne)",
+                    ),
+                    width='stretch', key=f"recon_avg_e{e}",
+                )
+            else:
+                st.info("Aucun spectre probe pour cette électrode.")
+
+            spectra_map = _spectra_labels_for_session(session)
+            if not spectra_map:
+                continue
+
+            sel_label = st.selectbox(
+                "Probe / concentration", list(spectra_map.keys()), key=f"recon_select_e{e}",
+            )
+            reps, avg_spectrum = spectra_map[sel_label]
+
+            if reps:
+                rep_idx = st.selectbox(
+                    "Réplicat",
+                    list(range(1, len(reps) + 1)),
+                    key=f"recon_rep_select_e{e}",
+                )
+                rep_sp = reps[rep_idx - 1]
+                fr_r = rep_sp.fit_results.get("randles_full")
+                fr_d = rep_sp.fit_results.get("drt_fft")
+                st.plotly_chart(
+                    drt_reconstruction_figure_dual(
+                        rep_sp, fr_drt=fr_d, fr_randles=fr_r,
+                        label=f"{sel_label} — réplicat {rep_idx}",
+                    ),
+                    width='stretch', key=f"recon_rep_fig_e{e}",
+                )
+            else:
+                st.info("Aucun réplicat individuel disponible pour ce spectre.")
+
+    if st.button("🖼 Ouvrir fenêtre de sauvegarde", key="recon_matplotlib_btn"):
+        open_reconstruction_matplotlib_window(sessions)
+
+
+def _render_calibration_tab(sessions: dict) -> None:
+    """Onglet 4 — Calibration EIS."""
+    st.subheader("Courbe de calibration — Signal normalisé vs log([c])")
+
+    electrodes = [
+        e for e in sorted(sessions.keys())
+        if sum(1 for g in sessions[e].groups if g.concentration > 0) >= 2
+    ]
+    if not electrodes:
+        st.info(
+            "Chargez au moins **2 spectres d'hybridation** avec "
+            "des concentrations positives pour tracer la calibration."
+        )
+        return
+
+    cols = st.columns(len(electrodes)) if len(electrodes) > 1 else [st.container()]
+    for e, col in zip(electrodes, cols):
+        with col:
+            st.markdown(f"**Électrode {e}**")
+            st.plotly_chart(calibration_figure(sessions[e]), width='stretch', key=f"calib_fig_e{e}")
+
+    btn_cols = st.columns(2)
+    with btn_cols[0]:
+        if st.button("🖼 Ouvrir fenêtre de sauvegarde", key="calib_matplotlib_btn"):
+            open_calibration_matplotlib_window({e: sessions[e] for e in electrodes})
+    with btn_cols[1]:
+        st.download_button(
+            "📥 Télécharger les valeurs (CSV)",
+            data=export_calibration_csv({e: sessions[e] for e in electrodes}),
+            file_name="eis_calibration.csv",
+            mime="text/csv",
+            key="calib_csv_btn",
+        )
+
+
+def render_eis_tabs(sessions: dict, normalized: dict, config: dict, validations: dict) -> None:
+    """Render EIS analysis tabs: Validation KK / Courbes DRT / Reconstructions / Calibration.
+
+    Args:
+        sessions: {electrode_index: EISSession}, one entry per electrode present.
+        normalized: output of pages.A_eis._build_normalized_session (Zre_norm/Zim_norm view).
+                    Not directly rendered here — the normalized Nyquist view is handled by
+                    pages/A_eis.py::_render_three_nyquist, kept out of this function to
+                    avoid duplication.
+        config: app config dict.
+        validations: {electrode_index: {label: ValidationResult}}.
+    """
+    del normalized, config  # non utilisés directement ici (cf. docstring)
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "1️⃣ Validation KK", "2️⃣ Courbes DRT",
+        "3️⃣ Reconstructions Nyquist", "4️⃣ Calibration",
+    ])
+
+    with tab1:
+        _render_kk_tab(validations or {})
+
+    with tab2:
+        _render_drt_tab(sessions)
+
+    with tab3:
+        _render_reconstruction_tab(sessions)
+
+    with tab4:
+        _render_calibration_tab(sessions)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CV
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_cv_tabs(cv_session: CVSession) -> None:
+    """Render CV analysis tabs: Visualisation I/U, Pic redox, Calibration."""
+    tab1, tab2, tab3 = st.tabs([
+        "1️⃣ Visualisation I/U", "2️⃣ Pic redox", "3️⃣ Calibration",
+    ])
+
+    with tab1:
         st.subheader("Voltampérométrie cyclique — Courant vs Potentiel")
         if cv_session.probe is not None or cv_session.groups:
             st.plotly_chart(cv_current_figure(cv_session), width='stretch')
         else:
             st.info("Aucune donnée CV chargée.")
 
-    with tab_calib:
+    with tab2:
+        st.subheader("Pics redox — anodique / cathodique")
+        if cv_session.probe is not None or cv_session.groups:
+            st.plotly_chart(redox_peaks_figure(cv_session), width='stretch')
+        else:
+            st.info("Aucune donnée CV chargée.")
+
+    with tab3:
         st.subheader("Calibration CV — Signal normalisé")
         if len(cv_session.groups) >= 2:
             st.plotly_chart(cv_calibration_figure(cv_session), width='stretch')
+
+            btn_cols = st.columns(2)
+            with btn_cols[0]:
+                if st.button("🖼 Ouvrir fenêtre de sauvegarde", key="cv_calib_matplotlib_btn"):
+                    open_cv_calibration_matplotlib_window(cv_session)
+            with btn_cols[1]:
+                st.download_button(
+                    "📥 Télécharger les valeurs (CSV)",
+                    data=export_cv_calibration_csv(cv_session),
+                    file_name="cv_calibration.csv",
+                    mime="text/csv",
+                    key="cv_calib_csv_btn",
+                )
         else:
             st.info("Ajoutez au moins 2 concentrations pour la calibration.")
-
-
-def render_tabs(session: EISSession, config: dict, cv_session: CVSession = None, validation_results=None) -> None:
-    """Backward-compatible alias — delegates to render_eis_tabs."""
-    render_eis_tabs(session, config, validation_results=validation_results)

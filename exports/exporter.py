@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import io
 import csv
+import math
 import yaml
+import numpy as np
+from scipy import stats
 
 from core.models import EISSession
+from core.cv_models import CVSession
 
 
 def export_params_csv(session: EISSession) -> bytes:
@@ -104,3 +108,92 @@ def export_session_yaml(session: EISSession) -> str:
         data["groups"].append(grp_data)
 
     return yaml.dump(data, allow_unicode=True, sort_keys=False)
+
+
+# ── Calibration EIS — export multi-électrode / multi-méthode (ajout) ─────────
+
+def export_calibration_csv(sessions: dict) -> bytes:
+    """Exporte, pour chaque électrode et méthode, conc / log10(conc) / signal
+    normalisé / Rct / paramètres de régression (slope, intercept, r2, p_value, std_err)
+    dans un CSV multi-colonnes unique.
+
+    sessions: {electrode_index: EISSession}.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "electrode", "model", "concentration_M", "log10_concentration",
+        "signal_norm", "Rct_Ohm", "Rct_probe_Ohm",
+        "slope", "intercept", "r2", "p_value", "std_err",
+    ])
+
+    for e, session in sorted(sessions.items()):
+        probe_fr = getattr(session.probe, "fit_results", {}) if session.probe else {}
+        if not probe_fr:
+            continue
+        for model, probe_fit in probe_fr.items():
+            if probe_fit is None or probe_fit.Rct <= 0:
+                continue
+            probe_rct = probe_fit.Rct
+
+            concs, signals, rcts = [], [], []
+            for grp in session.groups:
+                if grp.concentration <= 0:
+                    continue
+                fr = grp.fit_results.get(model)
+                if fr is None or fr.Rct <= 0:
+                    continue
+                concs.append(grp.concentration)
+                rcts.append(fr.Rct)
+                signals.append(abs(probe_rct - fr.Rct) / abs(probe_rct))
+
+            if len(concs) < 2:
+                continue
+
+            log_c = [math.log10(c) for c in concs]
+            reg = stats.linregress(log_c, signals)
+
+            for conc, lc, sig, rct in zip(concs, log_c, signals, rcts):
+                writer.writerow([
+                    e, model, conc, lc, sig, rct, probe_rct,
+                    reg.slope, reg.intercept, reg.rvalue ** 2, reg.pvalue, reg.stderr,
+                ])
+
+    return buf.getvalue().encode()
+
+
+# ── Calibration CV — export (ajout, même pattern que EIS) ─────────────────────
+
+def export_cv_calibration_csv(cv_session: CVSession) -> bytes:
+    """Exporte concentration / log10(conc) / signal normalisé moyen + régression
+    OLS (slope, intercept, r2, p_value, std_err) pour la calibration CV.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "concentration_M", "log10_concentration", "signal_norm",
+        "slope", "intercept", "r2", "p_value", "std_err",
+    ])
+
+    concs, signals = [], []
+    for grp in cv_session.groups:
+        if grp.concentration <= 0:
+            continue
+        mean_sig = np.nanmean(grp.delta_signal)
+        if np.isfinite(mean_sig):
+            concs.append(grp.concentration)
+            signals.append(float(mean_sig))
+
+    if len(concs) < 2:
+        return buf.getvalue().encode()
+
+    log_c = list(np.log10(concs))
+    reg = stats.linregress(log_c, signals)
+
+    for conc, lc, sig in zip(concs, log_c, signals):
+        writer.writerow([
+            conc, lc, sig,
+            reg.slope, reg.intercept, reg.rvalue ** 2, reg.pvalue, reg.stderr,
+        ])
+
+    return buf.getvalue().encode()
