@@ -784,7 +784,7 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
         exp_clean = _apply_exclusions(experiment, exclusions)
         st.session_state["experiment_clean"] = exp_clean
         st.session_state["preprocessing_done"] = True
-        for key in ("eis_session", "eis_validation", "comparison_report", "comparison_session_data"):
+        for key in ("eis_session", "eis_validation"):
             st.session_state[key] = None
 
         deleted_points = {
@@ -799,7 +799,7 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
 
         st.success(
             "✅ Prétraitement validé. Rendez-vous dans les pages "
-            "**EIS seule**, **CV seule**, **Comparatif** ou **Prédiction**."
+            "**EIS seule**, **CV seule**, **Export** ou **Prédiction**."
         )
 
 
@@ -815,36 +815,219 @@ def _collect_deleted_points() -> dict:
     }
 
 
-def _section_export_graphs(experiment: dict, exclusions: dict) -> None:
-    """Section d'export HTML du rapport de prétraitement (miroir de la page)."""
-    st.markdown("### 📊 Exporter le rapport de prétraitement")
+def _mpl_conc_color(concentration: float, c_min: float, c_max: float):
+    """Couleur log-interpolée plasma, équivalent matplotlib de _conc_color (plotly)."""
+    import matplotlib.cm as cm
 
-    if st.button("📄 Exporter le rapport prétraitement (HTML)", key="export_pretraitement_html"):
-        with st.spinner("Génération du rapport…"):
-            try:
-                from comparison.pretraitement_report import generate_pretraitement_report_html
-                html_content = generate_pretraitement_report_html(
-                    experiment=experiment,
-                    exclusions=exclusions,
-                    deleted_points=_collect_deleted_points(),
-                    validation_results=st.session_state.get("validation_results"),
-                    experiment_clean=st.session_state.get("experiment_clean"),
-                )
-                exp_name = experiment.get("name", "pretraitement") or "pretraitement"
-                st.download_button(
-                    label="📥 Télécharger le rapport HTML",
-                    data=html_content.encode("utf-8"),
-                    file_name=f"pretraitement_{exp_name}.html",
-                    mime="text/html",
-                    key="dl_pretraitement_html",
-                )
-                st.success("Rapport généré — ouvrez le fichier dans un navigateur.")
-                st.info(
-                    "Pour un PDF : ouvrez le HTML dans Chrome ou Firefox, "
-                    "puis Ctrl+P → Enregistrer en PDF."
-                )
-            except Exception as exc:
-                st.error(f"Erreur lors de la génération HTML : {exc}")
+    if c_min > 0 and c_max > 0 and c_min < c_max:
+        t = (np.log10(concentration) - np.log10(c_min)) / (np.log10(c_max) - np.log10(c_min))
+    else:
+        t = 0.5
+    t = float(np.clip(t, 0, 1))
+    return cm.plasma(t)
+
+
+def _avg_eis_reps(reps: list):
+    if not reps:
+        return None
+    return average_replicates(reps) if len(reps) > 1 else reps[0]
+
+
+def _avg_cv_reps(reps: list):
+    if not reps:
+        return None
+    return average_cv_replicates(reps) if len(reps) > 1 else reps[0]
+
+
+def _combine_eis_two(a, b):
+    """Moyenne point à point (sur la grille log(f) de a) de deux spectres EIS."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if len(a.f) == len(b.f):
+        Zre_b, Zim_b = np.asarray(b.Zre), np.asarray(b.Zim)
+    else:
+        log_fa = np.log10(np.asarray(a.f, dtype=float))
+        log_fb = np.log10(np.asarray(b.f, dtype=float))
+        order = np.argsort(log_fb)
+        Zre_b = np.interp(log_fa, log_fb[order], np.asarray(b.Zre)[order])
+        Zim_b = np.interp(log_fa, log_fb[order], np.asarray(b.Zim)[order])
+    Zre = (np.asarray(a.Zre) + Zre_b) / 2
+    Zim = (np.asarray(a.Zim) + Zim_b) / 2
+    return {"f": a.f, "Zre": Zre, "Zim": Zim}
+
+
+def _combine_cv_two(a, b):
+    """Moyenne point à point (sur la grille E de a) de deux scans CV."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    I_b = np.interp(a.E, b.E, b.I)
+    I = (np.asarray(a.I) + I_b) / 2
+    return {"E": a.E, "I": I}
+
+
+def _gather_eis_entries(eis_spectra: dict, elec_keys: list, concentrations: list) -> list:
+    """Retourne [(label, concentration, spectre_moyen_dict_ou_objet), ...] pour les
+    électrodes données, combinées (moyennées) si plusieurs sont fournies."""
+    entries = []
+
+    probe_avgs = [
+        avg for key in elec_keys
+        if (avg := _avg_eis_reps(eis_spectra["probe"].get(key) or [])) is not None
+    ]
+    if probe_avgs:
+        combined = probe_avgs[0]
+        for extra in probe_avgs[1:]:
+            combined = _combine_eis_two(combined, extra)
+        entries.append(("Probe", 0.0, combined))
+
+    for ci, conc in enumerate(concentrations):
+        conc_avgs = []
+        for key in elec_keys:
+            concs_list = eis_spectra["calibration"].get(key) or []
+            reps = concs_list[ci] if ci < len(concs_list) else []
+            avg = _avg_eis_reps(reps)
+            if avg is not None:
+                conc_avgs.append(avg)
+        if conc_avgs:
+            combined = conc_avgs[0]
+            for extra in conc_avgs[1:]:
+                combined = _combine_eis_two(combined, extra)
+            entries.append((_format_conc(conc), conc, combined))
+
+    return entries
+
+
+def _gather_cv_entries(cv_scans: dict, elec_keys: list, concentrations: list) -> list:
+    entries = []
+
+    probe_avgs = [
+        avg for key in elec_keys
+        if (avg := _avg_cv_reps(cv_scans["probe"].get(key) or [])) is not None
+    ]
+    if probe_avgs:
+        combined = probe_avgs[0]
+        for extra in probe_avgs[1:]:
+            combined = _combine_cv_two(combined, extra)
+        entries.append(("Probe", 0.0, combined))
+
+    for ci, conc in enumerate(concentrations):
+        conc_avgs = []
+        for key in elec_keys:
+            concs_list = cv_scans["calibration"].get(key) or []
+            reps = concs_list[ci] if ci < len(concs_list) else []
+            avg = _avg_cv_reps(reps)
+            if avg is not None:
+                conc_avgs.append(avg)
+        if conc_avgs:
+            combined = conc_avgs[0]
+            for extra in conc_avgs[1:]:
+                combined = _combine_cv_two(combined, extra)
+            entries.append((_format_conc(conc), conc, combined))
+
+    return entries
+
+
+def _plot_nyquist_entries(ax, entries: list, title: str) -> None:
+    concs = [c for _, c, _ in entries if c > 0]
+    c_min = min(concs) if concs else 0.0
+    c_max = max(concs) if concs else 0.0
+    for label, conc, sp in entries:
+        Zre = sp["Zre"] if isinstance(sp, dict) else sp.Zre
+        Zim = sp["Zim"] if isinstance(sp, dict) else sp.Zim
+        color = "black" if conc <= 0 else _mpl_conc_color(conc, c_min, c_max)
+        ax.plot(Zre, Zim, marker="o", markersize=3, linewidth=1, color=color, label=label)
+    ax.set_title(title)
+    ax.set_xlabel("Re(Z) (Ω)")
+    ax.set_ylabel("−Im(Z) (Ω)")
+    ax.legend(fontsize=7)
+
+
+def _plot_cv_entries(ax, entries: list, title: str) -> None:
+    concs = [c for _, c, _ in entries if c > 0]
+    c_min = min(concs) if concs else 0.0
+    c_max = max(concs) if concs else 0.0
+    for label, conc, sc in entries:
+        E = sc["E"] if isinstance(sc, dict) else sc.E
+        I = sc["I"] if isinstance(sc, dict) else sc.I
+        color = "black" if conc <= 0 else _mpl_conc_color(conc, c_min, c_max)
+        ax.plot(E, I, linewidth=1, color=color, label=label)
+    ax.set_title(title)
+    ax.set_xlabel("E (V)")
+    ax.set_ylabel("I (A)")
+    ax.legend(fontsize=7)
+
+
+def open_pretraitement_matplotlib_window(experiment_clean: dict) -> None:
+    """Ouvre une fenêtre matplotlib (bloquante) empilant les graphes de prétraitement.
+
+    Ordre : Nyquist moyen toutes électrodes, CV moyen toutes électrodes,
+    Nyquist E1, CV E1, Nyquist E2, CV E2. Les graphes pour une électrode ou
+    une modalité absente sont silencieusement omis (pas de sous-graphe vide).
+    """
+    import matplotlib.pyplot as plt
+
+    mode           = experiment_clean.get("mode", "both")
+    concentrations = experiment_clean.get("concentrations") or []
+    n_elec         = experiment_clean.get("n_electrodes", 2)
+    has_eis        = mode in ("eis_only", "both")
+    has_cv         = mode in ("cv_only", "both")
+
+    eis_spectra = _load_eis_spectra(experiment_clean) if has_eis else {"probe": {}, "calibration": {}}
+    cv_scans    = _load_cv_scans(experiment_clean)    if has_cv  else {"probe": {}, "calibration": {}}
+
+    elec_keys_all = [f"electrode_{e}" for e in range(1, n_elec + 1)]
+
+    panels = []  # (title, plot_fn, entries)
+
+    if has_eis:
+        entries = _gather_eis_entries(eis_spectra, elec_keys_all, concentrations)
+        if entries:
+            panels.append(("Nyquist moyen — toutes électrodes", _plot_nyquist_entries, entries))
+
+    if has_cv:
+        entries = _gather_cv_entries(cv_scans, elec_keys_all, concentrations)
+        if entries:
+            panels.append(("CV moyen — toutes électrodes", _plot_cv_entries, entries))
+
+    for e in range(1, n_elec + 1):
+        key = f"electrode_{e}"
+        if has_eis:
+            entries = _gather_eis_entries(eis_spectra, [key], concentrations)
+            if entries:
+                panels.append((f"Nyquist Électrode {e}", _plot_nyquist_entries, entries))
+        if has_cv:
+            entries = _gather_cv_entries(cv_scans, [key], concentrations)
+            if entries:
+                panels.append((f"CV Électrode {e}", _plot_cv_entries, entries))
+
+    if not panels:
+        return
+
+    n = len(panels)
+    fig, axes = plt.subplots(nrows=n, ncols=1, figsize=(9, 4.2 * n))
+    if n == 1:
+        axes = [axes]
+
+    for ax, (title, plot_fn, entries) in zip(axes, panels):
+        plot_fn(ax, entries, title)
+
+    fig.tight_layout()
+    plt.show()
+
+
+def _section_export_graphs(experiment_clean: dict, exclusions: dict) -> None:
+    """Section d'export des graphiques de prétraitement (fenêtre matplotlib)."""
+    st.markdown("### 📊 Exporter les graphiques de prétraitement")
+
+    if st.button("🖼 Ouvrir la fenêtre de sauvegarde des figures", key="export_pretraitement_mpl"):
+        try:
+            open_pretraitement_matplotlib_window(experiment_clean)
+        except Exception as exc:
+            st.error(f"Erreur lors de la génération des graphiques : {exc}")
 
 
 # ─────────────────────────────────────────────
@@ -936,7 +1119,7 @@ def main() -> None:
         )
 
     _section_final_validation(experiment, exclusions)
-    _section_export_graphs(experiment, exclusions)
+    _section_export_graphs(_apply_exclusions(experiment, exclusions), exclusions)
 
 
 if __name__ == "__main__":
