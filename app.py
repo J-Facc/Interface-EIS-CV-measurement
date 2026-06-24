@@ -1,7 +1,7 @@
 """EIS CV Analyzer v3 — point d'entrée Streamlit.
 
 Configure la navigation multipage et initialise les clés de session_state
-partagées (comparison_report, eis_session).
+partagées (eis_session, experiment_clean).
 `st.set_page_config` est appelé une seule fois ici ; les pages ne doivent
 pas le rappeler.
 """
@@ -25,8 +25,6 @@ def _init_shared_state() -> None:
         "eis_session": None,
         "eis_config": None,
         "eis_validation": None,
-        "comparison_report": None,
-        "comparison_session_data": None,
         "experiment": None,
         "experiment_clean": None,
         "import_validated": False,
@@ -55,8 +53,8 @@ pg = st.navigation(
             st.Page("pages/A_eis.py", title="EIS seule", icon="📡"),
             st.Page("pages/B_cv.py",  title="CV seule",  icon="📈"),
         ],
-        "Comparaison": [
-            st.Page("pages/C_comparatif.py", title="Comparatif", icon="⚖️"),
+        "Export": [
+            st.Page("pages/E_export.py", title="Export", icon="💾"),
         ],
         "Inférence": [
             st.Page("pages/D_inference.py", title="Prédiction", icon="🎯"),

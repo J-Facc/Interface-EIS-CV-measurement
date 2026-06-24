@@ -146,6 +146,7 @@ def _build_normalized_session(sessions: dict) -> dict:
 
             out[grp.concentration] = {
                 "label":         _spectrum_label(grp.spectrum),
+                "f":             probe.f,
                 "Zre_norm":      Zre_norm,
                 "Zim_norm":      Zim_norm,
                 "concentration": grp.concentration,
@@ -170,6 +171,7 @@ def _build_normalized_session(sessions: dict) -> dict:
         if d1 is not None and d2 is not None and len(d1["Zre_norm"]) == len(d2["Zre_norm"]):
             result[conc] = {
                 "label":         d1["label"],
+                "f":             d1["f"],
                 "Zre_norm":      (d1["Zre_norm"] + d2["Zre_norm"]) / 2,
                 "Zim_norm":      (d1["Zim_norm"] + d2["Zim_norm"]) / 2,
                 "concentration": conc,
@@ -363,6 +365,7 @@ def main() -> None:
 
     display_sessions = {e: _filter_session_display(s) for e, s in sessions.items()}
     normalized = _build_normalized_session(sessions)
+    st.session_state["eis_normalized"] = normalized
     render_eis_tabs(
         display_sessions,
         normalized,

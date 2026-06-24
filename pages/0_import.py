@@ -112,8 +112,7 @@ def _section_load_existing() -> None:
                 exp_clean = apply_exclusions(exp, exp["exclusions"])
                 st.session_state["experiment_clean"]  = exp_clean
                 st.session_state["preprocessing_done"] = True
-                for key in ("eis_session", "eis_validation",
-                            "comparison_report", "comparison_session_data"):
+                for key in ("eis_session", "eis_validation"):
                     st.session_state[key] = None
                 st.success(
                     f"✅ Expérience **{exp.get('name', '—')}** chargée "
