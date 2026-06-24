@@ -81,6 +81,11 @@ class ConcentrationGroup:
     concentration: float
     spectrum: EISSpectrum
     fit_results: dict = field(default_factory=dict)
+    # NOTE (ajout hors périmètre initial — réorganisation onglets EIS) :
+    # liste des spectres individuels (réplicats, avant moyenne), chacun avec
+    # son propre `fit_results` rempli par core/pipeline.py. Champ optionnel,
+    # vide par défaut, pour ne casser aucun code existant qui ignore ce champ.
+    replicate_spectra: list = field(default_factory=list)
 
 
 @dataclass
@@ -92,3 +97,7 @@ class EISSession:
     probe: Optional[EISSpectrum] = None
     groups: list = field(default_factory=list)
     config: dict = field(default_factory=dict)
+    # NOTE (ajout hors périmètre initial) : réplicats individuels (avant moyenne)
+    # pour bare/probe, avec fit_results par réplicat. Optionnel, vide par défaut.
+    bare_replicate_spectra: list = field(default_factory=list)
+    probe_replicate_spectra: list = field(default_factory=list)

@@ -4,8 +4,10 @@ import numpy as np
 import plotly.colors as _pc
 from scipy import stats
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from core.cv_models import CVSession
+from core.cv_peaks import detect_redox_peaks
 
 
 def _cv_conc_color(concentration: float, c_min: float, c_max: float) -> str:
@@ -153,3 +155,116 @@ def cv_calibration_figure(cv_session: CVSession) -> go.Figure:
         legend_title="Courbe",
     )
     return fig
+
+
+# ── Pic redox (ajout — onglet "Pic redox") ────────────────────────────────────
+
+def redox_peaks_figure(cv_session: CVSession) -> go.Figure:
+    """I(U) pour probe + chaque concentration, pics anodique/cathodique marqués
+    (étoiles), + tableau Ipa/Epa/Ipc/Epc/ΔEp par concentration (incl. probe).
+
+    Construit une figure à deux lignes : courbes I(U) en haut, tableau en bas.
+    """
+    fig = make_subplots(
+        rows=2, cols=1,
+        row_heights=[0.65, 0.35],
+        specs=[[{"type": "xy"}], [{"type": "table"}]],
+        vertical_spacing=0.08,
+        subplot_titles=["Voltammogrammes avec pics redox", "Paramètres extraits"],
+    )
+
+    rows_table: list = []
+
+    scans_with_label = []
+    if cv_session.probe is not None:
+        scans_with_label.append(("Probe", 0.0, cv_session.probe))
+    for grp in cv_session.groups:
+        scans_with_label.append((f"{grp.concentration:.2e} M", grp.concentration, grp.scan))
+
+    c_vals = [c for _, c, _ in scans_with_label if c > 0]
+    c_min = min(c_vals) if c_vals else 1e-12
+    c_max = max(c_vals) if c_vals else 1e-8
+
+    for lbl, conc, scan in scans_with_label:
+        color = "black" if conc <= 0 else _cv_conc_color(conc, c_min, c_max)
+        fig.add_trace(go.Scatter(
+            x=scan.E, y=scan.I * 1e6, mode="lines", name=lbl,
+            line=dict(color=color, width=2),
+            legendgroup=lbl,
+        ), row=1, col=1)
+
+        peaks = detect_redox_peaks(scan)
+        fig.add_trace(go.Scatter(
+            x=[peaks["Epa"], peaks["Epc"]],
+            y=[peaks["Ipa"] * 1e6, peaks["Ipc"] * 1e6],
+            mode="markers",
+            name=f"{lbl} — pics",
+            marker=dict(symbol="star", size=12, color=color, line=dict(width=1, color="black")),
+            legendgroup=lbl,
+            showlegend=False,
+        ), row=1, col=1)
+
+        rows_table.append({
+            "Concentration": lbl,
+            "Ipa (µA)": f"{peaks['Ipa']*1e6:.3f}",
+            "Epa (V)": f"{peaks['Epa']:.4f}",
+            "Ipc (µA)": f"{peaks['Ipc']*1e6:.3f}",
+            "Epc (V)": f"{peaks['Epc']:.4f}",
+            "ΔEp (V)": f"{peaks['delta_Ep']:.4f}",
+        })
+
+    if rows_table:
+        cols = list(rows_table[0].keys())
+        fig.add_trace(go.Table(
+            header=dict(values=[f"<b>{c}</b>" for c in cols],
+                        fill_color="#4472C4", font=dict(color="white", size=11), align="center"),
+            cells=dict(
+                values=[[r[c] for r in rows_table] for c in cols],
+                fill_color=[["white", "#f5f5f5"] * (len(rows_table) // 2 + 1)],
+                align="center", font=dict(size=10),
+            ),
+        ), row=2, col=1)
+
+    fig.update_xaxes(title_text="Potentiel E (V)", row=1, col=1)
+    fig.update_yaxes(title_text="Courant I (µA)", row=1, col=1)
+    fig.update_layout(
+        title="Pics redox — anodique (Ipa/Epa) et cathodique (Ipc/Epc)",
+        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+        height=800,
+    )
+    return fig
+
+
+def open_cv_calibration_matplotlib_window(cv_session: CVSession) -> None:
+    """Ouvre une fenêtre matplotlib (bloquante) reproduisant cv_calibration_figure()."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    concentrations, signals = [], []
+    for grp in cv_session.groups:
+        if grp.concentration <= 0:
+            continue
+        mean_sig = np.nanmean(grp.delta_signal)
+        if np.isfinite(mean_sig):
+            concentrations.append(grp.concentration)
+            signals.append(mean_sig)
+
+    if len(concentrations) >= 2:
+        log_c = np.log10(concentrations)
+        sig = np.array(signals)
+        slope, intercept, r_value, _, _ = stats.linregress(log_c, sig)
+        ax.plot(log_c, sig, "o", label="Signal mesuré")
+        x_fit = np.linspace(log_c.min(), log_c.max(), 200)
+        ax.plot(x_fit, slope * x_fit + intercept, "--",
+                 label=f"Régression (R²={r_value**2:.3f})")
+    else:
+        ax.text(0.5, 0.5, "Pas assez de points", ha="center", va="center",
+                transform=ax.transAxes)
+
+    ax.set_title("Calibration CV — Signal normalisé vs log([c])")
+    ax.set_xlabel("log([c] / M)")
+    ax.set_ylabel("|ΔI| / |I_probe|")
+    ax.legend()
+    fig.tight_layout()
+    plt.show()

@@ -873,3 +873,434 @@ def calibration_drt_figure(session: EISSession, model_name: str = "drt_fft") -> 
     )
     apply_theme_to_figure(fig, "light")
     return fig
+
+
+# ── DRT multi-électrodes (réorganisation onglets EIS) ─────────────────────────
+
+def _drt_collect_items(session: EISSession, elec_prefix: str = "") -> list:
+    """Retourne [(label, FitResult, color_idx)] pour bare/probe/groups d'une session."""
+    items = []
+    ci = 0
+    for sp in (session.bare, session.probe):
+        if sp is not None:
+            fr = sp.fit_results.get("drt_fft")
+            if fr is not None:
+                items.append((f"{elec_prefix}{_spectrum_label(sp)}", fr, ci))
+            ci += 1
+    for grp in session.groups:
+        fr = grp.fit_results.get("drt_fft")
+        if fr is not None:
+            items.append((f"{elec_prefix}{_spectrum_label(grp.spectrum)}", fr, ci))
+        ci += 1
+    return items
+
+
+def drt_figure_multi(sessions: dict, log_y: bool = True) -> go.Figure:
+    """DRT moyenne (probe + concentrations), toutes électrodes confondues sur un même graphe.
+
+    sessions: {electrode_index: EISSession}. Préfixe "E{e} — " si plusieurs
+    électrodes sont présentes ; pas de préfixe sinon.
+    """
+    theme = get_theme("light")
+    colors = theme["colors"]
+    fig = go.Figure()
+
+    multi_elec = len(sessions) > 1
+    all_items = []
+    for e, session in sorted(sessions.items()):
+        prefix = f"E{e} — " if multi_elec else ""
+        all_items.extend(_drt_collect_items(session, elec_prefix=prefix))
+
+    if not all_items:
+        fig.add_annotation(
+            text="Aucune DRT disponible — lancez l'analyse.",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=13),
+        )
+        apply_theme_to_figure(fig, "light")
+        return fig
+
+    for idx, (lbl, fr, _) in enumerate(all_items):
+        color = colors[idx % len(colors)]
+        tau = getattr(fr, "drt_tau", None)
+        gamma = getattr(fr, "drt_gamma", None)
+        if tau is None or gamma is None or len(tau) == 0 or len(gamma) == 0:
+            continue
+        S = np.log(np.asarray(tau) + 1e-300)
+        lnGam = np.log(np.asarray(gamma) + 1e-300)
+        fig.add_trace(go.Scatter(
+            x=S, y=lnGam, mode="lines", name=lbl,
+            line=dict(color=color, width=2),
+            hovertemplate=(
+                f"<b>{lbl}</b><br>ln(τ) = %{{x:.3f}}<br>ln(Γ) = %{{y:.4f}}<extra></extra>"
+            ),
+        ))
+
+    fig.update_layout(
+        title="Distribution des temps de relaxation (DRT) — toutes électrodes",
+        xaxis_title=r"$\ln(\tau/\tau_0)$,  $\tau_0 = 1\,\mathrm{s}$",
+        yaxis_title=r"$\ln(\Gamma(\tau)/\Gamma_0)$,  $\Gamma_0 = 1\,\Omega$",
+        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+        hovermode="closest",
+    )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
+def drt_replicates_figure(replicate_fit_results: list, excluded: list, label: str = "") -> go.Figure:
+    """Trace les DRT (ln Γ vs ln τ) de chaque réplicat d'un spectre.
+
+    Args:
+        replicate_fit_results: liste de FitResult (un par réplicat, modèle drt_fft).
+        excluded: liste de bool, même longueur, True = réplicat exclu (tracé en
+                  pointillés gris) de la moyenne DRT.
+        label: nom du spectre (probe / concentration) pour le titre.
+    """
+    fig = go.Figure()
+    theme = get_theme("light")
+    colors = theme["colors"]
+
+    if not replicate_fit_results:
+        fig.add_annotation(
+            text="Aucun réplicat DRT disponible pour ce spectre.",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=13),
+        )
+        apply_theme_to_figure(fig, "light")
+        return fig
+
+    for i, fr in enumerate(replicate_fit_results):
+        is_excluded = bool(excluded[i]) if i < len(excluded) else False
+        tau = getattr(fr, "drt_tau", None)
+        gamma = getattr(fr, "drt_gamma", None)
+        if tau is None or gamma is None or len(tau) == 0:
+            continue
+        S = np.log(np.asarray(tau) + 1e-300)
+        lnGam = np.log(np.asarray(gamma) + 1e-300)
+        name = f"Réplicat {i+1}" + (" (exclu)" if is_excluded else "")
+        fig.add_trace(go.Scatter(
+            x=S, y=lnGam, mode="lines", name=name,
+            line=dict(
+                color="lightgray" if is_excluded else colors[i % len(colors)],
+                dash="dash" if is_excluded else "solid",
+                width=1.5 if is_excluded else 2,
+            ),
+        ))
+
+    fig.update_layout(
+        title=f"DRT par réplicat — {label}" if label else "DRT par réplicat",
+        xaxis_title=r"$\ln(\tau/\tau_0)$",
+        yaxis_title=r"$\ln(\Gamma(\tau)/\Gamma_0)$",
+        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+        hovermode="closest",
+    )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
+def open_drt_matplotlib_window(sessions: dict, drt_exclusions: dict = None) -> None:
+    """Ouvre une fenêtre matplotlib (bloquante) empilant les graphes DRT de l'onglet 2.
+
+    Empile verticalement : (a) DRT moyenne toutes électrodes, (b) DRT moyenne
+    par électrode (1 ou 2 sous-graphes), (c) DRT des réplicats par spectre
+    sélectionné et par électrode (selon drt_exclusions).
+    """
+    import matplotlib.pyplot as plt
+
+    drt_exclusions = drt_exclusions or {}
+
+    n_graphs = 1 + len(sessions) + len(sessions)  # (a) + per-elec average + per-elec replicates placeholder
+    n_graphs = max(n_graphs, 1)
+    fig, axes = plt.subplots(nrows=n_graphs, ncols=1, figsize=(9, 4.2 * n_graphs))
+    if n_graphs == 1:
+        axes = [axes]
+
+    row = 0
+
+    # (a) DRT moyenne — toutes électrodes
+    ax = axes[row]
+    multi_elec = len(sessions) > 1
+    for e, session in sorted(sessions.items()):
+        prefix = f"E{e} — " if multi_elec else ""
+        for lbl, fr, _ in _drt_collect_items(session, elec_prefix=prefix):
+            tau = getattr(fr, "drt_tau", None)
+            gamma = getattr(fr, "drt_gamma", None)
+            if tau is None or gamma is None or len(tau) == 0:
+                continue
+            S = np.log(np.asarray(tau) + 1e-300)
+            lnGam = np.log(np.asarray(gamma) + 1e-300)
+            ax.plot(S, lnGam, label=lbl)
+    ax.set_title("DRT moyenne — toutes électrodes")
+    ax.set_xlabel("ln(τ/τ0)")
+    ax.set_ylabel("ln(Γ/Γ0)")
+    ax.legend(fontsize=7)
+    row += 1
+
+    # (b) DRT moyenne par électrode
+    for e, session in sorted(sessions.items()):
+        ax = axes[row]
+        for lbl, fr, _ in _drt_collect_items(session):
+            tau = getattr(fr, "drt_tau", None)
+            gamma = getattr(fr, "drt_gamma", None)
+            if tau is None or gamma is None or len(tau) == 0:
+                continue
+            S = np.log(np.asarray(tau) + 1e-300)
+            lnGam = np.log(np.asarray(gamma) + 1e-300)
+            ax.plot(S, lnGam, label=lbl)
+        ax.set_title(f"DRT moyenne — Électrode {e}")
+        ax.set_xlabel("ln(τ/τ0)")
+        ax.set_ylabel("ln(Γ/Γ0)")
+        ax.legend(fontsize=7)
+        row += 1
+
+    # (c) DRT des réplicats — un sous-graphe par électrode, pour le spectre/exclusions actuels
+    for e, session in sorted(sessions.items()):
+        ax = axes[row]
+        excl_for_e = drt_exclusions.get(e, {})
+        spectra_by_label = {}
+        if session.bare is not None:
+            spectra_by_label["bare"] = session.bare_replicate_spectra
+        if session.probe is not None:
+            spectra_by_label["probe"] = session.probe_replicate_spectra
+        for grp in session.groups:
+            spectra_by_label[f"{grp.concentration:.2e}"] = grp.replicate_spectra
+
+        plotted = False
+        for sel_label, reps in spectra_by_label.items():
+            excluded = excl_for_e.get(sel_label, [False] * len(reps))
+            for i, sp in enumerate(reps):
+                fr = sp.fit_results.get("drt_fft")
+                if fr is None:
+                    continue
+                tau = getattr(fr, "drt_tau", None)
+                gamma = getattr(fr, "drt_gamma", None)
+                if tau is None or gamma is None or len(tau) == 0:
+                    continue
+                is_excl = bool(excluded[i]) if i < len(excluded) else False
+                S = np.log(np.asarray(tau) + 1e-300)
+                lnGam = np.log(np.asarray(gamma) + 1e-300)
+                style = "--" if is_excl else "-"
+                color = "lightgray" if is_excl else None
+                ax.plot(S, lnGam, style, color=color, label=f"{sel_label} — rép.{i+1}")
+                plotted = True
+        ax.set_title(f"DRT par réplicat — Électrode {e}")
+        ax.set_xlabel("ln(τ/τ0)")
+        ax.set_ylabel("ln(Γ/Γ0)")
+        if plotted:
+            ax.legend(fontsize=6)
+        row += 1
+
+    fig.tight_layout()
+    plt.show()
+
+
+# ── Reconstructions Nyquist (Randles vs DRT) ──────────────────────────────────
+
+def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
+    """Comparaison Randles vs DRT, mesurée sur le spectre probe de chaque électrode.
+
+    Style de ligne distinct par électrode (solide E1, tirets E2…),
+    couleur distincte par méthode (Randles / DRT).
+    """
+    fig = go.Figure()
+    line_dashes = ["solid", "dash", "dot", "dashdot"]
+    method_colors = {"randles_full": "#dc2626", "drt_fft": "#1a56db"}
+
+    any_data = False
+    for idx, (e, session) in enumerate(sorted(sessions.items())):
+        probe = session.probe
+        if probe is None:
+            continue
+        dash = line_dashes[idx % len(line_dashes)]
+
+        fig.add_trace(go.Scatter(
+            x=probe.Zre, y=probe.Zim, mode="markers",
+            name=f"E{e} — mesuré",
+            marker=dict(color="black", size=6, symbol="circle" if idx == 0 else "x"),
+        ))
+        any_data = True
+
+        fr_r = probe.fit_results.get("randles_full")
+        if fr_r is not None:
+            fig.add_trace(go.Scatter(
+                x=fr_r.Zfit_re, y=fr_r.Zfit_im, mode="lines",
+                name=f"E{e} — Randles",
+                line=dict(color=method_colors["randles_full"], dash=dash, width=2),
+            ))
+
+        fr_d = probe.fit_results.get("drt_fft")
+        if fr_d is not None:
+            fig.add_trace(go.Scatter(
+                x=fr_d.Zfit_re, y=fr_d.Zfit_im, mode="lines",
+                name=f"E{e} — DRT",
+                line=dict(color=method_colors["drt_fft"], dash=dash, width=2),
+            ))
+
+    if not any_data:
+        fig.add_annotation(
+            text="Aucun spectre probe disponible.",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=13),
+        )
+
+    fig.update_layout(
+        title="Reconstructions Nyquist — Randles vs DRT (probe)",
+        xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
+        yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"),
+        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+        hovermode="closest",
+    )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
+def drt_reconstruction_figure_dual(
+    spectrum: EISSpectrum, fr_drt=None, fr_randles=None, label: str = "",
+) -> go.Figure:
+    """Mesuré + reconstruction Randles + reconstruction DRT (3 séries).
+
+    Extension de drt_reconstruction_figure pour accepter un second FitResult
+    (Randles) en plus de la DRT. fr_drt et/ou fr_randles peuvent être None.
+    """
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=spectrum.Zre, y=spectrum.Zim, mode="markers", name="Mesuré",
+        marker=dict(color="#1a56db", size=7),
+    ))
+    err_parts = []
+    if fr_randles is not None:
+        fig.add_trace(go.Scatter(
+            x=fr_randles.Zfit_re, y=fr_randles.Zfit_im, mode="lines",
+            name="Reconstruction Randles",
+            line=dict(color="#dc2626", width=2),
+        ))
+        if fr_randles.reconstruction_error is not None:
+            err_parts.append(f"Randles ε={fr_randles.reconstruction_error*100:.2f}%")
+    if fr_drt is not None:
+        fig.add_trace(go.Scatter(
+            x=fr_drt.Zfit_re, y=fr_drt.Zfit_im, mode="lines",
+            name="Reconstruction DRT",
+            line=dict(color="#16a34a", width=2, dash="dash"),
+        ))
+        if fr_drt.reconstruction_error is not None:
+            err_parts.append(f"DRT ε={fr_drt.reconstruction_error*100:.2f}%")
+
+    fig.update_xaxes(title_text="Z' (Ω)")
+    fig.update_yaxes(title_text="-Z'' (Ω)", scaleanchor="x")
+    err_str = " — " + ", ".join(err_parts) if err_parts else ""
+    fig.update_layout(
+        title=f"Reconstruction Randles vs DRT — {label}{err_str}",
+        legend=dict(orientation="h", y=-0.15),
+    )
+    apply_theme_to_figure(fig, "light")
+    return fig
+
+
+def open_reconstruction_matplotlib_window(sessions: dict) -> None:
+    """Ouvre une fenêtre matplotlib (bloquante) empilant les graphes de l'onglet 3.
+
+    Empile : (a) comparaison moyenne probe toutes électrodes, (b) reconstruction
+    par électrode sur le probe moyen (Randles + DRT).
+    """
+    import matplotlib.pyplot as plt
+
+    n_graphs = 1 + len(sessions)
+    fig, axes = plt.subplots(nrows=n_graphs, ncols=1, figsize=(9, 4.2 * n_graphs))
+    if n_graphs == 1:
+        axes = [axes]
+
+    # (a) comparaison globale
+    ax = axes[0]
+    line_dashes = ["-", "--", ":", "-."]
+    method_colors = {"randles_full": "#dc2626", "drt_fft": "#1a56db"}
+    for idx, (e, session) in enumerate(sorted(sessions.items())):
+        probe = session.probe
+        if probe is None:
+            continue
+        dash = line_dashes[idx % len(line_dashes)]
+        ax.plot(probe.Zre, probe.Zim, "o", color="black", markersize=4, label=f"E{e} — mesuré")
+        fr_r = probe.fit_results.get("randles_full")
+        if fr_r is not None:
+            ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, dash, color=method_colors["randles_full"],
+                     label=f"E{e} — Randles")
+        fr_d = probe.fit_results.get("drt_fft")
+        if fr_d is not None:
+            ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, dash, color=method_colors["drt_fft"],
+                     label=f"E{e} — DRT")
+    ax.set_title("Reconstructions Nyquist — comparaison toutes électrodes (probe)")
+    ax.set_xlabel("Re(Z) (Ω)")
+    ax.set_ylabel("-Im(Z) (Ω)")
+    ax.legend(fontsize=7)
+
+    # (b) par électrode
+    for i, (e, session) in enumerate(sorted(sessions.items())):
+        ax = axes[i + 1]
+        probe = session.probe
+        if probe is None:
+            ax.set_title(f"Électrode {e} — aucune donnée")
+            continue
+        ax.plot(probe.Zre, probe.Zim, "o", color="black", markersize=4, label="Mesuré")
+        fr_r = probe.fit_results.get("randles_full")
+        if fr_r is not None:
+            ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, "-", color="#dc2626", label="Randles")
+        fr_d = probe.fit_results.get("drt_fft")
+        if fr_d is not None:
+            ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, "--", color="#1a56db", label="DRT")
+        ax.set_title(f"Reconstruction probe — Électrode {e}")
+        ax.set_xlabel("Re(Z) (Ω)")
+        ax.set_ylabel("-Im(Z) (Ω)")
+        ax.legend(fontsize=7)
+
+    fig.tight_layout()
+    plt.show()
+
+
+def open_calibration_matplotlib_window(sessions: dict) -> None:
+    """Ouvre une fenêtre matplotlib (bloquante) empilant les courbes de calibration EIS.
+
+    Une sous-figure par électrode présente, une courbe par méthode (randles_full,
+    drt_fft), reproduisant la logique de calibration_figure() en matplotlib.
+    """
+    import matplotlib.pyplot as plt
+    from scipy import stats as _stats
+
+    n_graphs = max(len(sessions), 1)
+    fig, axes = plt.subplots(nrows=n_graphs, ncols=1, figsize=(8, 5 * n_graphs))
+    if n_graphs == 1:
+        axes = [axes]
+
+    for i, (e, session) in enumerate(sorted(sessions.items())):
+        ax = axes[i]
+        probe_fr = getattr(session.probe, "fit_results", {}) if session.probe else {}
+        if not probe_fr:
+            ax.set_title(f"Électrode {e} — pas de probe")
+            continue
+        for model in probe_fr:
+            probe_fit = probe_fr.get(model)
+            if probe_fit is None or probe_fit.Rct <= 0:
+                continue
+            probe_rct = probe_fit.Rct
+            concs, signals = [], []
+            for grp in session.groups:
+                if grp.concentration <= 0:
+                    continue
+                fr = grp.fit_results.get(model)
+                if fr is None or fr.Rct <= 0:
+                    continue
+                concs.append(grp.concentration)
+                signals.append(abs(probe_rct - fr.Rct) / abs(probe_rct))
+            if len(concs) < 2:
+                continue
+            log_c = np.log10(concs)
+            reg = _stats.linregress(log_c, signals)
+            ax.plot(log_c, signals, "o", label=f"{model} (données)")
+            log_c_line = np.linspace(log_c.min(), log_c.max(), 200)
+            ax.plot(log_c_line, reg.slope * log_c_line + reg.intercept, "-",
+                     label=f"{model} R²={reg.rvalue**2:.3f}")
+        ax.set_title(f"Calibration — Électrode {e}")
+        ax.set_xlabel("log([c] / M)")
+        ax.set_ylabel("|Rct_probe − Rct_c| / |Rct_probe|")
+        ax.legend(fontsize=8)
+
+    fig.tight_layout()
+    plt.show()

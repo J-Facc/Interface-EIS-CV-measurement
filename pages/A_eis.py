@@ -30,6 +30,12 @@ def _filter_session_display(session):
             sp.fit_results = {k: v for k, v in sp.fit_results.items() if k in METHODS_TO_DISPLAY}
     for grp in s.groups:
         grp.fit_results = {k: v for k, v in grp.fit_results.items() if k in METHODS_TO_DISPLAY}
+        for rep in grp.replicate_spectra:
+            rep.fit_results = {k: v for k, v in rep.fit_results.items() if k in METHODS_TO_DISPLAY}
+    for rep in s.bare_replicate_spectra:
+        rep.fit_results = {k: v for k, v in rep.fit_results.items() if k in METHODS_TO_DISPLAY}
+    for rep in s.probe_replicate_spectra:
+        rep.fit_results = {k: v for k, v in rep.fit_results.items() if k in METHODS_TO_DISPLAY}
     return s
 
 
@@ -350,13 +356,18 @@ def main() -> None:
     st.divider()
 
     validations = st.session_state.get("eis_validations") or {}
-    main_elec = next(iter(sorted(sessions)), None)
-    vr = validations.get(main_elec) or validation_results
-    display_session = _filter_session_display(sessions[main_elec])
+    if not validations and validation_results:
+        main_elec = next(iter(sorted(sessions)), None)
+        if main_elec is not None:
+            validations = {main_elec: validation_results}
+
+    display_sessions = {e: _filter_session_display(s) for e, s in sessions.items()}
+    normalized = _build_normalized_session(sessions)
     render_eis_tabs(
-        display_session,
+        display_sessions,
+        normalized,
         st.session_state.get("eis_config", cfg),
-        validation_results=vr,
+        validations,
     )
 
 
