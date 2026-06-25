@@ -96,6 +96,89 @@ def cv_current_figure(cv_session: CVSession) -> go.Figure:
     return fig
 
 
+_ELECTRODE_STYLES = [
+    dict(marker_color="steelblue", line_color="steelblue", line_dash="solid"),
+    dict(marker_color="darkorange", line_color="darkorange", line_dash="dash"),
+    dict(marker_color="seagreen", line_color="seagreen", line_dash="dot"),
+    dict(marker_color="firebrick", line_color="firebrick", line_dash="dashdot"),
+]
+
+
+def cv_calibration_figure_multi(cv_sessions: dict) -> go.Figure:
+    """Une droite de régression par électrode, sur le même graphe.
+
+    Reprend la logique de cv_calibration_figure mais bouclée sur
+    cv_sessions.items() (un CVSession par électrode), avec un style distinct
+    par électrode et une annotation empilée (une ligne par électrode).
+    Si une seule électrode est présente, se comporte comme
+    cv_calibration_figure.
+    """
+    fig = go.Figure()
+    annotation_lines = []
+
+    for i, (elec, session) in enumerate(sorted(cv_sessions.items())):
+        concentrations, signals = [], []
+        for grp in session.groups:
+            if grp.concentration <= 0:
+                continue
+            mean_sig = np.nanmean(grp.delta_signal)
+            if np.isfinite(mean_sig):
+                concentrations.append(grp.concentration)
+                signals.append(mean_sig)
+
+        if len(concentrations) < 2:
+            continue
+
+        style = _ELECTRODE_STYLES[i % len(_ELECTRODE_STYLES)]
+        log_c = np.log10(concentrations)
+        sig = np.array(signals)
+
+        slope, intercept, r_value, _, _ = stats.linregress(log_c, sig)
+        r2 = r_value ** 2
+
+        x_fit = np.linspace(log_c.min(), log_c.max(), 200)
+        y_fit = slope * x_fit + intercept
+
+        fig.add_trace(go.Scatter(
+            x=log_c, y=sig,
+            mode="markers",
+            name=f"Électrode {elec} — mesuré",
+            marker=dict(size=10, color=style["marker_color"]),
+            legendgroup=f"e{elec}",
+        ))
+        fig.add_trace(go.Scatter(
+            x=x_fit, y=y_fit,
+            mode="lines",
+            name=f"Électrode {elec} — régression R²={r2:.3f}",
+            line=dict(color=style["line_color"], dash=style["line_dash"]),
+            legendgroup=f"e{elec}",
+        ))
+
+        annotation_lines.append(
+            f"Électrode {elec} : R² = {r2:.4f}, pente = {slope:.3f}, ordonnée = {intercept:.3f}"
+        )
+
+    if annotation_lines:
+        fig.add_annotation(
+            xref="paper", yref="paper",
+            x=0.05, y=0.95,
+            text="<br>".join(annotation_lines),
+            showarrow=False,
+            align="left",
+            bgcolor="rgba(255,255,255,0.7)",
+            bordercolor="gray",
+            borderwidth=1,
+        )
+
+    fig.update_layout(
+        title="Calibration CV — Signal normalisé vs log([c]) par électrode",
+        xaxis_title="log([c] / M)",
+        yaxis_title="|ΔI| / |I_probe|",
+        legend_title="Électrode",
+    )
+    return fig
+
+
 def cv_calibration_figure(cv_session: CVSession) -> go.Figure:
     """Normalized signal vs log([c]) with linear regression."""
     if len(cv_session.groups) < 2:
@@ -233,6 +316,51 @@ def redox_peaks_figure(cv_session: CVSession) -> go.Figure:
         height=800,
     )
     return fig
+
+
+def open_cv_calibration_matplotlib_window_multi(cv_sessions: dict) -> None:
+    """Ouvre une fenêtre matplotlib (bloquante) reproduisant
+    cv_calibration_figure_multi() : une droite par électrode."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    markers = ["o", "s", "^", "d"]
+    linestyles = ["--", "-.", ":", "-"]
+
+    any_plotted = False
+    for i, (elec, session) in enumerate(sorted(cv_sessions.items())):
+        concentrations, signals = [], []
+        for grp in session.groups:
+            if grp.concentration <= 0:
+                continue
+            mean_sig = np.nanmean(grp.delta_signal)
+            if np.isfinite(mean_sig):
+                concentrations.append(grp.concentration)
+                signals.append(mean_sig)
+
+        if len(concentrations) < 2:
+            continue
+
+        log_c = np.log10(concentrations)
+        sig = np.array(signals)
+        slope, intercept, r_value, _, _ = stats.linregress(log_c, sig)
+        ax.plot(log_c, sig, markers[i % len(markers)],
+                 label=f"Électrode {elec} — mesuré")
+        x_fit = np.linspace(log_c.min(), log_c.max(), 200)
+        ax.plot(x_fit, slope * x_fit + intercept, linestyles[i % len(linestyles)],
+                 label=f"Électrode {elec} — régression (R²={r_value**2:.3f})")
+        any_plotted = True
+
+    if not any_plotted:
+        ax.text(0.5, 0.5, "Pas assez de points", ha="center", va="center",
+                transform=ax.transAxes)
+
+    ax.set_title("Calibration CV — Signal normalisé vs log([c]) par électrode")
+    ax.set_xlabel("log([c] / M)")
+    ax.set_ylabel("|ΔI| / |I_probe|")
+    ax.legend()
+    fig.tight_layout()
+    plt.show()
 
 
 def open_cv_calibration_matplotlib_window(cv_session: CVSession) -> None:

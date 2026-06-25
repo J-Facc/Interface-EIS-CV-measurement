@@ -248,6 +248,42 @@ def export_cv_calibration_csv_from_result(cv_result: dict, cv_ols: dict | None =
     return buf.getvalue().encode()
 
 
+def export_cv_calibration_csv_multi(cv_sessions: dict) -> bytes:
+    """Exporte la calibration CV pour plusieurs électrodes : une section par
+    électrode, colonnes electrode / concentration / log10(concentration) /
+    delta_signal_moyen / slope / intercept / r2 / p_value / std_err."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "electrode", "concentration_M", "log10_concentration", "delta_signal_moyen",
+        "slope", "intercept", "r2", "p_value", "std_err",
+    ])
+
+    for elec, session in sorted(cv_sessions.items()):
+        concs, signals = [], []
+        for grp in session.groups:
+            if grp.concentration <= 0:
+                continue
+            mean_sig = np.nanmean(grp.delta_signal)
+            if np.isfinite(mean_sig):
+                concs.append(grp.concentration)
+                signals.append(float(mean_sig))
+
+        if len(concs) < 2:
+            continue
+
+        log_c = list(np.log10(concs))
+        reg = stats.linregress(log_c, signals)
+
+        for conc, lc, sig in zip(concs, log_c, signals):
+            writer.writerow([
+                elec, conc, lc, sig,
+                reg.slope, reg.intercept, reg.rvalue ** 2, reg.pvalue, reg.stderr,
+            ])
+
+    return buf.getvalue().encode()
+
+
 # ── DRT — export multi-électrode, multi-spectre, multi-réplicat ──────────────
 
 def export_drt_csv(sessions: dict) -> bytes:

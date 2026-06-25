@@ -22,11 +22,17 @@ from plotting.eis_plots import (
 from plotting.cv_plots import (
     cv_current_figure,
     cv_calibration_figure,
+    cv_calibration_figure_multi,
     redox_peaks_figure,
     open_cv_calibration_matplotlib_window,
+    open_cv_calibration_matplotlib_window_multi,
 )
 from plotting.kk_plots import residuals_figure, validation_summary_table
-from exports.exporter import export_calibration_csv, export_cv_calibration_csv
+from exports.exporter import (
+    export_calibration_csv,
+    export_cv_calibration_csv,
+    export_cv_calibration_csv_multi,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -289,42 +295,66 @@ def render_eis_tabs(sessions: dict, normalized: dict, config: dict, validations:
 # CV
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_cv_tabs(cv_session: CVSession) -> None:
-    """Render CV analysis tabs: Visualisation I/U, Pic redox, Calibration."""
+def render_cv_tabs(cv_sessions: dict) -> None:
+    """Render CV analysis tabs: Visualisation I/U, Pic redox, Calibration.
+
+    Args:
+        cv_sessions: {electrode_index: CVSession}, une entrée par électrode disponible.
+    """
     tab1, tab2, tab3 = st.tabs([
         "1️⃣ Visualisation I/U", "2️⃣ Pic redox", "3️⃣ Calibration",
     ])
 
+    electrodes = sorted(cv_sessions.keys())
+
     with tab1:
         st.subheader("Voltampérométrie cyclique — Courant vs Potentiel")
-        if cv_session.probe is not None or cv_session.groups:
-            st.plotly_chart(cv_current_figure(cv_session), width='stretch')
-        else:
+        if not electrodes:
             st.info("Aucune donnée CV chargée.")
+        else:
+            elec_tabs = st.tabs([f"Électrode {e}" for e in electrodes])
+            for e, elec_tab in zip(electrodes, elec_tabs):
+                with elec_tab:
+                    session = cv_sessions[e]
+                    if session.probe is not None or session.groups:
+                        st.plotly_chart(cv_current_figure(session), width='stretch', key=f"cv_current_e{e}")
+                    else:
+                        st.info("Aucune donnée CV chargée pour cette électrode.")
 
     with tab2:
         st.subheader("Pics redox — anodique / cathodique")
-        if cv_session.probe is not None or cv_session.groups:
-            st.plotly_chart(redox_peaks_figure(cv_session), width='stretch')
-        else:
+        if not electrodes:
             st.info("Aucune donnée CV chargée.")
+        else:
+            elec_tabs = st.tabs([f"Électrode {e}" for e in electrodes])
+            for e, elec_tab in zip(electrodes, elec_tabs):
+                with elec_tab:
+                    session = cv_sessions[e]
+                    if session.probe is not None or session.groups:
+                        st.plotly_chart(redox_peaks_figure(session), width='stretch', key=f"cv_redox_e{e}")
+                    else:
+                        st.info("Aucune donnée CV chargée pour cette électrode.")
 
     with tab3:
         st.subheader("Calibration CV — Signal normalisé")
-        if len(cv_session.groups) >= 2:
-            st.plotly_chart(cv_calibration_figure(cv_session), width='stretch')
+        calibratable = {
+            e: s for e, s in cv_sessions.items()
+            if sum(1 for g in s.groups if g.concentration > 0) >= 2
+        }
+        if not calibratable:
+            st.info("Ajoutez au moins 2 concentrations pour la calibration.")
+        else:
+            st.plotly_chart(cv_calibration_figure_multi(calibratable), width='stretch')
 
             btn_cols = st.columns(2)
             with btn_cols[0]:
                 if st.button("🖼 Ouvrir fenêtre de sauvegarde", key="cv_calib_matplotlib_btn"):
-                    open_cv_calibration_matplotlib_window(cv_session)
+                    open_cv_calibration_matplotlib_window_multi(calibratable)
             with btn_cols[1]:
                 st.download_button(
                     "📥 Télécharger les valeurs (CSV)",
-                    data=export_cv_calibration_csv(cv_session),
+                    data=export_cv_calibration_csv_multi(calibratable),
                     file_name="cv_calibration.csv",
                     mime="text/csv",
                     key="cv_calib_csv_btn",
                 )
-        else:
-            st.info("Ajoutez au moins 2 concentrations pour la calibration.")
