@@ -24,6 +24,11 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from core.logger import get_logger
+from core.mpr_converter import is_mpr, mpr_to_csv_bytes
+
+log = get_logger("experiment_io")
+
 
 # ─────────────────────────────────────────────
 # Sauvegarde
@@ -225,9 +230,16 @@ def load_experiment(zip_bytes: bytes) -> Dict[str, Any]:
             """Lit un fichier du ZIP et retourne un BytesIO positionné en 0."""
             try:
                 data = zf.read(path)
+                name = path.split("/")[-1]
+                if is_mpr(name):
+                    try:
+                        data = mpr_to_csv_bytes(data)
+                        name = name[:-4] + ".csv"
+                    except Exception as exc:
+                        log.warning(f"Conversion .mpr échouée pour {path} : {exc}")
                 bio  = io.BytesIO(data)
                 bio.seek(0)
-                bio.name = path.split("/")[-1]
+                bio.name = name
                 return bio
             except KeyError:
                 return None

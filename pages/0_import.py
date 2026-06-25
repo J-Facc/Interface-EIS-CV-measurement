@@ -12,6 +12,7 @@ from datetime import datetime
 import streamlit as st
 
 from core.experiment_io import load_experiment, save_experiment, apply_exclusions
+from core.mpr_converter import is_mpr, mpr_to_csv_bytes
 
 
 # ─────────────────────────────────────────────
@@ -234,13 +235,15 @@ def _upload_probe_elec(sig: str, n_elec: int) -> dict:
             accept_multiple_files=True,
             key=_sk(f"probe_{sig}_e{e}"),
         )
-        bios = _files_to_bytesio(files)
+        bios, n_converted = _files_to_bytesio(files)
         result[f"electrode_{e}"] = bios
         n = len(bios)
         if n > 0:
             st.caption(f"✔ {n} réplicat(s) probe chargé(s)")
         else:
             st.caption("Aucun fichier")
+        if n_converted > 0:
+            st.caption(f"🔄 {n_converted} fichier(s) .mpr converti(s) automatiquement")
     return result
 
 
@@ -285,13 +288,15 @@ def _upload_conc_block(elec_dict: dict, sig: str, ci: int, n_elec: int) -> None:
             accept_multiple_files=True,
             key=_sk(f"cal_{sig}_e{e}_c{ci}"),
         )
-        bios = _files_to_bytesio(files)
+        bios, n_converted = _files_to_bytesio(files)
         # S'assurer que la liste est assez longue
         while len(elec_dict[elec_key]) <= ci:
             elec_dict[elec_key].append([])
         elec_dict[elec_key][ci] = bios
         n = len(bios)
-        st.caption(f"{'✔' if n else '○'} {n} fichier(s)" if True else "")
+        st.caption(f"{'✔' if n else '○'} {n} fichier(s)")
+        if n_converted > 0:
+            st.caption(f"🔄 {n_converted} fichier(s) .mpr converti(s) automatiquement")
 
 
 def _section_validation_uploads(
@@ -388,17 +393,27 @@ def _section_save(experiment: dict) -> None:
 # Helpers
 # ─────────────────────────────────────────────
 
-def _files_to_bytesio(files) -> list[io.BytesIO]:
+def _files_to_bytesio(files) -> tuple[list[io.BytesIO], int]:
     if not files:
-        return []
+        return [], 0
     result = []
+    n_converted = 0
     for f in files:
         data = f.read()
         f.seek(0)
+        name = getattr(f, "name", "file.bin")
+        if is_mpr(name):
+            try:
+                data = mpr_to_csv_bytes(data)
+                name = name[:-4] + ".csv"
+                n_converted += 1
+            except Exception as exc:
+                st.warning(f"⚠️ Conversion .mpr échouée pour {name} : {exc}")
+                continue
         bio = io.BytesIO(data)
-        bio.name = getattr(f, "name", "file.bin")
+        bio.name = name
         result.append(bio)
-    return result
+    return result, n_converted
 
 
 def _sig_types_for_mode(mode_label: str) -> list[str]:
