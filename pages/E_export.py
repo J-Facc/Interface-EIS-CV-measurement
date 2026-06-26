@@ -1,8 +1,8 @@
 """Page Export — téléchargement des tableaux calculés et de l'archive complète.
 
 Lit les sessions EIS (st.session_state['eis_sessions']), la vue normalisée
-(st.session_state['eis_normalized']) et le résultat CV
-(st.session_state['cv_result']) tels que réellement produits par
+(st.session_state['eis_normalized']) et les sessions CV par électrode
+(st.session_state['cv_sessions']) tels que réellement produits par
 pages/A_eis.py et pages/B_cv.py.
 """
 
@@ -24,7 +24,7 @@ def main() -> None:
 
     sessions   = st.session_state.get("eis_sessions")
     normalized = st.session_state.get("eis_normalized") or {}
-    cv_result  = st.session_state.get("cv_result")
+    cv_sessions = st.session_state.get("cv_sessions")
     experiment_clean = st.session_state.get("experiment_clean")
     config     = st.session_state.get("eis_config")
 
@@ -71,7 +71,7 @@ def main() -> None:
         st.subheader("Archive complète")
         st.download_button(
             "🗂 Télécharger tout (ZIP)",
-            export_full_zip(experiment_clean, sessions, normalized, cv_result, config),
+            export_full_zip(experiment_clean, sessions, normalized, cv_sessions, config),
             file_name="eis_cv_export.zip",
             mime="application/zip",
         )

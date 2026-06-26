@@ -19,11 +19,13 @@ from plotting.eis_plots import (
     calibration_figure,
     open_calibration_matplotlib_window,
 )
+from core.cv_peaks import detect_redox_peaks
 from plotting.cv_plots import (
     cv_current_figure,
     cv_calibration_figure,
     cv_calibration_figure_multi,
     redox_peaks_figure,
+    cv_params_table_multi,
     open_cv_calibration_matplotlib_window,
     open_cv_calibration_matplotlib_window_multi,
 )
@@ -301,8 +303,8 @@ def render_cv_tabs(cv_sessions: dict) -> None:
     Args:
         cv_sessions: {electrode_index: CVSession}, une entrée par électrode disponible.
     """
-    tab1, tab2, tab3 = st.tabs([
-        "1️⃣ Visualisation I/U", "2️⃣ Pic redox", "3️⃣ Calibration",
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "1️⃣ Visualisation I/U", "2️⃣ Pic redox", "3️⃣ Calibration", "4️⃣ Paramètres",
     ])
 
     electrodes = sorted(cv_sessions.keys())
@@ -331,6 +333,12 @@ def render_cv_tabs(cv_sessions: dict) -> None:
                 with elec_tab:
                     session = cv_sessions[e]
                     if session.probe is not None or session.groups:
+                        if session.probe is not None:
+                            pp = detect_redox_peaks(session.probe)
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("Ipa probe", f"{pp['Ipa']*1e6:.3f} µA")
+                            col2.metric("Ipc probe", f"{pp['Ipc']*1e6:.3f} µA")
+                            col3.metric("ΔEp probe", f"{pp['delta_Ep']*1e3:.1f} mV")
                         st.plotly_chart(redox_peaks_figure(session), width='stretch', key=f"cv_redox_e{e}")
                     else:
                         st.info("Aucune donnée CV chargée pour cette électrode.")
@@ -358,3 +366,10 @@ def render_cv_tabs(cv_sessions: dict) -> None:
                     mime="text/csv",
                     key="cv_calib_csv_btn",
                 )
+
+    with tab4:
+        st.subheader("Paramètres extraits par concentration et électrode")
+        if not electrodes:
+            st.info("Aucune donnée CV chargée.")
+        else:
+            st.plotly_chart(cv_params_table_multi(cv_sessions), width='stretch', key="cv_params_table")

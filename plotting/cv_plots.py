@@ -318,6 +318,51 @@ def redox_peaks_figure(cv_session: CVSession) -> go.Figure:
     return fig
 
 
+def cv_params_table_multi(cv_sessions: dict) -> go.Figure:
+    """Tableau Ipa/Epa/Ipc/Epc/ΔEp par concentration et par électrode.
+
+    Reprend la logique de la table de redox_peaks_figure, bouclée sur
+    cv_sessions.items() pour ajouter une colonne Électrode.
+    """
+    rows_table: list = []
+
+    for elec, session in sorted(cv_sessions.items()):
+        scans_with_label = []
+        if session.probe is not None:
+            scans_with_label.append(("Probe", session.probe))
+        for grp in session.groups:
+            scans_with_label.append((f"{grp.concentration:.2e} M", grp.scan))
+
+        for lbl, scan in scans_with_label:
+            peaks = detect_redox_peaks(scan)
+            rows_table.append({
+                "Électrode": f"E{elec}",
+                "Concentration": lbl,
+                "Ipa (µA)": f"{peaks['Ipa']*1e6:.3f}",
+                "Epa (V)": f"{peaks['Epa']:.4f}",
+                "Ipc (µA)": f"{peaks['Ipc']*1e6:.3f}",
+                "Epc (V)": f"{peaks['Epc']:.4f}",
+                "ΔEp (V)": f"{peaks['delta_Ep']:.4f}",
+            })
+
+    fig = go.Figure()
+    if not rows_table:
+        return fig
+
+    cols = list(rows_table[0].keys())
+    fig.add_trace(go.Table(
+        header=dict(values=[f"<b>{c}</b>" for c in cols],
+                    fill_color="#4472C4", font=dict(color="white", size=12), align="center"),
+        cells=dict(
+            values=[[r[c] for r in rows_table] for c in cols],
+            fill_color=[["white", "#f5f5f5"] * (len(rows_table) // 2 + 1)],
+            align="center",
+        ),
+    ))
+    fig.update_layout(title="Paramètres extraits par concentration et électrode")
+    return fig
+
+
 def open_cv_calibration_matplotlib_window_multi(cv_sessions: dict) -> None:
     """Ouvre une fenêtre matplotlib (bloquante) reproduisant
     cv_calibration_figure_multi() : une droite par électrode."""
