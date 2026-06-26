@@ -26,6 +26,7 @@ import streamlit as st
 from core.loader import load_spectrum, average_replicates
 from core.cv_loader import load_cv_file, average_cv_replicates
 from core.experiment_io import apply_exclusions as _apply_exclusions
+from core.experiment_io import apply_point_exclusions as _apply_point_exclusions
 from core.models import EISSpectrum
 from core.cv_models import CVScan
 from plotting.eis_plots import nyquist_figure as _nyquist_figure
@@ -595,6 +596,28 @@ def _average_cv(groups: list) -> go.Figure:
     return fig
 
 
+def _apply_point_mask(sp: EISSpectrum, e_str: str, modality: str, ci, ri: int) -> EISSpectrum:
+    """Retourne une copie de sp avec les points supprimés (éditeur) retirés,
+    ou sp inchangé si rien n'est supprimé."""
+    deleted = _get_deleted(e_str, modality, ci, ri)
+    if not deleted:
+        return sp
+    keep = np.ones(len(sp.f), dtype=bool)
+    for idx in deleted:
+        if 0 <= idx < len(sp.f):
+            keep[idx] = False
+    return EISSpectrum(
+        label=sp.label,
+        f=np.asarray(sp.f)[keep],
+        Zre=np.asarray(sp.Zre)[keep],
+        Zim=np.asarray(sp.Zim)[keep],
+        concentration=sp.concentration,
+        step=sp.step,
+        n_points=int(keep.sum()),
+        source_files=sp.source_files,
+    )
+
+
 def _render_average_panel(
     eis_spectra: dict,
     cv_scans: dict,
@@ -612,11 +635,17 @@ def _render_average_panel(
         probe_reps = eis_spectra["probe"].get(elec_key) or []
         if probe_reps:
             excl  = _excl_get(exclusions, e_str, "eis", "probe")
-            active = [sp for ri, sp in enumerate(probe_reps) if not (ri < len(excl) and excl[ri])]
+            active = [
+                _apply_point_mask(sp, e_str, "eis", "probe", ri)
+                for ri, sp in enumerate(probe_reps) if not (ri < len(excl) and excl[ri])
+            ]
             groups_eis.append(("Probe", active))
         for ci, reps in enumerate(eis_spectra["calibration"].get(elec_key) or []):
             excl   = _excl_get(exclusions, e_str, "eis", ci)
-            active = [sp for ri, sp in enumerate(reps) if not (ri < len(excl) and excl[ri])]
+            active = [
+                _apply_point_mask(sp, e_str, "eis", ci, ri)
+                for ri, sp in enumerate(reps) if not (ri < len(excl) and excl[ri])
+            ]
             conc   = concentrations[ci] if ci < len(concentrations) else 0.0
             groups_eis.append((_format_conc(conc), active))
 
@@ -782,10 +811,6 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
         type="primary",
     ):
         exp_clean = _apply_exclusions(experiment, exclusions)
-        st.session_state["experiment_clean"] = exp_clean
-        st.session_state["preprocessing_done"] = True
-        for key in ("eis_session", "eis_validation"):
-            st.session_state[key] = None
 
         deleted_points = {
             lbl: st.session_state[f"deleted_points_{lbl}"]
@@ -793,6 +818,18 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
             if st.session_state.get(f"deleted_points_{lbl}")
         }
         st.session_state["point_exclusions"] = deleted_points
+
+        # Retire aussi les points individuels supprimés via l'éditeur —
+        # sans cette étape, le pipeline de fit EIS (pages/A_eis.py) recevait
+        # encore les outliers individuels malgré leur suppression visuelle.
+        exp_clean = _apply_point_exclusions(
+            exp_clean, deleted_points, config=st.session_state.get("eis_config")
+        )
+
+        st.session_state["experiment_clean"] = exp_clean
+        st.session_state["preprocessing_done"] = True
+        for key in ("eis_session", "eis_validation"):
+            st.session_state[key] = None
 
         if experiment.get("mode") in ("eis_only", "both"):
             _run_kk_validation(exp_clean)

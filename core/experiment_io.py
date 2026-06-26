@@ -429,6 +429,83 @@ def apply_exclusions(experiment: Dict[str, Any], exclusions: Dict) -> Dict[str, 
     return exp_clean
 
 
+def apply_point_exclusions(
+    experiment: Dict[str, Any],
+    point_exclusions: Dict[str, list],
+    config: dict = None,
+) -> Dict[str, Any]:
+    """
+    Retire les points individuels marqués comme supprimés (éditeur de points
+    EIS) de chaque réplicat concerné, en ré-écrivant son contenu CSV/BytesIO
+    sans les lignes correspondant aux indices supprimés.
+
+    Les indices de point_exclusions correspondent à la position dans le
+    tableau f/Zre/Zim APRÈS le nettoyage effectué par core.loader.load_spectrum
+    (tri HF→BF, suppression fréquences parasites) — donc chaque réplicat
+    concerné est relu via load_spectrum avant de retirer les points, puis
+    ré-sérialisé en CSV propre.
+
+    Parameters
+    ----------
+    experiment : dict experiment (probe/calibration avec BytesIO), typiquement
+        déjà passé par apply_exclusions.
+    point_exclusions : {label: [indices supprimés]}, label au format
+        "e{elec}_eis_c{ci|probe}_r{ri}" (cf. pages/1_pretraitement.py::_dp_key,
+        sans le préfixe "deleted_points_").
+    config : config app (passé à load_spectrum pour cohérence du nettoyage
+        parasite).
+
+    Returns
+    -------
+    Copie profonde de experiment avec les BytesIO concernés ré-écrits sans
+    les points supprimés. Les réplicats non concernés restent inchangés.
+    """
+    from core.loader import load_spectrum
+
+    exp_clean = copy.deepcopy(experiment)
+    mode = exp_clean.get("mode", "both")
+    if mode not in ("eis_only", "both") or not point_exclusions:
+        return exp_clean
+
+    n_elec = exp_clean.get("n_electrodes", 2)
+
+    def _rewrite_bio(bio, deleted_idx: list):
+        bio.seek(0)
+        content = bio.read()
+        bio.seek(0)
+        sp = load_spectrum(content, label="tmp", config=config)
+        keep = [i for i in range(len(sp.f)) if i not in set(deleted_idx)]
+        lines = ["frequency_Hz,Zreal_Ohm,Zimag_Ohm"]
+        for i in keep:
+            # Même convention de signe que sp.Zim (positive) pour éviter un
+            # double retournement de signe à la relecture par load_spectrum.
+            lines.append(f"{sp.f[i]},{sp.Zre[i]},{sp.Zim[i]}")
+        new_bytes = ("\n".join(lines)).encode("utf-8")
+        new_bio = io.BytesIO(new_bytes)
+        new_bio.name = getattr(bio, "name", "edited.csv")
+        return new_bio
+
+    for e_idx in range(1, n_elec + 1):
+        e_str = f"e{e_idx}"
+        elec_key = f"electrode_{e_idx}"
+
+        probe_eis = ((exp_clean.get("probe") or {}).get("eis") or {})
+        reps = probe_eis.get(elec_key) or []
+        for ri, bio in enumerate(reps):
+            label = f"{e_str}_eis_cprobe_r{ri}"
+            if point_exclusions.get(label):
+                reps[ri] = _rewrite_bio(bio, point_exclusions[label])
+
+        cal_eis = ((exp_clean.get("calibration") or {}).get("eis") or {})
+        for ci, rep_list in enumerate(cal_eis.get(elec_key) or []):
+            for ri, bio in enumerate(rep_list or []):
+                label = f"{e_str}_eis_c{ci}_r{ri}"
+                if point_exclusions.get(label):
+                    rep_list[ri] = _rewrite_bio(bio, point_exclusions[label])
+
+    return exp_clean
+
+
 # ─────────────────────────────────────────────
 # Helpers internes
 # ─────────────────────────────────────────────

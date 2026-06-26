@@ -519,8 +519,10 @@ def export_full_zip(
             if cal_eis.strip():
                 zf.writestr("export/calibration/eis_calibration.csv", cal_eis)
         if cv_session:
-            if isinstance(cv_session, dict):
+            if isinstance(cv_session, dict) and "groups" in cv_session:
                 cal_cv = export_cv_calibration_csv_from_result(cv_session)
+            elif isinstance(cv_session, dict):
+                cal_cv = export_cv_calibration_csv_multi(cv_session)
             else:
                 cal_cv = export_cv_calibration_csv(cv_session)
             if cal_cv.strip():
