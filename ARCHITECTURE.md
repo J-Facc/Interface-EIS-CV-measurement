@@ -50,7 +50,7 @@ Interface-EIS-CV-measurement/          ← racine du repo GitHub
 │   ├── physics.py                     ← fonctions physiques partagées (ZD, alpha_h, Brug)
 │   ├── registry.py                    ← FitRegistry : découverte automatique des modèles
 │   ├── randles_full.py                ← Randles complet (8 paramètres, least_squares)
-│   ├── drt_tikhonov.py                ← DRT model-free (Tikhonov ordre 2 + NNLS) — DRT principale
+│   ├── drt_tikhonov.py                ← DRT model-free via pyDRTtools (RBF + Tikhonov ordre 1 + QP) — DRT principale
 │   ├── drt_fft.py                     ← DRT FFT/Wiener sur spectre IDÉAL Randles (étude MAD, pas indépendante)
 │   └── kk_validation.py               ← validation Kramers-Kronig (Lin-KK, circuits de Voigt)
 │
@@ -190,7 +190,7 @@ ui/tabs.py → 6 onglets Streamlit
 | Modèle | Fichier | Paramètres libres | Méthode |
 |--------|---------|-------------------|---------|
 | Randles complet | `randles_full.py` | 8 (Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d) | `scipy.optimize.least_squares` (pondération Modulus) |
-| DRT Tikhonov + NNLS | `drt_tikhonov.py` | λ (régularisation, sélection auto par L-curve) | NNLS, **model-free** |
+| DRT Tikhonov + NNLS | `drt_tikhonov.py` | λ (régularisation, sélection auto par rGCV) | RBF Gaussienne + QP sous contrainte de positivité (cvxopt), **model-free** |
 | DRT FFT/Wiener (spectre idéal) | `drt_fft.py` | hérités du fit Randles + filtre W | FFT + filtre Wiener, sur spectre **idéal** |
 | Circulaire | `circular.py` (référencé dans `ui/sidebar.py`, non présent dans `fits/` à ce jour) | 0 — lecture géométrique | Fit circulaire algébrique |
 
@@ -208,11 +208,24 @@ microfluidics*, Phys. Rev. E **113**, 025502 (2026), DOI: 10.1103/fn2s-z364.
 - **`fits/drt_tikhonov.py` (DRT principale, section III.B "DRT with
   DRTtools")** — model-free, appliquée DIRECTEMENT sur les données
   expérimentales brutes déposées via l'onglet Import (`pages/0_import.py`).
-  Aucune hypothèse de circuit équivalent : grille τ log-espacée dimensionnée
-  sur la plage de fréquences réelles, noyau de Fredholm discret,
-  régularisation de Tikhonov d'ordre 2, λ sélectionné par L-curve, résolution
-  NNLS (γ(τ) ≥ 0). C'est le modèle `"drt_tikhonov"` utilisé par défaut dans
-  les graphes DRT, la reconstruction Nyquist et la calibration.
+  Appelle directement le cœur de calcul de
+  [pyDRTtools](https://github.com/ciuccislab/pyDRTtools) (Ciucci lab, MIT,
+  vendoré dans `fits/_pydrttools/` — voir `THIRD_PARTY_LICENSES.md`) plutôt
+  qu'une réimplémentation maison, pour la fidélité à l'outil de référence
+  cité dans la littérature : points de collocation τ = 1/f sur les
+  fréquences expérimentales elles-mêmes, discrétisation par fonctions de
+  base radiales (RBF gaussienne) du noyau de Fredholm, régularisation de
+  Tikhonov d'ordre 1, λ sélectionné automatiquement par validation croisée
+  généralisée robuste (rGCV), résolution par programmation quadratique sous
+  contrainte de positivité (cvxopt ; γ(τ) ≥ 0). Remplace une précédente
+  réimplémentation Dirac-basis + NNLS qui souffrait d'un bug de "peigne" de
+  pics isolés sur données bruitées. C'est le modèle `"drt_tikhonov"` utilisé
+  par défaut dans les graphes DRT, la reconstruction Nyquist et la
+  calibration.
+
+  Références : Wan, Saccoccio, Chen, Ciucci, *Electrochim. Acta* **184**,
+  483 (2015) ; Maradesa, Py, Wan, Effat, Ciucci, *J. Electrochem. Soc.*
+  **170**, 030502 (2023) (sélection de λ par GCV/rGCV/mGCV).
 
 - **`fits/drt_fft.py` (modèle `"drt_fft_ideal"`, section III.C "DRT with
   DFT")** — reconstruit la DRT EXACTE d'un spectre **idéal**, c'est-à-dire le

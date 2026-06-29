@@ -1,10 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-fits/drt_tikhonov.py — DRT model-free par Tikhonov (ordre 2) + NNLS.
+fits/drt_tikhonov.py — DRT model-free via pyDRTtools' RBF-discretized
+Tikhonov regularization + non-negativity-constrained QP (cvxopt).
 
 Méthode de référence : Wan, Saccoccio, Chen, Ciucci, Electrochim. Acta 184,
 483 (2015) (DRTtools), citée par Bissessur, Man, Gamby, Phys. Rev. E 113,
 025502 (2026) (DOI: 10.1103/fn2s-z364), section III.B "DRT with DRTtools".
+λ-selection via generalized cross-validation: Maradesa, Py, Wan, Effat,
+Ciucci, J. Electrochem. Soc. 170 (2023) 030502.
+
+Ce module appelle directement le cœur de calcul de pyDRTtools
+(https://github.com/ciuccislab/pyDRTtools, MIT, vendoré dans
+fits/_pydrttools/ — voir THIRD_PARTY_LICENSES.md), plutôt qu'une
+réimplémentation maison, pour la fidélité à l'outil de référence cité dans
+la littérature. Cela remplace une précédente réimplémentation Dirac-basis
++ NNLS qui souffrait d'un bug de "peigne" de pics isolés sur données
+bruitées (sous-régularisation au voisinage du bord bas de la sélection
+L-curve, combinée à une grille tau plus fine que ce que les données
+pouvaient résoudre).
 
 Contrairement à fits/drt_fft.py (DRT FFT/Wiener — section III.C du papier,
 appliquée à un spectre IDÉAL reconstruit depuis un fit Randles), cette
@@ -13,28 +26,49 @@ méthode est appliquée DIRECTEMENT sur les données expérimentales brutes
 γ(τ) est donc complètement indépendante de toute hypothèse de topologie de
 circuit — c'est la méthode "model-free" du papier.
 
-Pipeline :
-  1. Grille de τ log-espacée, dimensionnée sur la plage de fréquences
-     expérimentales couvertes par le spectre (PAS une grille synthétique
-     dense de 10000 points : les données réelles sont éparses).
-  2. Matrice de discrétisation du noyau de Fredholm (A_re, A_im), fonctions
-     de base de Dirac sur la grille de τ.
-  3. Régularisation de Tikhonov d'ordre 2 (pénalise la dérivée seconde de γ)
-     pour favoriser une distribution lisse plutôt que sparse.
-  4. Sélection automatique de λ par L-curve (courbure max en log-log entre
-     résidu et rugosité de la solution).
-  5. Résolution par NNLS (scipy.optimize.nnls) : garantit γ(τ) ≥ 0 et R0 ≥ 0.
-  6. Extraction de Rct selon la convention Bissessur (avant-dernier pic local
-     si ≥2 pics, intégrale trapèze de γ(τ) sur ±3 en ln(τ) autour du pic).
-  7. Reconstruction de Z(ω) en réinjectant γ(τ) ENTIÈRE dans le noyau de
-     Fredholm (pas de lien structurel avec un circuit Randles).
+Pipeline (suit les valeurs par défaut de l'interface GUI de pyDRTtools,
+cf. layout.py — pas de valeurs inventées) :
+  1. Points de collocation tau = 1/f sur les fréquences expérimentales
+     elles-mêmes (convention DRTtools : pas une grille synthétique dense).
+  2. Discrétisation RBF (rbf_type='Gaussian') du noyau de Fredholm
+     (A_re, A_im), shape factor epsilon via compute_epsilon
+     (shape_control='FWHM Coefficient', coeff=0.5).
+  3. Régularisation de Tikhonov sur la dérivée première de γ
+     (der_used='1st order' — défaut GUI, assemble_M_1), pas la dérivée
+     seconde utilisée par l'ancienne réimplémentation maison.
+  4. Résistance série R0 isolée en tant que colonne dédiée de A_re
+     (induct_used=0, "Fitting w/o Inductance" — défaut GUI ; pas de terme
+     d'inductance, non pertinent pour ce capteur EIS).
+  5. Sélection automatique de λ par validation croisée généralisée (GCV) —
+     basics.optimal_lambda — adaptée à un usage headless (pas de valeur
+     "custom" saisie manuellement comme le permet la GUI interactive).
+  6. Résolution par QP sous contrainte de positivité (cvxopt) :
+     basics.solve_gamma / quad_format_combined.
+  7. Conversion des coefficients RBF x vers γ(τ) sur une grille fine
+     (x_to_gamma), pour l'affichage et l'extraction de Rct.
+  8. Extraction de Rct selon la convention Bissessur (avant-dernier pic
+     local si ≥2 pics, intégrale trapèze de γ(τ) sur ±3 en ln(τ) autour du
+     pic).
+  9. Reconstruction de Z(ω) en réinjectant x dans A_re/A_im (pas de lien
+     structurel avec un circuit Randles).
 """
 
 import numpy as np
-from scipy.optimize import nnls
+from cvxopt import matrix, solvers
+from scipy.optimize import minimize_scalar
 
 from fits.base import BaseFitModel
+from fits._pydrttools import basics
+from fits._pydrttools import parameter_selection as param
 from core.models import EISSpectrum, FitResult
+
+# Défauts GUI de pyDRTtools (layout.py) — non inventés.
+_RBF_TYPE = "Gaussian"
+_SHAPE_CONTROL = "FWHM Coefficient"
+_COEFF = 0.5
+_DER_USED = "1st order"
+_DATA_USED = "Combined Re-Im Data"
+_N_RL = 1  # induct_used=0 ("Fitting w/o Inductance", défaut GUI) : une seule colonne hors-tau, R0.
 
 
 def _cfg_get(config, key: str, default):
@@ -49,16 +83,7 @@ def _cfg_get(config, key: str, default):
 
 
 def _local_maxima(gamma: np.ndarray, l: int = 3, threshold: float = 0.0) -> list:
-    """Detect indices of local maxima of gamma within a sliding window.
-
-    Args:
-        gamma: γ(τ) array (≥0).
-        l: Half-window size (indices).
-        threshold: Minimum amplitude for a maximum to be retained.
-
-    Returns:
-        Sorted list of indices of local maxima, ascending in τ.
-    """
+    """Detect indices of local maxima of gamma within a sliding window."""
     n = len(gamma)
     maxima = []
     for i in range(n):
@@ -71,107 +96,10 @@ def _local_maxima(gamma: np.ndarray, l: int = 3, threshold: float = 0.0) -> list
     return maxima
 
 
-def _build_kernel(omega: np.ndarray, tau: np.ndarray) -> tuple:
-    """Discretized Fredholm kernel on Dirac basis functions.
-
-    A_re[i,k] = 1 / (1 + (omega_i*tau_k)^2)
-    A_im[i,k] = omega_i*tau_k / (1 + (omega_i*tau_k)^2)   (positive convention)
-    """
-    wt = omega[:, None] * tau[None, :]
-    denom = 1.0 + wt ** 2
-    A_re = 1.0 / denom
-    A_im = wt / denom
-    return A_re, A_im
-
-
-def _roughness_matrix(n: int) -> np.ndarray:
-    """Second-derivative (order-2 Tikhonov) operator on a vector of length n."""
-    if n < 3:
-        return np.zeros((0, n))
-    L = np.zeros((n - 2, n))
-    for i in range(n - 2):
-        L[i, i] = 1.0
-        L[i, i + 1] = -2.0
-        L[i, i + 2] = 1.0
-    return L
-
-
-def _solve_nnls(A: np.ndarray, b: np.ndarray, L: np.ndarray, lam: float) -> np.ndarray:
-    """Solve min ||Ax - b||^2 + lam^2 ||L x_gamma||^2, x >= 0, via augmented NNLS.
-
-    The first column of A (R0) is left unpenalized: L is padded with a zero
-    column on the left to match A's column count.
-    """
-    n_cols = A.shape[1]
-    L_full = np.zeros((L.shape[0], n_cols))
-    L_full[:, 1:] = L
-    A_aug = np.vstack([A, lam * L_full])
-    b_aug = np.concatenate([b, np.zeros(L.shape[0])])
-    x, _ = nnls(A_aug, b_aug, maxiter=10000)
-    return x
-
-
-def _menger_curvature(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Discrete curvature of a curve via the Menger formula on consecutive
-    triplets — robust to the local noise that plagues np.gradient-based
-    finite-difference curvature on short, sparsely-sampled L-curves."""
-    n = len(x)
-    kappa = np.zeros(n)
-    for i in range(1, n - 1):
-        x1, y1, x2, y2, x3, y3 = x[i - 1], y[i - 1], x[i], y[i], x[i + 1], y[i + 1]
-        area2 = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
-        d12 = np.hypot(x2 - x1, y2 - y1)
-        d23 = np.hypot(x3 - x2, y3 - y2)
-        d13 = np.hypot(x3 - x1, y3 - y1)
-        denom = d12 * d23 * d13
-        kappa[i] = 2.0 * abs(area2) / denom if denom > 1e-30 else 0.0
-    return kappa
-
-
-def _select_lambda(A: np.ndarray, b: np.ndarray, L: np.ndarray, lambdas: np.ndarray) -> float:
-    """Pick lambda at the L-curve corner (max Menger curvature in log-log
-    residual/roughness).
-
-    The corner search excludes the extreme ends of the lambda sweep
-    (``edge_frac`` on each side): on sparse, noisy real EIS data the
-    residual-vs-lambda curve is nearly flat near lambda -> 0 (the
-    discretization is heavily under-determined and many near-degenerate
-    solutions fit the noise equally well), so a naive argmax-curvature can
-    lock onto a spurious near-zero-curvature point at the boundary and pick
-    a far too small lambda — producing a sparse "comb" of isolated NNLS
-    spikes instead of a smooth gamma(tau). Excluding the boundary keeps the
-    corner search within the region where the L-curve shape is meaningful.
-    """
-    res_norms, rough_norms = [], []
-    for lam in lambdas:
-        x = _solve_nnls(A, b, L, lam)
-        gamma = x[1:]
-        res_norms.append(float(np.linalg.norm(A @ x - b)))
-        rough_norms.append(float(np.linalg.norm(L @ gamma)) + 1e-30)
-
-    res_norms = np.asarray(res_norms)
-    rough_norms = np.asarray(rough_norms)
-    valid = (res_norms > 0) & (rough_norms > 0)
-    if valid.sum() < 5:
-        return float(lambdas[len(lambdas) // 2])
-
-    x_l = np.log(res_norms[valid])
-    y_l = np.log(rough_norms[valid])
-    lam_valid = lambdas[valid]
-
-    kappa = _menger_curvature(x_l, y_l)
-    n = len(lam_valid)
-    margin = max(1, int(round(n * 0.15)))
-    if n - 2 * margin >= 1:
-        kappa[:margin] = -np.inf
-        kappa[n - margin:] = -np.inf
-    best = int(np.argmax(kappa))
-    return float(lam_valid[best])
-
-
 class DRTTikhonovModel(BaseFitModel):
-    """DRT model-free par Tikhonov (ordre 2) + NNLS, appliquée directement
-    sur les données expérimentales (Wan, Saccoccio, Chen, Ciucci 2015 ;
+    """DRT model-free via pyDRTtools (RBF Tikhonov + QP sous contrainte de
+    positivité), appliquée directement sur les données expérimentales
+    (Wan, Saccoccio, Chen, Ciucci 2015 ; Maradesa et al. 2023 ;
     Bissessur, Man, Gamby PRE 2026, section III.B)."""
 
     name = "drt_tikhonov"
@@ -180,9 +108,10 @@ class DRTTikhonovModel(BaseFitModel):
     display_name = "DRT Tikhonov + NNLS"
     description = (
         "Déconvolution model-free de la distribution des temps de relaxation "
-        "par régularisation de Tikhonov (ordre 2) et NNLS, appliquée "
-        "directement sur les données expérimentales (sans fit de circuit "
-        "équivalent intermédiaire)."
+        "via le cœur de calcul de pyDRTtools (RBF gaussienne + Tikhonov "
+        "ordre 1 + QP sous contrainte de positivité), appliquée directement "
+        "sur les données expérimentales (sans fit de circuit équivalent "
+        "intermédiaire)."
     )
 
     def initial_guess(self, spectrum: EISSpectrum, config: dict) -> dict:
@@ -197,69 +126,106 @@ class DRTTikhonovModel(BaseFitModel):
         Zim_exp = np.asarray(spectrum.Zim, dtype=float)
 
         order = np.argsort(f_exp)
-        f_sorted = f_exp[order]
-        omega = 2.0 * np.pi * f_sorted
+        freq = f_exp[order]
+        Zre = Zre_exp[order]
+        Zim = -Zim_exp[order]  # pyDRTtools: convention -Im(Z) < 0 pour un demi-cercle capacitif.
 
-        n_tau_cfg = int(_cfg_get(config, "n_tau", 50))
-        tau_min_cfg = _cfg_get(config, "tau_min", None)
-        tau_max_cfg = _cfg_get(config, "tau_max", None)
+        # Points de collocation tau = 1/f (convention DRTtools, cf. EIS_object.__init__).
+        tau = 1.0 / freq
+        n_taus = tau.size
 
-        # Tau grid sized on the experimental frequency span (not a dense
-        # synthetic grid): default ~10 pts/decade, clipped to config bounds
-        # if they fall inside the data-covered range.
-        tau_lo_data = 1.0 / omega.max()
-        tau_hi_data = 1.0 / omega.min()
-        tau_lo = max(tau_lo_data, float(tau_min_cfg)) if tau_min_cfg else tau_lo_data
-        tau_hi = min(tau_hi_data, float(tau_max_cfg)) if tau_max_cfg else tau_hi_data
-        if tau_hi <= tau_lo:
-            tau_lo, tau_hi = tau_lo_data, tau_hi_data
+        epsilon = basics.compute_epsilon(freq, _COEFF, _RBF_TYPE, _SHAPE_CONTROL)
+        A_re_rbf = basics.assemble_A_re(freq, tau, epsilon, _RBF_TYPE)
+        A_im_rbf = basics.assemble_A_im(freq, tau, epsilon, _RBF_TYPE)
+        M_rbf = basics.assemble_M_1(tau, epsilon, _RBF_TYPE)
 
-        # Le nombre de points de la grille tau est borné par la densité réelle
-        # des données : au-delà de ~1 point tau par point expérimental, les
-        # colonnes du noyau de Fredholm deviennent quasi-colinéaires
-        # (cond(A) croît de plusieurs ordres de grandeur, ex. 1.6e6 à n_tau=40
-        # contre 215 à n_tau=15 pour 40 points expérimentaux), et même avec
-        # une régularisation Tikhonov ordre 2, NNLS retombe sur un "peigne"
-        # de pics isolés au lieu d'une distribution lisse. On ne dimensionne
-        # donc plus la grille uniquement sur le nombre de décades couvertes.
-        n_decades = max(np.log10(tau_hi / tau_lo), 0.5)
-        n_tau = max(n_tau_cfg, int(np.ceil(10 * n_decades)))
-        n_tau = min(n_tau, 400, max(10, len(omega)))
-        tau = np.geomspace(tau_lo, tau_hi, n_tau)
-        ln_tau = np.log(tau)
-        dln_tau = (ln_tau[-1] - ln_tau[0]) / (n_tau - 1) if n_tau > 1 else 1.0
+        n_freqs = freq.size
+        A_re = np.zeros((n_freqs, n_taus + _N_RL))
+        A_re[:, _N_RL:] = A_re_rbf
+        A_re[:, 0] = 1.0  # colonne R0 : ne contribue qu'à Re(Z).
 
-        A_re_k, A_im_k = _build_kernel(omega, tau)
-        A_re_k *= dln_tau
-        A_im_k *= dln_tau
+        A_im = np.zeros((n_freqs, n_taus + _N_RL))
+        A_im[:, _N_RL:] = A_im_rbf
 
-        # R0 column: contributes only to Re(Z), not Im(Z).
-        A_re = np.column_stack([np.ones(len(omega)), A_re_k])
-        A_im = np.column_stack([np.zeros(len(omega)), A_im_k])
-        A = np.vstack([A_re, A_im])
-        b = np.concatenate([Zre_exp[order], Zim_exp[order]])
-
-        L = _roughness_matrix(n_tau)
+        M = np.zeros((n_taus + _N_RL, n_taus + _N_RL))
+        M[_N_RL:, _N_RL:] = M_rbf
 
         lambda_auto = bool(_cfg_get(config, "lambda_auto", True))
-        if lambda_auto and L.shape[0] > 0:
-            scale = float(np.linalg.norm(A))
-            lambdas = np.geomspace(1e-5 * scale, 5.0 * scale, 40)
-            lam = _select_lambda(A, b, L, lambdas)
+        reg_param_init = float(_cfg_get(config, "lambda_fixed", 1e-3))
+        if lambda_auto:
+            # basics.optimal_lambda's SLSQP call is numerically fragile on
+            # this score (gradient computed by finite differences blows up
+            # for a 1-D scalar objective spanning several orders of
+            # magnitude, making SLSQP report "Inequality constraints
+            # incompatible" after a single step on real-scale data) — so we
+            # minimize the same score via a bounded scalar search instead,
+            # over the same log-lambda bounds pyDRTtools uses (1e-7 to 1e0).
+            #
+            # Plain GCV (the runs.py function default) is documented in the
+            # very paper that introduces it here (Maradesa, Py, Wan, Effat,
+            # Ciucci, J. Electrochem. Soc. 170 (2023) 030502) as unstable on
+            # sparse/noisy spectra — it can select an under-regularized
+            # lambda, reproducing the comb-of-spikes failure mode. rGCV
+            # (robust GCV, Lukas/de Hoog/Anderssen 2016, also implemented in
+            # pyDRTtools and cited by the same paper) stabilizes exactly this
+            # case and is used here instead, still a pyDRTtools-native
+            # cv_type rather than an invented criterion.
+            log_bounds = (np.log(1e-7), np.log(1e0))
+            opt = minimize_scalar(
+                param.compute_rGCV,
+                args=(A_re, A_im, Zre, Zim, M, _DATA_USED, 0),
+                bounds=log_bounds,
+                method="bounded",
+            )
+            lam = float(np.exp(opt.x))
         else:
-            lam = float(_cfg_get(config, "lambda_fixed", 1e-3)) * float(np.linalg.norm(A))
+            lam = reg_param_init
 
-        x = _solve_nnls(A, b, L, lam) if L.shape[0] > 0 else nnls(A, b, maxiter=10000)[0]
+        # basics.solve_gamma sizes its positivity-constraint matrix to
+        # A_re.shape[0] (n_freqs), which only matches len(x) when no R0
+        # column is appended; with our R0 column len(x) = n_taus + N_RL, so
+        # we build the constraint inline instead, exactly as the GUI's
+        # simple_run (induct_used=0 branch) does.
+        n_unknowns = n_taus + _N_RL
+        G = matrix(-np.identity(n_unknowns))
+        h = matrix(np.zeros(n_unknowns))
+        # GCV-family lambda selection occasionally lands at/near the search's
+        # lower bound on sparse, noisy spectra (a known instability of GCV
+        # criteria, not specific to this integration — see Maradesa et al.
+        # 2023, motivating the rGCV/mGCV variants in the first place). At the
+        # extreme low end A^T A + lambda*M can become numerically singular
+        # and cvxopt's Cholesky-based KKT solver raises ValueError; rather
+        # than crash, back off by retrying with a larger lambda.
+        for _ in range(20):
+            H, c = basics.quad_format_combined(A_re, A_im, Zre, Zim, M, lam)
+            try:
+                sol = solvers.qp(matrix(H), matrix(c), G, h, options={"show_progress": False})
+                break
+            except ValueError:
+                lam *= 10.0
+        else:
+            raise RuntimeError("DRT QP solve did not stabilize after repeated lambda backoff")
+        x = np.array(sol["x"]).flatten()
         R0 = float(x[0])
-        gamma = x[1:]
+        x_gamma = x[_N_RL:]
+
+        # γ(τ) sur une grille fine pour l'affichage et l'extraction de Rct
+        # (convention DRTtools : demi-décade de marge de part et d'autre,
+        # 10 points par point expérimental — cf. EIS_object.tau_fine).
+        tau_fine = np.logspace(np.log10(tau.min()) - 0.5, np.log10(tau.max()) + 0.5, 10 * n_taus)
+        tau_fine = np.sort(tau_fine)
+        _, gamma = basics.x_to_gamma(x_gamma, tau_fine, tau, epsilon, _RBF_TYPE)
+        gamma = np.asarray(gamma).flatten()
+        ln_tau = np.log(tau_fine)
 
         # ── Détection des maxima locaux et extraction de Rct (convention Bissessur) ──
-        margin = max(1, n_tau // 20)
-        core_slice = slice(margin, n_tau - margin) if n_tau > 2 * margin else slice(0, n_tau)
+        n_fine = len(gamma)
+        margin = max(1, n_fine // 20)
+        core_slice = slice(margin, n_fine - margin) if n_fine > 2 * margin else slice(0, n_fine)
         gamma_core = gamma[core_slice]
         max_global = float(gamma_core.max()) if gamma_core.size else 0.0
         threshold = max_global * 1e-3
-        l_window = max(1, n_tau // 15)
+        l_window = max(1, n_fine // 15)
         maxima_idx_core = _local_maxima(gamma_core, l=l_window, threshold=threshold)
         maxima_idx = [i + margin for i in maxima_idx_core]
 
@@ -279,7 +245,7 @@ class DRTTikhonovModel(BaseFitModel):
                 ord_win = np.argsort(x_win)
                 Rct = float(np.trapezoid(y_win[ord_win], x_win[ord_win]))
             else:
-                Rct = float(gamma[peak_idx]) * dln_tau
+                Rct = float(gamma[peak_idx])
             tau_Rct = float(ln_tau[peak_idx])
         else:
             Rct = 0.0
@@ -287,7 +253,7 @@ class DRTTikhonovModel(BaseFitModel):
 
         # ── Reconstruction de Z(omega) sur les fréquences expérimentales ────
         Zfit_re_sorted = A_re @ x
-        Zfit_im_sorted = A_im @ x
+        Zfit_im_sorted = -(A_im @ x)  # retour à la convention EISSpectrum (-Im(Z) > 0).
         inv_order = np.argsort(order)
         Zfit_re = Zfit_re_sorted[inv_order]
         Zfit_im = Zfit_im_sorted[inv_order]
@@ -300,7 +266,7 @@ class DRTTikhonovModel(BaseFitModel):
             np.sqrt(residuals_re ** 2 + residuals_im ** 2) / np.sqrt(Zmod2)
         ))
 
-        tau_max = float(tau[core_slice][np.argmax(gamma[core_slice])]) if gamma_core.size else float("nan")
+        tau_max = float(tau_fine[core_slice][np.argmax(gamma_core)]) if gamma_core.size else float("nan")
 
         params = {
             "Rct": Rct,
@@ -308,7 +274,7 @@ class DRTTikhonovModel(BaseFitModel):
             "lambda": lam,
             "tau_max": tau_max,
             "tau_Rct": tau_Rct,
-            "n_tau": n_tau,
+            "n_tau": n_fine,
         }
 
         return FitResult(
@@ -323,7 +289,7 @@ class DRTTikhonovModel(BaseFitModel):
             Rct=Rct,
             Rct_std=0.0,
             converged=True,
-            drt_tau=tau,
+            drt_tau=tau_fine,
             drt_gamma=gamma,
             drt_S=ln_tau,
             drt_lnGamma=np.log(np.maximum(gamma, 1e-300)),

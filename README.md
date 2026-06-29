@@ -51,7 +51,7 @@ streamlit run app.py
 | Fit circulaire | Lecture géométrique — aucun paramètre physique |
 | Randles contraint | Re fixé, ZD0 ∝ Fv^(−1/3), 3 paramètres libres |
 | Randles complet | 8 paramètres libres, pondération Modulus |
-| DRT Tikhonov + NNLS (`drt_tikhonov`) | **DRT principale**, model-free : appliquée directement sur les données expérimentales déposées via l'import, λ sélectionné automatiquement par L-curve, γ(τ) ≥ 0 par NNLS |
+| DRT Tikhonov + NNLS (`drt_tikhonov`) | **DRT principale**, model-free : appliquée directement sur les données expérimentales déposées via l'import, via le cœur de calcul de [pyDRTtools](https://github.com/ciuccislab/pyDRTtools) (RBF gaussienne + Tikhonov ordre 1, vendoré dans `fits/_pydrttools/`, MIT — voir `THIRD_PARTY_LICENSES.md`), λ sélectionné automatiquement par rGCV, γ(τ) ≥ 0 par QP sous contrainte de positivité (cvxopt) |
 | DRT FFT/Wiener spectre idéal (`drt_fft_ideal`) | Outil d'étude théorique des lois d'échelle MAD — recalcule la DRT exacte du modèle Randles déjà fitté, n'analyse pas les données brutes de façon indépendante |
 
 DRT Tikhonov et DRT FFT/Wiener implémentent les deux méthodes distinctes
