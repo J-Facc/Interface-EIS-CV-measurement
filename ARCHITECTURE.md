@@ -49,10 +49,10 @@ Interface-EIS-CV-measurement/          ← racine du repo GitHub
 │   ├── base.py                        ← BaseFitModel (ABC) — interface commune
 │   ├── physics.py                     ← fonctions physiques partagées (ZD, alpha_h, Brug)
 │   ├── registry.py                    ← FitRegistry : découverte automatique des modèles
-│   ├── randles_classique.py           ← Randles complet (7-8 paramètres, DE)
-│   ├── randles_contraint.py           ← Randles contraint (3 paramètres effectifs)
-│   ├── drt_fit.py                     ← DRT Tikhonov + NNLS
-│   └── circulaire_fit.py              ← fit circulaire géométrique Kasa
+│   ├── randles_full.py                ← Randles complet (8 paramètres, least_squares)
+│   ├── drt_tikhonov.py                ← DRT model-free (Tikhonov ordre 2 + NNLS) — DRT principale
+│   ├── drt_fft.py                     ← DRT FFT/Wiener sur spectre IDÉAL Randles (étude MAD, pas indépendante)
+│   └── kk_validation.py               ← validation Kramers-Kronig (Lin-KK, circuits de Voigt)
 │
 ├── plotting/
 │   ├── __init__.py
@@ -185,19 +185,55 @@ ui/tabs.py → 6 onglets Streamlit
 
 ---
 
-## 5. Les 4 modèles de fit
+## 5. Les modèles de fit
 
 | Modèle | Fichier | Paramètres libres | Méthode |
 |--------|---------|-------------------|---------|
-| Randles classique | `randles_classique.py` | 7-8 (Re, R'e, Cb, Rct, Qdl, α, ZD0) | Differential Evolution |
-| Randles contraint | `randles_contraint.py` | 3 (Rct, Qdl, α) — Re et ZD0 fixés | scipy curve_fit |
-| DRT Tikhonov | `drt_fit.py` | λ (régularisation) | NNLS + L-curve |
-| Circulaire | `circulaire_fit.py` | 0 — lecture géométrique | Kasa algebraic fit |
+| Randles complet | `randles_full.py` | 8 (Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d) | `scipy.optimize.least_squares` (pondération Modulus) |
+| DRT Tikhonov + NNLS | `drt_tikhonov.py` | λ (régularisation, sélection auto par L-curve) | NNLS, **model-free** |
+| DRT FFT/Wiener (spectre idéal) | `drt_fft.py` | hérités du fit Randles + filtre W | FFT + filtre Wiener, sur spectre **idéal** |
+| Circulaire | `circular.py` (référencé dans `ui/sidebar.py`, non présent dans `fits/` à ce jour) | 0 — lecture géométrique | Fit circulaire algébrique |
 
 **Circuit physique (Randles modifié) :**
 ```
 Re — [ R'e // Cb ] — [ Rct // CPE(Qdl, α) ] — ZD(ω)
 ```
+
+### Deux méthodes DRT distinctes — ne jamais les confondre
+
+Référence : Bissessur, Man, Gamby, *Use of an approach with a distribution of
+relaxation times for impedance analysis of a channel electrode in
+microfluidics*, Phys. Rev. E **113**, 025502 (2026), DOI: 10.1103/fn2s-z364.
+
+- **`fits/drt_tikhonov.py` (DRT principale, section III.B "DRT with
+  DRTtools")** — model-free, appliquée DIRECTEMENT sur les données
+  expérimentales brutes déposées via l'onglet Import (`pages/0_import.py`).
+  Aucune hypothèse de circuit équivalent : grille τ log-espacée dimensionnée
+  sur la plage de fréquences réelles, noyau de Fredholm discret,
+  régularisation de Tikhonov d'ordre 2, λ sélectionné par L-curve, résolution
+  NNLS (γ(τ) ≥ 0). C'est le modèle `"drt_tikhonov"` utilisé par défaut dans
+  les graphes DRT, la reconstruction Nyquist et la calibration.
+
+- **`fits/drt_fft.py` (modèle `"drt_fft_ideal"`, section III.C "DRT with
+  DFT")** — reconstruit la DRT EXACTE d'un spectre **idéal**, c'est-à-dire le
+  modèle Randles déjà fitté (`randles_full.py`) réévalué sur une grille
+  log-ω dense, puis déconvolué par FFT/filtre Wiener. Cette méthode n'est
+  PAS indépendante du fit Randles — elle sert exclusivement à l'étude
+  théorique des lois d'échelle MAD (Maxima Asymptotic Dynamics) sur des cas
+  contrôlés, pas à produire un Rct à comparer à Rct_randles.
+
+### Comparaison Randles vs DRT (model-free) — trois niveaux
+
+1. **Paramètre** — `plotting/eis_plots.py::params_table_figure` affiche, pour
+   chaque étape (bare/probe/concentration), Rct_randles, Rct_drt et leur
+   écart relatif. Branché dans l'onglet "3️⃣ Reconstructions Nyquist".
+2. **Reconstruction Nyquist** — `reconstruction_comparison_figure` et
+   `drt_reconstruction_figure_dual` superposent points expérimentaux,
+   courbe Randles et courbe DRT Tikhonov pour un même spectre.
+3. **Calibration** — `calibration_figure` trace une régression log-log
+   distincte (avec son propre R²) par modèle présent dans la session,
+   donc une courbe pour `randles_full` et une pour `drt_tikhonov`,
+   visibles simultanément sur le même graphe avec légende séparée.
 
 ---
 
@@ -205,12 +241,11 @@ Re — [ R'e // Cb ] — [ Rct // CPE(Qdl, α) ] — ZD(ω)
 
 | Onglet | Contenu |
 |--------|---------|
-| **Nyquist** | Points exp + courbes de fit avec légende complète (exp / Randles / DRT / Circulaire) |
-| **Bode** | Module \|Z\|(f) et phase φ(f) |
-| **DRT** | Distribution γ(τ) vs log(τ) |
-| **Paramètres** | Tableau Re, Rct, α, Qdl, ZD0, χ² par méthode |
-| **Calibration** | log(Rct_norm) vs log([c]) + régression + R² |
-| **Export** | CSV params, CSV spectres, PNG, HTML, YAML session |
+| **1️⃣ Validation KK** | Diagnostic Kramers-Kronig (Lin-KK) par réplicat |
+| **2️⃣ Courbes DRT** | Distribution γ(τ) vs log(τ) — `drt_tikhonov` (model-free, principale) |
+| **3️⃣ Reconstructions Nyquist** | Table Rct_randles vs Rct_drt (écart relatif) + Nyquist mesuré/Randles/DRT superposés |
+| **4️⃣ Calibration** | log(Rct_norm) vs log([c]) + régression + R², une courbe par modèle (Randles et DRT séparées) |
+| **Export** | CSV params, CSV spectres DRT, PNG, HTML, YAML session |
 
 ---
 
