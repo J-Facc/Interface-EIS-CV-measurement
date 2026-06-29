@@ -39,8 +39,12 @@ cf. layout.py — pas de valeurs inventées) :
   4. Résistance série R0 isolée en tant que colonne dédiée de A_re
      (induct_used=0, "Fitting w/o Inductance" — défaut GUI ; pas de terme
      d'inductance, non pertinent pour ce capteur EIS).
-  5. Sélection automatique de λ par validation croisée généralisée (GCV) —
-     basics.optimal_lambda — adaptée à un usage headless (pas de valeur
+  5. Sélection automatique de λ par validation croisée généralisée
+     (cv_type='GCV', défaut de runs.py::simple_run) via une recherche
+     scalaire bornée (pas basics.optimal_lambda/SLSQP, numériquement
+     fragile sur ces données — voir commentaire dans fit() ; ni rGCV, qui
+     sous-régularise systématiquement sur ce type de spectre — voir le
+     même commentaire), adaptée à un usage headless (pas de valeur
      "custom" saisie manuellement comme le permet la GUI interactive).
   6. Résolution par QP sous contrainte de positivité (cvxopt) :
      basics.solve_gamma / quad_format_combined.
@@ -59,6 +63,7 @@ from scipy.optimize import minimize_scalar
 
 from fits.base import BaseFitModel
 from fits._pydrttools import basics
+from fits._pydrttools import nearest_PD
 from fits._pydrttools import parameter_selection as param
 from core.models import EISSpectrum, FitResult
 
@@ -161,18 +166,26 @@ class DRTTikhonovModel(BaseFitModel):
             # minimize the same score via a bounded scalar search instead,
             # over the same log-lambda bounds pyDRTtools uses (1e-7 to 1e0).
             #
-            # Plain GCV (the runs.py function default) is documented in the
-            # very paper that introduces it here (Maradesa, Py, Wan, Effat,
-            # Ciucci, J. Electrochem. Soc. 170 (2023) 030502) as unstable on
-            # sparse/noisy spectra — it can select an under-regularized
-            # lambda, reproducing the comb-of-spikes failure mode. rGCV
-            # (robust GCV, Lukas/de Hoog/Anderssen 2016, also implemented in
-            # pyDRTtools and cited by the same paper) stabilizes exactly this
-            # case and is used here instead, still a pyDRTtools-native
-            # cv_type rather than an invented criterion.
+            # cv_type='GCV' is the literal default of pyDRTtools' own
+            # runs.py::simple_run. An earlier version of this code used
+            # rGCV instead, reasoning that plain GCV is documented
+            # (Maradesa, Py, Wan, Effat, Ciucci, J. Electrochem. Soc. 170
+            # (2023) 030502) as occasionally unstable on sparse/noisy
+            # spectra. That reasoning was backwards in practice: on this
+            # integration's synthetic noisy-Randles benchmark
+            # (tests/test_drt_tikhonov.py), rGCV is the one that lands
+            # at/near the lambda search's lower bound (1e-7),
+            # under-regularizing gamma(tau) into absorbing measurement
+            # noise as spurious peaks while producing an artificially
+            # near-perfect Z(omega) reconstruction — classic overfitting.
+            # Plain GCV (cross-checked against mGCV, which agrees closely)
+            # instead lands well inside the search interval across many
+            # noise realizations, giving a smaller, more plausible peak
+            # count and a residual reconstruction error consistent with
+            # real EIS DRT fits. So GCV is used here, not rGCV.
             log_bounds = (np.log(1e-7), np.log(1e0))
             opt = minimize_scalar(
-                param.compute_rGCV,
+                param.compute_GCV,
                 args=(A_re, A_im, Zre, Zim, M, _DATA_USED, 0),
                 bounds=log_bounds,
                 method="bounded",
@@ -189,22 +202,23 @@ class DRTTikhonovModel(BaseFitModel):
         n_unknowns = n_taus + _N_RL
         G = matrix(-np.identity(n_unknowns))
         h = matrix(np.zeros(n_unknowns))
-        # GCV-family lambda selection occasionally lands at/near the search's
-        # lower bound on sparse, noisy spectra (a known instability of GCV
-        # criteria, not specific to this integration — see Maradesa et al.
-        # 2023, motivating the rGCV/mGCV variants in the first place). At the
-        # extreme low end A^T A + lambda*M can become numerically singular
-        # and cvxopt's Cholesky-based KKT solver raises ValueError; rather
-        # than crash, back off by retrying with a larger lambda.
-        for _ in range(20):
-            H, c = basics.quad_format_combined(A_re, A_im, Zre, Zim, M, lam)
-            try:
-                sol = solvers.qp(matrix(H), matrix(c), G, h, options={"show_progress": False})
-                break
-            except ValueError:
-                lam *= 10.0
-        else:
-            raise RuntimeError("DRT QP solve did not stabilize after repeated lambda backoff")
+        # H = 2*(A_re^T A_re + A_im^T A_im + lambda*M) can fail cvxopt's
+        # Cholesky-based KKT rank check even at a well-chosen lambda: the R0
+        # column (constant 1, unpenalized by M) can be near-collinear with
+        # the RBF columns at the low-frequency end on some noisy
+        # realizations, leaving H just barely indefinite by floating-point
+        # roundoff — not an under-regularization issue, so retrying with a
+        # bigger lambda does not fix it (confirmed: still fails up to
+        # lambda=1e21 on the seed that exposed this). pyDRTtools' own
+        # parameter_selection.py already guards its internal GCV-family
+        # matrices the same way, with nearest_PD (Higham 1988) snapping a
+        # near-PD matrix to the closest true PD one; applying the same
+        # vendored helper to H here is the same fix the upstream toolkit
+        # already relies on elsewhere, not an invented workaround.
+        H, c = basics.quad_format_combined(A_re, A_im, Zre, Zim, M, lam)
+        if not nearest_PD.is_PD(H):
+            H = nearest_PD.nearest_PD(H)
+        sol = solvers.qp(matrix(H), matrix(c), G, h, options={"show_progress": False})
         x = np.array(sol["x"]).flatten()
         R0 = float(x[0])
         x_gamma = x[_N_RL:]
