@@ -18,7 +18,7 @@ _DEFAULT_CONFIG = config_to_dict(load_config())
 
 # Seules ces deux méthodes sont affichées dans les graphes et tableaux EIS.
 # Le pipeline peut en calculer d'autres en arrière-plan.
-METHODS_TO_DISPLAY = ["randles_full", "drt_fft"]
+METHODS_TO_DISPLAY = ["randles_full", "drt_tikhonov"]
 
 
 def _filter_session_display(session):
@@ -288,9 +288,10 @@ def main() -> None:
                 "circular":            "Fit circulaire",
                 "randles_constrained": "Randles contraint",
                 "randles_full":        "Randles complet",
-                "drt_fft":             "DRT (FFT)",
+                "drt_tikhonov":        "DRT (Tikhonov + NNLS)",
+                "drt_fft_ideal":       "DRT FFT (spectre idéal Randles — étude MAD)",
             }
-            _displayed = {"randles_full", "drt_fft"}
+            _displayed = {"randles_full", "drt_tikhonov"}
             active_models = [
                 m for m, label in model_choices.items()
                 if st.checkbox(label, value=(m in _displayed), key=f"eis_model_{m}")

@@ -338,12 +338,12 @@ def drt_figure(session: EISSession, log_y: bool = True) -> go.Figure:
     ci = 0
     for sp in (session.bare, session.probe):
         if sp is not None:
-            fr = sp.fit_results.get("drt_fft")
+            fr = sp.fit_results.get("drt_tikhonov")
             if fr is not None:
                 all_items.append((_spectrum_label(sp), fr, ci))
             ci += 1
     for grp in session.groups:
-        fr = grp.fit_results.get("drt_fft")
+        fr = grp.fit_results.get("drt_tikhonov")
         if fr is not None:
             all_items.append((_spectrum_label(grp.spectrum), fr, ci))
         ci += 1
@@ -508,28 +508,49 @@ def params_table_figure(session: EISSession) -> go.Figure:
             return "—"
         return f"{fr.Rct:.1f} Ω"
 
+    def _rct_val(fit_results: dict, model: str):
+        fr = fit_results.get(model)
+        if fr is None or fr.Rct <= 0:
+            return None
+        return float(fr.Rct)
+
+    has_comparison = "randles_full" in model_names and "drt_tikhonov" in model_names
+
+    def _delta_str(fit_results: dict) -> str:
+        r_randles = _rct_val(fit_results, "randles_full")
+        r_drt = _rct_val(fit_results, "drt_tikhonov")
+        if r_randles is None or r_drt is None:
+            return "—"
+        rel_err = abs(r_randles - r_drt) / abs(r_randles)
+        return f"{rel_err * 100:.1f}%"
+
     step_col: list = []
     model_cols: list = [[] for _ in model_names]
+    delta_col: list = []
+
+    def _append_row(step_label: str, fit_results: dict) -> None:
+        step_col.append(step_label)
+        for i, m in enumerate(model_names):
+            model_cols[i].append(_rct_str(fit_results, m))
+        if has_comparison:
+            delta_col.append(_delta_str(fit_results))
 
     if session.bare is not None:
-        step_col.append("Bare")
-        for i, m in enumerate(model_names):
-            model_cols[i].append(_rct_str(session.bare.fit_results, m))
+        _append_row("Bare", session.bare.fit_results)
 
     if session.probe is not None:
-        step_col.append("Probe")
-        for i, m in enumerate(model_names):
-            model_cols[i].append(_rct_str(session.probe.fit_results, m))
+        _append_row("Probe", session.probe.fit_results)
 
     for grp in session.groups:
-        step_col.append(f"{grp.concentration:.2e} M")
-        for i, m in enumerate(model_names):
-            model_cols[i].append(_rct_str(grp.fit_results, m))
+        _append_row(f"{grp.concentration:.2e} M", grp.fit_results)
 
     n_rows = len(step_col)
     row_colors = ["#EEF0F8" if i % 2 == 0 else "#FFFFFF" for i in range(n_rows)]
     header_values = ["Étape"] + model_names
     cell_values = [step_col] + model_cols
+    if has_comparison:
+        header_values = header_values + ["Écart relatif Randles/DRT"]
+        cell_values = cell_values + [delta_col]
 
     fig = go.Figure(data=[go.Table(
         header=dict(values=header_values, fill_color="#4472C4",
@@ -538,7 +559,7 @@ def params_table_figure(session: EISSession) -> go.Figure:
                    fill_color=[row_colors] * len(header_values),
                    align="left", font=dict(size=11)),
     )])
-    fig.update_layout(title="Rct par étape et modèle")
+    fig.update_layout(title="Rct par étape et modèle — Randles (paramétrique) vs DRT (model-free)")
     return fig
 
 
@@ -779,9 +800,10 @@ def drt_tikhonov_figure(fit_result, label: str = "") -> go.Figure:
     return _single_drt_figure(fit_result, label, "DRT Tikhonov + NNLS")
 
 
-def drt_fft_figure(fit_result, label: str = "") -> go.Figure:
-    """ln(Γ) vs ln(τ) pour le modèle DRT FFT Wiener."""
-    return _single_drt_figure(fit_result, label, "DRT FFT Wiener")
+def drt_fft_ideal_figure(fit_result, label: str = "") -> go.Figure:
+    """ln(Γ) vs ln(τ) pour le modèle DRT FFT Wiener (spectre idéal Randles,
+    étude des lois MAD — pas une DRT indépendante du fit Randles)."""
+    return _single_drt_figure(fit_result, label, "DRT FFT Wiener (spectre idéal)")
 
 
 def drt_reconstruction_figure(spectrum: EISSpectrum, fit_result, label: str = "") -> go.Figure:
@@ -808,7 +830,7 @@ def drt_reconstruction_figure(spectrum: EISSpectrum, fit_result, label: str = ""
     return fig
 
 
-def calibration_drt_figure(session: EISSession, model_name: str = "drt_fft") -> go.Figure:
+def calibration_drt_figure(session: EISSession, model_name: str = "drt_tikhonov") -> go.Figure:
     """Calibration log(Rct) vs log([c]) pour un modèle DRT, avec barres d'erreur et régression.
 
     Côte à côte : nuage de points + droite de régression (gauche), résidus (droite).
@@ -883,12 +905,12 @@ def _drt_collect_items(session: EISSession, elec_prefix: str = "") -> list:
     ci = 0
     for sp in (session.bare, session.probe):
         if sp is not None:
-            fr = sp.fit_results.get("drt_fft")
+            fr = sp.fit_results.get("drt_tikhonov")
             if fr is not None:
                 items.append((f"{elec_prefix}{_spectrum_label(sp)}", fr, ci))
             ci += 1
     for grp in session.groups:
-        fr = grp.fit_results.get("drt_fft")
+        fr = grp.fit_results.get("drt_tikhonov")
         if fr is not None:
             items.append((f"{elec_prefix}{_spectrum_label(grp.spectrum)}", fr, ci))
         ci += 1
@@ -951,7 +973,7 @@ def drt_replicates_figure(replicate_fit_results: list, excluded: list, label: st
     """Trace les DRT (ln Γ vs ln τ) de chaque réplicat d'un spectre.
 
     Args:
-        replicate_fit_results: liste de FitResult (un par réplicat, modèle drt_fft).
+        replicate_fit_results: liste de FitResult (un par réplicat, modèle drt_tikhonov).
         excluded: liste de bool, même longueur, True = réplicat exclu (tracé en
                   pointillés gris) de la moyenne DRT.
         label: nom du spectre (probe / concentration) pour le titre.
@@ -1069,7 +1091,7 @@ def open_drt_matplotlib_window(sessions: dict, drt_exclusions: dict = None) -> N
         for sel_label, reps in spectra_by_label.items():
             excluded = excl_for_e.get(sel_label, [False] * len(reps))
             for i, sp in enumerate(reps):
-                fr = sp.fit_results.get("drt_fft")
+                fr = sp.fit_results.get("drt_tikhonov")
                 if fr is None:
                     continue
                 tau = getattr(fr, "drt_tau", None)
@@ -1104,7 +1126,7 @@ def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
     """
     fig = go.Figure()
     line_dashes = ["solid", "dash", "dot", "dashdot"]
-    method_colors = {"randles_full": "#dc2626", "drt_fft": "#1a56db"}
+    method_colors = {"randles_full": "#dc2626", "drt_tikhonov": "#1a56db"}
 
     any_data = False
     for idx, (e, session) in enumerate(sorted(sessions.items())):
@@ -1128,12 +1150,12 @@ def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
                 line=dict(color=method_colors["randles_full"], dash=dash, width=2),
             ))
 
-        fr_d = probe.fit_results.get("drt_fft")
+        fr_d = probe.fit_results.get("drt_tikhonov")
         if fr_d is not None:
             fig.add_trace(go.Scatter(
                 x=fr_d.Zfit_re, y=fr_d.Zfit_im, mode="lines",
                 name=f"E{e} — DRT",
-                line=dict(color=method_colors["drt_fft"], dash=dash, width=2),
+                line=dict(color=method_colors["drt_tikhonov"], dash=dash, width=2),
             ))
 
     if not any_data:
@@ -1212,7 +1234,7 @@ def open_reconstruction_matplotlib_window(sessions: dict) -> None:
     # (a) comparaison globale
     ax = axes[0]
     line_dashes = ["-", "--", ":", "-."]
-    method_colors = {"randles_full": "#dc2626", "drt_fft": "#1a56db"}
+    method_colors = {"randles_full": "#dc2626", "drt_tikhonov": "#1a56db"}
     for idx, (e, session) in enumerate(sorted(sessions.items())):
         probe = session.probe
         if probe is None:
@@ -1223,9 +1245,9 @@ def open_reconstruction_matplotlib_window(sessions: dict) -> None:
         if fr_r is not None:
             ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, dash, color=method_colors["randles_full"],
                      label=f"E{e} — Randles")
-        fr_d = probe.fit_results.get("drt_fft")
+        fr_d = probe.fit_results.get("drt_tikhonov")
         if fr_d is not None:
-            ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, dash, color=method_colors["drt_fft"],
+            ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, dash, color=method_colors["drt_tikhonov"],
                      label=f"E{e} — DRT")
     ax.set_title("Reconstructions Nyquist — comparaison toutes électrodes (probe)")
     ax.set_xlabel("Re(Z) (Ω)")
@@ -1243,7 +1265,7 @@ def open_reconstruction_matplotlib_window(sessions: dict) -> None:
         fr_r = probe.fit_results.get("randles_full")
         if fr_r is not None:
             ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, "-", color="#dc2626", label="Randles")
-        fr_d = probe.fit_results.get("drt_fft")
+        fr_d = probe.fit_results.get("drt_tikhonov")
         if fr_d is not None:
             ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, "--", color="#1a56db", label="DRT")
         ax.set_title(f"Reconstruction probe — Électrode {e}")
@@ -1259,7 +1281,7 @@ def open_calibration_matplotlib_window(sessions: dict) -> None:
     """Ouvre une fenêtre matplotlib (bloquante) empilant les courbes de calibration EIS.
 
     Une sous-figure par électrode présente, une courbe par méthode (randles_full,
-    drt_fft), reproduisant la logique de calibration_figure() en matplotlib.
+    drt_tikhonov), reproduisant la logique de calibration_figure() en matplotlib.
     """
     import matplotlib.pyplot as plt
     from scipy import stats as _stats

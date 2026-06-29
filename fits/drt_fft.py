@@ -1,21 +1,39 @@
 # -*- coding: utf-8 -*-
 """
-fits/drt_fft.py — Distribution of Relaxation Times par déconvolution FFT (Wiener)
-Méthode : Bissessur et al., PRE 2026 (éq. 3), traduite fidèlement depuis le
-notebook de référence DRTparFFT.ipynb.
+fits/drt_fft.py — DRT FFT/Wiener sur SPECTRE IDÉAL (modèle Randles fitté)
+
+⚠️ Ce module N'ANALYSE PAS les données expérimentales de façon indépendante :
+il recalcule la DRT exacte d'un spectre idéal reconstruit depuis le modèle
+Randles déjà fitté (fits/randles_full.py). C'est la méthode de la section
+III.C "DRT with DFT" du papier Bissessur, Man, Gamby, Phys. Rev. E 113,
+025502 (2026) (DOI: 10.1103/fn2s-z364) — "we need an exact calculation of
+the DRT, for ideal EIS spectra" — utilisée pour étudier les lois d'échelle
+MAD (Maxima Asymptotic Dynamics) sur des cas théoriques contrôlés, PAS pour
+extraire un Rct indépendant du fit Randles à comparer à celui-ci.
+
+Pour une DRT model-free, appliquée directement sur les données expérimentales
+brutes sans hypothèse de circuit équivalent, voir fits/drt_tikhonov.py
+(section III.B "DRT with DRTtools" du même papier) — c'est ce module qui
+sert de DRT principale dans l'UI (calibration, reconstruction Nyquist,
+comparaison de paramètres).
+
+Méthode FFT/Wiener : Bissessur et al., PRE 2026 (éq. 2-3), traduite
+fidèlement depuis le notebook de référence DRTparFFT.ipynb.
 
 Pipeline :
   1. Fit intermédiaire du circuit Randles complet (fits/randles_full.py) pour
      obtenir Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d.
   2. Grille log-ω uniforme dense (n_z points).
   3. Évaluation du modèle analytique Z_randles_full sur cette grille dense
-     (pas d'interpolation des données expérimentales).
+     (pas d'interpolation des données expérimentales) — c'est le "spectre
+     idéal" du papier.
   4. Déconvolution de Fredholm dans l'espace de Fourier, filtre Wiener,
      avec détection explicite des bornes spectrales utiles (limeta1/limeta2),
      appliquée sur Im(Z) du modèle analytique.
   5. Détection des maxima locaux de |γ(τ)| (fenêtre l=300, seuil max/e^10).
   6. Extraction de Rct selon la convention Bissessur (avant-dernier pic si
-     ≥2 pics, intégrale trapèze sur ±3 en ln(τ)).
+     ≥2 pics, intégrale trapèze sur ±3 en ln(τ)) — sert à l'étude des lois
+     MAD, pas à une comparaison indépendante avec Rct_randles.
   7. Reconstruction de Z (modèle analytique + DRT) comparée aux données
      expérimentales réelles pour le χ² et l'erreur de reconstruction.
 """
@@ -78,11 +96,15 @@ def _local_maxima(gamma: np.ndarray, l: int = 300, threshold: float = 0.0) -> li
 
 class DRTFFTModel(BaseFitModel):
     """DRT par déconvolution FFT directe (filtre Wiener, Bissessur et al. PRE 2026),
-    appliquée sur le modèle Randles analytique ajusté (pas sur les données brutes)."""
+    appliquée sur un SPECTRE IDÉAL reconstruit depuis le modèle Randles ajusté
+    (pas sur les données brutes). Outil d'étude théorique des lois MAD
+    (section III.C du papier) — n'est pas une DRT indépendante du fit Randles.
+    Pour la DRT model-free utilisée comme DRT principale de l'app, voir
+    fits/drt_tikhonov.py (DRTTikhonovModel)."""
 
-    name         = "drt_fft"
-    method       = "drt_fft"
-    display_name = "DRT FFT Wiener"
+    name         = "drt_fft_ideal"
+    method       = "drt_fft_ideal"
+    display_name = "DRT FFT Wiener (spectre idéal Randles)"
 
     def initial_guess(self, spectrum: EISSpectrum, config: dict) -> dict:
         return {}

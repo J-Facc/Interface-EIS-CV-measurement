@@ -18,6 +18,7 @@ from plotting.eis_plots import (
     open_reconstruction_matplotlib_window,
     calibration_figure,
     open_calibration_matplotlib_window,
+    params_table_figure,
 )
 from core.cv_peaks import detect_redox_peaks
 from plotting.cv_plots import (
@@ -140,7 +141,7 @@ def _render_drt_tab(sessions: dict) -> None:
                 excluded = [False] * len(reps)
                 elec_excl[sel_label] = excluded
 
-            rep_frs = [sp.fit_results.get("drt_fft") for sp in reps]
+            rep_frs = [sp.fit_results.get("drt_tikhonov") for sp in reps]
             rep_frs_valid = [fr for fr in rep_frs if fr is not None]
 
             st.plotly_chart(
@@ -173,6 +174,12 @@ def _render_reconstruction_tab(sessions: dict) -> None:
     """Onglet 3 — Reconstructions Nyquist (Randles vs DRT)."""
     st.subheader("Reconstructions Nyquist — Randles vs DRT")
 
+    # (0) niveau paramètre : Rct_randles vs Rct_drt par étape et modèle
+    st.markdown("**Comparaison des paramètres (Rct)**")
+    for e, session in sorted(sessions.items()):
+        st.caption(f"Électrode {e}")
+        st.plotly_chart(params_table_figure(session), width='stretch', key=f"params_table_e{e}")
+
     # (a) comparaison moyenne probe, toutes électrodes
     st.plotly_chart(reconstruction_comparison_figure(sessions), width='stretch', key="recon_multi")
 
@@ -184,7 +191,7 @@ def _render_reconstruction_tab(sessions: dict) -> None:
             session = sessions[e]
             if session.probe is not None:
                 fr_r = session.probe.fit_results.get("randles_full")
-                fr_d = session.probe.fit_results.get("drt_fft")
+                fr_d = session.probe.fit_results.get("drt_tikhonov")
                 st.plotly_chart(
                     drt_reconstruction_figure_dual(
                         session.probe, fr_drt=fr_d, fr_randles=fr_r, label="Probe (moyenne)",
@@ -211,7 +218,7 @@ def _render_reconstruction_tab(sessions: dict) -> None:
                 )
                 rep_sp = reps[rep_idx - 1]
                 fr_r = rep_sp.fit_results.get("randles_full")
-                fr_d = rep_sp.fit_results.get("drt_fft")
+                fr_d = rep_sp.fit_results.get("drt_tikhonov")
                 st.plotly_chart(
                     drt_reconstruction_figure_dual(
                         rep_sp, fr_drt=fr_d, fr_randles=fr_r,

@@ -133,7 +133,7 @@ def _render_eis_sidebar() -> tuple:
         "randles_constrained": "Randles contraint",
         "randles_full": "Randles complet",
         "drt_tikhonov": "DRT Tikhonov + NNLS",
-        "drt_fft": "DRT FFT Wiener",
+        "drt_fft_ideal": "DRT FFT Wiener (spectre idéal Randles)",
     }
     active_models: list = []
     for mname, mlabel in _model_choices.items():

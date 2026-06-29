@@ -35,7 +35,7 @@ streamlit run app.py
 3. Pour les fichiers `hybridization`, saisir la concentration en mantisse × 10ˣ M.
 4. **Sélectionner** les modèles de fit.
 5. Cliquer sur **▶ Analyser**.
-6. Explorer les onglets : Nyquist · Bode · DRT · Paramètres · Calibration · Export.
+6. Explorer les onglets : Validation KK · Courbes DRT · Reconstructions Nyquist · Calibration · Export.
 
 ## Format des fichiers d'entrée
 
@@ -51,7 +51,17 @@ streamlit run app.py
 | Fit circulaire | Lecture géométrique — aucun paramètre physique |
 | Randles contraint | Re fixé, ZD0 ∝ Fv^(−1/3), 3 paramètres libres |
 | Randles complet | 8 paramètres libres, pondération Modulus |
-| DRT Tikhonov | Distribution des temps de relaxation, λ auto |
+| DRT Tikhonov + NNLS (`drt_tikhonov`) | **DRT principale**, model-free : appliquée directement sur les données expérimentales déposées via l'import, via le cœur de calcul de [pyDRTtools](https://github.com/ciuccislab/pyDRTtools) (RBF gaussienne + Tikhonov ordre 1, vendoré dans `fits/_pydrttools/`, MIT — voir `THIRD_PARTY_LICENSES.md`), λ sélectionné automatiquement par rGCV, γ(τ) ≥ 0 par QP sous contrainte de positivité (cvxopt) |
+| DRT FFT/Wiener spectre idéal (`drt_fft_ideal`) | Outil d'étude théorique des lois d'échelle MAD — recalcule la DRT exacte du modèle Randles déjà fitté, n'analyse pas les données brutes de façon indépendante |
+
+DRT Tikhonov et DRT FFT/Wiener implémentent les deux méthodes distinctes
+décrites dans Bissessur, Man, Gamby, *Use of an approach with a distribution
+of relaxation times for impedance analysis of a channel electrode in
+microfluidics*, Phys. Rev. E **113**, 025502 (2026), DOI: 10.1103/fn2s-z364
+(sections III.B et III.C respectivement). L'onglet "Reconstructions Nyquist"
+compare Rct_randles et Rct_drt (paramètre et reconstruction), l'onglet
+"Calibration" trace une régression log(Rct) vs log([c]) séparée pour chaque
+méthode.
 
 ## Tests
 
