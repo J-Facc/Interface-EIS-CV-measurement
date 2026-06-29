@@ -111,8 +111,37 @@ def _solve_nnls(A: np.ndarray, b: np.ndarray, L: np.ndarray, lam: float) -> np.n
     return x
 
 
+def _menger_curvature(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Discrete curvature of a curve via the Menger formula on consecutive
+    triplets — robust to the local noise that plagues np.gradient-based
+    finite-difference curvature on short, sparsely-sampled L-curves."""
+    n = len(x)
+    kappa = np.zeros(n)
+    for i in range(1, n - 1):
+        x1, y1, x2, y2, x3, y3 = x[i - 1], y[i - 1], x[i], y[i], x[i + 1], y[i + 1]
+        area2 = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
+        d12 = np.hypot(x2 - x1, y2 - y1)
+        d23 = np.hypot(x3 - x2, y3 - y2)
+        d13 = np.hypot(x3 - x1, y3 - y1)
+        denom = d12 * d23 * d13
+        kappa[i] = 2.0 * abs(area2) / denom if denom > 1e-30 else 0.0
+    return kappa
+
+
 def _select_lambda(A: np.ndarray, b: np.ndarray, L: np.ndarray, lambdas: np.ndarray) -> float:
-    """Pick lambda at the L-curve corner (max curvature in log-log residual/roughness)."""
+    """Pick lambda at the L-curve corner (max Menger curvature in log-log
+    residual/roughness).
+
+    The corner search excludes the extreme ends of the lambda sweep
+    (``edge_frac`` on each side): on sparse, noisy real EIS data the
+    residual-vs-lambda curve is nearly flat near lambda -> 0 (the
+    discretization is heavily under-determined and many near-degenerate
+    solutions fit the noise equally well), so a naive argmax-curvature can
+    lock onto a spurious near-zero-curvature point at the boundary and pick
+    a far too small lambda — producing a sparse "comb" of isolated NNLS
+    spikes instead of a smooth gamma(tau). Excluding the boundary keeps the
+    corner search within the region where the L-curve shape is meaningful.
+    """
     res_norms, rough_norms = [], []
     for lam in lambdas:
         x = _solve_nnls(A, b, L, lam)
@@ -123,22 +152,20 @@ def _select_lambda(A: np.ndarray, b: np.ndarray, L: np.ndarray, lambdas: np.ndar
     res_norms = np.asarray(res_norms)
     rough_norms = np.asarray(rough_norms)
     valid = (res_norms > 0) & (rough_norms > 0)
-    if valid.sum() < 3:
+    if valid.sum() < 5:
         return float(lambdas[len(lambdas) // 2])
 
     x_l = np.log(res_norms[valid])
     y_l = np.log(rough_norms[valid])
     lam_valid = lambdas[valid]
 
-    # Discrete curvature of the (x_l, y_l) curve, pick max as L-curve corner.
-    if len(x_l) < 3:
-        return float(lam_valid[0])
-    dx = np.gradient(x_l)
-    dy = np.gradient(y_l)
-    ddx = np.gradient(dx)
-    ddy = np.gradient(dy)
-    curvature = np.abs(dx * ddy - dy * ddx) / np.power(dx ** 2 + dy ** 2 + 1e-30, 1.5)
-    best = int(np.argmax(curvature))
+    kappa = _menger_curvature(x_l, y_l)
+    n = len(lam_valid)
+    margin = max(1, int(round(n * 0.15)))
+    if n - 2 * margin >= 1:
+        kappa[:margin] = -np.inf
+        kappa[n - margin:] = -np.inf
+    best = int(np.argmax(kappa))
     return float(lam_valid[best])
 
 
@@ -187,9 +214,17 @@ class DRTTikhonovModel(BaseFitModel):
         if tau_hi <= tau_lo:
             tau_lo, tau_hi = tau_lo_data, tau_hi_data
 
+        # Le nombre de points de la grille tau est borné par la densité réelle
+        # des données : au-delà de ~1 point tau par point expérimental, les
+        # colonnes du noyau de Fredholm deviennent quasi-colinéaires
+        # (cond(A) croît de plusieurs ordres de grandeur, ex. 1.6e6 à n_tau=40
+        # contre 215 à n_tau=15 pour 40 points expérimentaux), et même avec
+        # une régularisation Tikhonov ordre 2, NNLS retombe sur un "peigne"
+        # de pics isolés au lieu d'une distribution lisse. On ne dimensionne
+        # donc plus la grille uniquement sur le nombre de décades couvertes.
         n_decades = max(np.log10(tau_hi / tau_lo), 0.5)
         n_tau = max(n_tau_cfg, int(np.ceil(10 * n_decades)))
-        n_tau = min(n_tau, 400)
+        n_tau = min(n_tau, 400, max(10, len(omega)))
         tau = np.geomspace(tau_lo, tau_hi, n_tau)
         ln_tau = np.log(tau)
         dln_tau = (ln_tau[-1] - ln_tau[0]) / (n_tau - 1) if n_tau > 1 else 1.0
@@ -209,7 +244,7 @@ class DRTTikhonovModel(BaseFitModel):
         lambda_auto = bool(_cfg_get(config, "lambda_auto", True))
         if lambda_auto and L.shape[0] > 0:
             scale = float(np.linalg.norm(A))
-            lambdas = np.geomspace(1e-6 * scale, 1.0 * scale, 25)
+            lambdas = np.geomspace(1e-5 * scale, 5.0 * scale, 40)
             lam = _select_lambda(A, b, L, lambdas)
         else:
             lam = float(_cfg_get(config, "lambda_fixed", 1e-3)) * float(np.linalg.norm(A))

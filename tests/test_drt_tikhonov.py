@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from fits.drt_tikhonov import DRTTikhonovModel
+from fits.physics import Z_randles_full
 from core.models import EISSpectrum
 
 _CONFIG = {
@@ -87,3 +88,50 @@ def test_drt_lambda_auto_no_crash_on_noisy_data(R0, R1, C1, noise):
     assert np.all(np.asarray(result.drt_gamma) >= -1e-9)
     assert np.isfinite(result.Rct)
     assert np.isfinite(result.reconstruction_error)
+
+
+def _randles_spectrum(Re=20.0, Re_prime=5.0, Cb=1e-7, Rct=800.0, Qdl=1e-6,
+                       alpha=0.9, R_D=200.0, tau_d=0.05, n=40, noise=0.02,
+                       seed=0) -> EISSpectrum:
+    """Synthetic 8-parameter Randles spectrum, sparsely sampled (~30-50 pts)
+    with a realistic gaussian noise floor on Zre/Zim — close to a real EIS
+    measurement, unlike the clean analytic R//C case above."""
+    rng = np.random.default_rng(seed)
+    f = np.geomspace(0.1, 1e5, n)
+    omega = 2.0 * np.pi * f
+    Z = Z_randles_full(omega, Re, Re_prime, Cb, Rct, Qdl, alpha, R_D, tau_d)
+    Zre, Zim = Z.real, -Z.imag
+    Zmag = np.abs(Z)
+    Zre = Zre + rng.normal(0, noise * Zmag, n)
+    Zim = Zim + rng.normal(0, noise * Zmag, n)
+    return EISSpectrum(
+        label="randles", f=f, Zre=Zre, Zim=Zim,
+        concentration=1e-9, step="hybridization", n_points=n,
+    )
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3, 4])
+def test_drt_no_periodic_comb_on_noisy_real_like_randles_spectrum(seed):
+    """Non-regression: on a sparse (~40 pt), noisy (2%) Randles-derived
+    spectrum — representative of a real EIS measurement, not the clean
+    analytic case — gamma(tau) must stay a small number of smooth humps,
+    not a periodic comb of isolated NNLS spikes (the under-regularization
+    bug previously caused by an L-curve lambda selection landing in the
+    near-degenerate low-lambda boundary, compounded by a tau grid much
+    finer than the data could resolve)."""
+    sp = _randles_spectrum(n=40, noise=0.02, seed=seed)
+    result = DRTTikhonovModel().fit(sp, {"fit": {"drt": {"lambda_auto": True}}})
+    gamma = np.asarray(result.drt_gamma)
+
+    # Count contiguous runs whose amplitude exceeds 5% of the global max: a
+    # comb produces many short isolated runs of comparable amplitude; a
+    # well-regularized DRT produces at most 1-2 genuine humps (Rct||CPE peak,
+    # possibly a diffusion peak) plus, at most, a negligible low-amplitude
+    # edge ripple (<5% of the peak) that this threshold filters out.
+    mask = gamma > gamma.max() * 0.05
+    n_runs = int(np.sum(mask[1:] & ~mask[:-1])) + (1 if mask[0] else 0)
+
+    assert n_runs <= 2, f"gamma(tau) a {n_runs} pics significatifs — motif en peigne suspect"
+    assert np.all(gamma >= -1e-9)
+    assert np.isfinite(result.reconstruction_error)
+    assert result.reconstruction_error < 0.4
