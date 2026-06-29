@@ -18,6 +18,7 @@ from plotting.eis_plots import (
     open_reconstruction_matplotlib_window,
     calibration_figure,
     open_calibration_matplotlib_window,
+    params_table_figure,
 )
 from core.cv_peaks import detect_redox_peaks
 from plotting.cv_plots import (
@@ -172,6 +173,12 @@ def _render_drt_tab(sessions: dict) -> None:
 def _render_reconstruction_tab(sessions: dict) -> None:
     """Onglet 3 — Reconstructions Nyquist (Randles vs DRT)."""
     st.subheader("Reconstructions Nyquist — Randles vs DRT")
+
+    # (0) niveau paramètre : Rct_randles vs Rct_drt par étape et modèle
+    st.markdown("**Comparaison des paramètres (Rct)**")
+    for e, session in sorted(sessions.items()):
+        st.caption(f"Électrode {e}")
+        st.plotly_chart(params_table_figure(session), width='stretch', key=f"params_table_e{e}")
 
     # (a) comparaison moyenne probe, toutes électrodes
     st.plotly_chart(reconstruction_comparison_figure(sessions), width='stretch', key="recon_multi")

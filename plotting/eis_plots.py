@@ -508,28 +508,49 @@ def params_table_figure(session: EISSession) -> go.Figure:
             return "—"
         return f"{fr.Rct:.1f} Ω"
 
+    def _rct_val(fit_results: dict, model: str):
+        fr = fit_results.get(model)
+        if fr is None or fr.Rct <= 0:
+            return None
+        return float(fr.Rct)
+
+    has_comparison = "randles_full" in model_names and "drt_tikhonov" in model_names
+
+    def _delta_str(fit_results: dict) -> str:
+        r_randles = _rct_val(fit_results, "randles_full")
+        r_drt = _rct_val(fit_results, "drt_tikhonov")
+        if r_randles is None or r_drt is None:
+            return "—"
+        rel_err = abs(r_randles - r_drt) / abs(r_randles)
+        return f"{rel_err * 100:.1f}%"
+
     step_col: list = []
     model_cols: list = [[] for _ in model_names]
+    delta_col: list = []
+
+    def _append_row(step_label: str, fit_results: dict) -> None:
+        step_col.append(step_label)
+        for i, m in enumerate(model_names):
+            model_cols[i].append(_rct_str(fit_results, m))
+        if has_comparison:
+            delta_col.append(_delta_str(fit_results))
 
     if session.bare is not None:
-        step_col.append("Bare")
-        for i, m in enumerate(model_names):
-            model_cols[i].append(_rct_str(session.bare.fit_results, m))
+        _append_row("Bare", session.bare.fit_results)
 
     if session.probe is not None:
-        step_col.append("Probe")
-        for i, m in enumerate(model_names):
-            model_cols[i].append(_rct_str(session.probe.fit_results, m))
+        _append_row("Probe", session.probe.fit_results)
 
     for grp in session.groups:
-        step_col.append(f"{grp.concentration:.2e} M")
-        for i, m in enumerate(model_names):
-            model_cols[i].append(_rct_str(grp.fit_results, m))
+        _append_row(f"{grp.concentration:.2e} M", grp.fit_results)
 
     n_rows = len(step_col)
     row_colors = ["#EEF0F8" if i % 2 == 0 else "#FFFFFF" for i in range(n_rows)]
     header_values = ["Étape"] + model_names
     cell_values = [step_col] + model_cols
+    if has_comparison:
+        header_values = header_values + ["Écart relatif Randles/DRT"]
+        cell_values = cell_values + [delta_col]
 
     fig = go.Figure(data=[go.Table(
         header=dict(values=header_values, fill_color="#4472C4",
@@ -538,7 +559,7 @@ def params_table_figure(session: EISSession) -> go.Figure:
                    fill_color=[row_colors] * len(header_values),
                    align="left", font=dict(size=11)),
     )])
-    fig.update_layout(title="Rct par étape et modèle")
+    fig.update_layout(title="Rct par étape et modèle — Randles (paramétrique) vs DRT (model-free)")
     return fig
 
 
