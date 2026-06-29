@@ -287,9 +287,9 @@ def export_cv_calibration_csv_multi(cv_sessions: dict) -> bytes:
 # ── DRT — export multi-électrode, multi-spectre, multi-réplicat ──────────────
 
 def export_drt_csv(sessions: dict) -> bytes:
-    """Exporte les valeurs DRT (ln_tau, ln_gamma) du modèle 'drt_fft', pour
-    chaque électrode, chaque spectre (bare/probe/groupes) et chaque réplicat
-    retenu."""
+    """Exporte les valeurs DRT (ln_tau, ln_gamma) du modèle 'drt_tikhonov'
+    (DRT model-free, principale de l'app), pour chaque électrode, chaque
+    spectre (bare/probe/groupes) et chaque réplicat retenu."""
     sessions = _as_sessions_dict(sessions)
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -306,7 +306,7 @@ def export_drt_csv(sessions: dict) -> bytes:
 
         for label, conc, reps in spectra_by_label:
             for ri, sp in enumerate(reps or []):
-                fr = sp.fit_results.get("drt_fft")
+                fr = sp.fit_results.get("drt_tikhonov")
                 if fr is None:
                     continue
                 tau = getattr(fr, "drt_tau", None)
@@ -347,8 +347,9 @@ def export_normalization_csv(normalized: dict) -> bytes:
 # ── Reconstructions Randles/DRT vs mesure ─────────────────────────────────────
 
 def export_reconstruction_csv(sessions: dict) -> bytes:
-    """Exporte, pour chaque électrode/spectre/méthode (randles_full, drt_fft),
-    les valeurs mesurées et reconstruites et l'erreur de reconstruction."""
+    """Exporte, pour chaque électrode/spectre/méthode (randles_full,
+    drt_tikhonov), les valeurs mesurées et reconstruites et l'erreur de
+    reconstruction."""
     sessions = _as_sessions_dict(sessions)
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -368,7 +369,7 @@ def export_reconstruction_csv(sessions: dict) -> bytes:
             spectra.append((grp.spectrum.label, grp.concentration, grp.spectrum))
 
         for label, conc, sp in spectra:
-            for model in ("randles_full", "drt_fft"):
+            for model in ("randles_full", "drt_tikhonov"):
                 fr = sp.fit_results.get(model)
                 if fr is None:
                     continue

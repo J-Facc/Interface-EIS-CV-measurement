@@ -140,7 +140,7 @@ def _render_drt_tab(sessions: dict) -> None:
                 excluded = [False] * len(reps)
                 elec_excl[sel_label] = excluded
 
-            rep_frs = [sp.fit_results.get("drt_fft") for sp in reps]
+            rep_frs = [sp.fit_results.get("drt_tikhonov") for sp in reps]
             rep_frs_valid = [fr for fr in rep_frs if fr is not None]
 
             st.plotly_chart(
@@ -184,7 +184,7 @@ def _render_reconstruction_tab(sessions: dict) -> None:
             session = sessions[e]
             if session.probe is not None:
                 fr_r = session.probe.fit_results.get("randles_full")
-                fr_d = session.probe.fit_results.get("drt_fft")
+                fr_d = session.probe.fit_results.get("drt_tikhonov")
                 st.plotly_chart(
                     drt_reconstruction_figure_dual(
                         session.probe, fr_drt=fr_d, fr_randles=fr_r, label="Probe (moyenne)",
@@ -211,7 +211,7 @@ def _render_reconstruction_tab(sessions: dict) -> None:
                 )
                 rep_sp = reps[rep_idx - 1]
                 fr_r = rep_sp.fit_results.get("randles_full")
-                fr_d = rep_sp.fit_results.get("drt_fft")
+                fr_d = rep_sp.fit_results.get("drt_tikhonov")
                 st.plotly_chart(
                     drt_reconstruction_figure_dual(
                         rep_sp, fr_drt=fr_d, fr_randles=fr_r,
