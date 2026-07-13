@@ -18,15 +18,14 @@ def _detect_separator(sample: str) -> str:
 
 
 def _find_column(columns: list[str], aliases: set[str]) -> str | None:
+    # Match exact sur le nom nettoyé (unité après '/' retirée), p. ex.
+    # "Ewe/V" -> "ewe", "I/mA" -> "i", "current/µA" -> "current".
+    # Pas de repli "sous-chaîne" : il acceptait à tort des colonnes comme
+    # "voltage_x" (contient "voltage"/"e") ou "time" (contient "i"), d'où de
+    # faux positifs silencieux sur des fichiers sans vraie colonne E/I.
     for col in columns:
         if col.strip().lower().split("/")[0].strip() in aliases:
             return col
-    # looser: alias is a substring
-    for col in columns:
-        lower = col.strip().lower()
-        for alias in aliases:
-            if alias in lower:
-                return col
     return None
 
 
