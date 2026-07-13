@@ -81,12 +81,15 @@ if not exist "!STREAMLIT_EXE!" (
 if exist "%APP_DIR%\requirements.txt" (
     echo Installation requirements.txt...
     "!VENV_DIR!\Scripts\pip.exe" install -r "%APP_DIR%\requirements.txt" --disable-pip-version-check
-    echo pip errorlevel : !errorlevel!
+    if !errorlevel! neq 0 (
+        echo ERREUR : echec de l'installation des dependances pip. Verifiez votre connexion.
+        pause
+        exit /b 1
+    )
 ) else (
     echo requirements.txt introuvable dans !APP_DIR!
 )
 echo Dependances OK - passage au lancement...
-)
 
 :: 5. Verifier app.py et lancer
 echo [5/5] Lancement...
