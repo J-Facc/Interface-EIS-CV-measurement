@@ -4,12 +4,18 @@ import pkgutil
 from typing import List
 import fits
 from fits.base import BaseFitModel
+from core.logger import get_logger
+
+log = get_logger("registry")
 
 _registry: dict = {}
+# I6 : modèle non chargé → raison, au lieu de disparaître en silence.
+# ex. {"drt_tikhonov": "No module named 'cvxopt'"}. Exposé via discovery_errors().
+_errors: dict = {}
 
 def _discover() -> None:
     """Import all submodules in fits/ and register BaseFitModel subclasses."""
-    if _registry:
+    if _registry or _errors:
         return
     skip = {"base", "physics", "registry", "kk_validation"}
     for _finder, mod_name, _ispkg in pkgutil.iter_modules(fits.__path__):
@@ -18,7 +24,11 @@ def _discover() -> None:
         full_name = f"fits.{mod_name}"
         try:
             module = importlib.import_module(full_name)
-        except Exception:
+        except Exception as exc:
+            # Ne pas faire disparaître le modèle en silence : logguer + mémoriser
+            # la raison pour que l'UI puisse l'afficher (I6).
+            _errors[mod_name] = str(exc)
+            log.warning(f"Modèle '{mod_name}' non chargé : {exc}")
             continue
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
@@ -35,11 +45,21 @@ def all_models() -> List[BaseFitModel]:
     _discover()
     return list(_registry.values())
 
+def discovery_errors() -> dict:
+    """Modules de fits/ qui n'ont pas pu être importés → raison (I6).
+
+    Permet à l'UI d'afficher « modèle X indisponible : <raison> » au lieu de
+    laisser l'utilisateur croire qu'il n'existe que N modèles.
+    """
+    _discover()
+    return dict(_errors)
+
 def get_model(name: str) -> BaseFitModel:
     _discover()
     if name not in _registry:
+        hint = f" Modules en échec : {_errors}." if _errors else ""
         raise KeyError(
             f"Fit model '{name}' not found. "
-            f"Available: {sorted(_registry.keys())}"
+            f"Available: {sorted(_registry.keys())}.{hint}"
         )
     return _registry[name]
