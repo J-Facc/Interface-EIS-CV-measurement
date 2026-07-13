@@ -8,7 +8,26 @@
 
 ---
 
-## 1. Résumé exécutif (10 lignes)
+## ⚠️ Fil rouge de l'audit — « un résultat faux, jamais annoncé »
+
+Le motif dominant de ce projet n'était pas le crash bruyant, mais l'**échec
+silencieux** : un composant produit (ou laisse passer) un résultat faux **sans
+jamais le signaler**. Tous corrigés :
+
+| ID | Où | Ce qui était faux, en silence |
+|----|----|-------------------------------|
+| **B1** | `randles_full` | Résidu imaginaire au mauvais signe → Rct biaisé/effondré, **χ²=2e6 jamais lu**. |
+| **V1** | `cv_loader` | Matching de colonnes trop permissif → le **temps chargé comme courant**, aucune erreur. |
+| **V3** | `.gitignore` | Paquet source `exports/` ignoré → `ModuleNotFoundError` chez l'utilisateur ; git n'a rien dit, il a juste ignoré. Le remède documenté entretenait la cause. |
+| **I6** | `fits/registry` | Import de modèle échoué (`cvxopt`) → modèle **évaporé**, l'utilisateur croyait qu'il n'en existait que 2. |
+| **I7** | fits → UI | Fit non convergé / résidu énorme / paramètre en butée → visible nulle part, seulement `converged` dans les logs. |
+
+La parade est désormais structurelle : `registry.discovery_errors()`, `FitResult.warnings`
++ 3 gardes (dont χ²/résidu et butée de borne — celles qui **auraient crié B1**), bandeaux UI.
+
+---
+
+## 1. Résumé exécutif
 
 Le projet est globalement bien structuré : le cloisonnement des couches est **respecté**
 (aucun import Streamlit dans `core/`, `fits/`, `plotting/`, `exports/`), chaque paquet a son
@@ -42,6 +61,9 @@ surtout des items de propreté (duplication, code mort, doc).**
 | `refactor(calibration)` | **I5** | `core/calibration.py` source unique ; `calibration_figure`, `calibration_drt_figure`, fenêtre matplotlib et `export_calibration_csv` branchés dessus ; `plotting/` ne calcule plus la calibration EIS ; test figure==export==core. |
 | `refactor(calibration)` | **I5b** | Calibration **CV** factorisée (`compute_cv_calibration`) ; 2 exports CV branchés ; `scipy` retiré d'`exporter.py`. Test export CV==core. |
 | `feat(diagnostics)` | **I6, I7** | Échecs silencieux rendus visibles (même classe que B1/V1) : modèles non chargés → bandeau UI + raison (`discovery_errors`) ; avertissements de fit (non convergé, résidu > 10 %, paramètre en butée) remontés à l'UI. Ces 3 gardes auraient signalé B1. |
+| `fix(vcs)` | **V3** | `.gitignore` ne masque plus le paquet source `exports/`. Vérifié : aucun autre paquet ignoré ; `git archive` (= ZIP GitHub de `launch.bat`) contient bien `exports/__init__.py`. |
+| `chore(ui)` | **I8** | Orphelins `ui/sidebar.py` + `ui/data_input.py` supprimés (jamais importés). |
+| `docs+labels` | **C9, C10, C11** | ARCHITECTURE.md réaligné sur l'état réel (pages, 3 modèles, `validate.yml`, `exports/`, rituel `__init__.py` retiré) ; label « DRT Tikhonov (QP) » ; `yerr` simplifié. |
 
 **Mesure B1 avant/après** (jeu synthétique à vérité-terrain, chemin réel loader→pipeline) :
 
@@ -64,7 +86,13 @@ est donc **déplacé en optionnel** (`requirements-optional.txt`, `pip install -
 et non supprimé ; l'utilisateur qui en a besoin l'installe et le fallback revit. Message d'erreur rendu
 actionnable si `eclabfiles` échoue et galvani absent (au lieu d'une `ImportError` brute).
 
-Reste non traité : **V3** (`.gitignore` ignore le paquet `exports/` — à valider), **I8** (fichiers orphelins), **C1–C12** (config morte, thème dark mort, doc…).
+**Tous les BLOQUANT/IMPORTANT sont traités** (B1, B2, B3, I1–I8, I2b, V1, V3). Reste
+uniquement de la **propreté cosmétique** : **C1** (config morte), **C2** (thème dark non
+câblé), **C3** (`drt_lambda_diag_figure` lit des params jamais produits), **C4** (dédup
+`_local_maxima`/extraction Rct entre les 2 DRT), **C5** (`theta_EIS`/`Cdl_brug`/`Rct_bare_theory`
+appelés seulement par les tests), **C8** (fits séquentiels, `drt_fft` re-fitte Randles, pas de
+cache Streamlit), **C12** (`print()` vendoré — **ne pas toucher**), + fichiers racine sans
+extension `project` / `Reference_maintenance` (à documenter ou ranger).
 
 ---
 
@@ -88,8 +116,8 @@ Reste non traité : **V3** (`.gitignore` ignore le paquet `exports/` — à vali
 | I5b ✅ | **IMPORTANT** | `exports/exporter.py` | Calibration **CV** (`export_cv_calibration_csv`, `_multi`) réimplémentait `nanmean(delta_signal)` + `linregress`. | **Appliqué** : `compute_cv_calibration` dans `core/calibration.py`, 2 exports branchés, `scipy` retiré. `_from_result` (source dict de page) laissé tel quel. | Faible. |
 | I6 ✅ | **IMPORTANT** | `fits/registry.py:19-21` | `_discover` faisait `except Exception: continue` : un modèle qui échoue à l'import (ex. `cvxopt` absent → `drt_tikhonov`) **disparaissait sans un mot**. | **Appliqué** : logge + mémorise la raison (`discovery_errors()`) ; `pages/A_eis.py` affiche « Modèle X indisponible : <raison> » et retire le modèle de l'analyse. | Faible. |
 | I7 ✅ | **IMPORTANT** | `fits/randles_full.py` + `pages/A_eis.py` | Échecs de fit avalés : seul `converged` (dans les logs), pas d'alerte UI. Un fit pouvait « converger » avec χ²=2e6 (le signal muet de B1). | **Appliqué** : `FitResult.warnings` + 3 gardes (non convergé ; résidu relatif > 10 % ; paramètre à < 1 % d'une borne) ; bandeau « Diagnostics d'ajustement » dans l'UI. | Faible. |
-| V3 ⬜ | **IMPORTANT** | `.gitignore` | **`exports/` est ignoré par `.gitignore`** alors que c'est un **paquet source** (`exports/exporter.py`, `__init__.py`). Les fichiers déjà suivis survivent, mais **tout nouveau module sous `exports/` ne serait pas commité** (`git add` sans `-f`) → exactement le `ModuleNotFoundError: No module named 'exports'` listé dans ARCHITECTURE.md §9. Découvert via l'avertissement `git add` pendant I5b. | Retirer `exports/` du `.gitignore` (ou le remplacer par un chemin de sortie dédié si un dossier d'export disque était visé). | Faible mais piège latent — **à valider avant correction**. |
-| I8 | **IMPORTANT** | `ui/sidebar.py`, `ui/data_input.py` | **Fichiers orphelins** : `render_sidebar` / `data_input` ne sont importés nulle part (seul `ui/tabs.py` est utilisé, via `pages/A_eis.py` et `B_cv.py`). Code mort complet. | Supprimer après confirmation. | Faible (à confirmer qu'aucune page future ne les vise). |
+| V3 ✅ | **IMPORTANT** | `.gitignore` | **`exports/` ignoré par `.gitignore`** alors que c'est un **paquet source**. Fichiers suivis survivaient, mais tout **nouveau module sous `exports/` n'aurait pas été commité** → le `ModuleNotFoundError: No module named 'exports'` documenté depuis toujours (dont le « remède » recréer `__init__.py` entretenait la cause). | **Appliqué** : ligne retirée. Aucun autre paquet source ignoré (vérifié) ; `git archive` (= ZIP `launch.bat`) contient `exports/__init__.py`. | Faible. |
+| I8 ✅ | **IMPORTANT** | `ui/sidebar.py`, `ui/data_input.py` | **Fichiers orphelins** : `render_sidebar` / `render_data_input` importés nulle part (vérifié sur tout le repo, `ui/__init__.py` vide inclus). | **Appliqué** : supprimés. Suite verte. | Faible. |
 | C1 | COSMÉTIQUE | `core/config.py:41-43,52,60-63,13-26` | **Config morte** : `n_monte_carlo`, `drt.{n_tau,tau_min,tau_max}`, `export.{dpi,fig_width,fig_height}`, `physics.{D_FeII,D_FeIII}`, tout `geometry`/`conditions` ne sont lus par aucune logique d'analyse. | Retirer du YAML/Pydantic, ou brancher réellement. | Faible. |
 | C2 | COSMÉTIQUE | `plotting/eis_plots.py:325,798-806` etc. | `get_theme("light")` / `apply_theme_to_figure(fig,"light")` **codés en dur** partout → le thème sombre (`plotting/theme.py:14-21`) et le « toggle thème » de la doc sont morts. | Passer le mode en paramètre, ou supprimer la palette dark. | Faible. |
 | C3 | COSMÉTIQUE | `plotting/eis_plots.py:417-482` | `drt_lambda_diag_figure` lit des params (`_lc_lambdas`, `_gcv_*`, `lambda_lcurve`, `_str_lambda_method`) que `drt_tikhonov` ne produit jamais → figure toujours « non disponible », méthode λ toujours vide dans les titres. | Supprimer la figure ou produire ces params dans le modèle. | Faible. |
@@ -98,9 +126,9 @@ Reste non traité : **V3** (`.gitignore` ignore le paquet `exports/` — à vali
 | C6 ✅ | COSMÉTIQUE | `requirements.txt` | `lmfit` déclaré mais **jamais importé** (le fit utilise `scipy.optimize.least_squares`). | **Appliqué** : retiré. | Faible. |
 | C7 ✅ | COSMÉTIQUE | `launch.bat:81-88` | Échec de `pip install` non testé → l'app démarre avec des dépendances cassées. | **Appliqué** : `if !errorlevel! neq 0 (… & pause & exit /b 1)`. | Faible. |
 | C8 | COSMÉTIQUE | `core/pipeline.py:159-211`, `fits/drt_fft.py:127` | « 4 fits en parallèle » (doc) est en réalité **séquentiel** (3 modèles), et `drt_fft` **re-fitte Randles** en interne → Randles calculé 2× par spectre. Pas de `@st.cache_data` → re-fit complet à chaque rerun Streamlit. | Réutiliser le FitResult Randles ; envisager cache/parallélisme si le temps le justifie. | Moyen. |
-| C9 | COSMÉTIQUE | `ARCHITECTURE.md`, `Reference_maintenance`, `project` | Forte **dérive doc** : v3 décrit `render_tabs`/6 onglets/`C_comparatif.py`/modèles `randles_classique,randles_contraint,circulaire_fit`/`validate.yml` — rien de tout ça n'existe. `project` et `Reference_maintenance` (sans extension) non documentés à la racine. | Réécrire ARCHITECTURE.md sur l'état réel (pages `st.navigation`, 3 modèles). | Nul (doc). |
-| C10 | COSMÉTIQUE | `fits/drt_tikhonov.py:106` | `label = "DRT Tikhonov + NNLS"` alors que la résolution est un **QP** cvxopt (pas NNLS). | Renommer « DRT Tikhonov (QP) ». | Nul. |
-| C11 | COSMÉTIQUE | `plotting/eis_plots.py:868` | `yerr = errs*rcts/(rcts*ln10)` : les `rcts` se simplifient → `errs/ln10`. Trompeur. | Simplifier. | Nul. |
+| C9 ✅ | COSMÉTIQUE | `ARCHITECTURE.md` | Forte **dérive doc** : `render_tabs`/6 onglets/`C_comparatif.py`/modèles inexistants/`validate.yml`. | **Appliqué** : ARCHITECTURE.md réaligné (pages `st.navigation`, 3 modèles réels, fits séquentiels, `exports/` versionné, rituel `__init__.py` retiré + note d'historique). *(Reste : `project` et `Reference_maintenance` à la racine — voir Reste.)* | Nul (doc). |
+| C10 ✅ | COSMÉTIQUE | `fits/drt_tikhonov.py` | Label « DRT Tikhonov + NNLS » alors que la résolution est un **QP** cvxopt. | **Appliqué** : « DRT Tikhonov (QP) » (label, `display_name`, figure, choix UI). | Nul. |
+| C11 ✅ | COSMÉTIQUE | `plotting/eis_plots.py` | `yerr = errs*rcts/(rcts*ln10)` : les `rcts` se simplifient. | **Appliqué** : `yerr = errs/ln10`. | Nul. |
 | C12 | COSMÉTIQUE | `fits/_pydrttools/basics.py:682-707`, `parameter_selection.py:374` | `print()` de debug résiduels — **code vendoré (pyDRTtools, MIT)**. Voir « À ne pas toucher ». | Ne pas modifier (upstream). | — |
 
 ---
@@ -172,5 +200,26 @@ l'observation « courbe du bon ordre de grandeur » sur données réelles. Corri
 
 ---
 
-*Correctifs prioritaires (B1, B2, B3, I1–I4, I2b, cv_loader, C6, C7) appliqués et poussés.
-Restent des items de propreté (I5–I8, C1–C12) — à traiter sur validation.*
+## Bilan final
+
+**Corrigé & poussé** (branche `claude/eis-analyzer-audit-a2ml22`, suite **verte** — 66 tests) :
+
+- **Résultats faux/silencieux** (le fil rouge) : **B1** (signe résidu Randles), **V1** (colonnes
+  CV, temps→courant), **V3** (`.gitignore` masquait `exports/`), **I6** (modèles évaporés),
+  **I7** (diagnostics de fit remontés à l'UI : non convergé, χ²/résidu, butée de borne).
+- **Fiabilité & config** : **B2**/**C7** (launcher), **B3**/**C6** (deps), **I2**/**I2b**
+  (bornes `list[float]`, piège YAML), **I4** (lecture config), **I3** (CI pytest + 3.12),
+  **galvani** rendu optionnel (compromis assumé).
+- **Structure** : **I5**/**I5b** (calibration → `core/calibration.py`, source unique, `plotting/`
+  ne calcule plus), **I8** (orphelins supprimés).
+- **Tests** : **I1** (fixtures convention loader + bout-en-bout), gardes `test_config`,
+  `test_calibration`, `test_diagnostics`.
+- **Doc/labels** : **C9** (ARCHITECTURE.md réaligné), **C10** (label QP), **C11** (`yerr`).
+
+**Ouvert (cosmétique, sur validation)** : **C1** config morte · **C2** thème sombre non câblé ·
+**C3** `drt_lambda_diag_figure` mort · **C4** dédup DRT (`_local_maxima`/extraction Rct) ·
+**C5** fonctions physiques appelées seulement par les tests · **C8** perf (fits séquentiels,
+`drt_fft` re-fitte Randles, pas de cache) · fichiers racine `project` / `Reference_maintenance`.
+**Ne pas toucher** : **C12** (`print()` vendoré pyDRTtools) et la section ci-dessus.
+
+*Aucun BLOQUANT ni IMPORTANT ne reste ouvert.*
