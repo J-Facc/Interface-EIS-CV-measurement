@@ -4,8 +4,10 @@ import numpy as np
 import pytest
 
 from fits.physics import Z_randles_full
+from fits.randles_full import RandlesFullModel
 from fits.drt_fft import DRTFFTModel
 from fits.kk_validation import kramers_kronig_check
+from core.loader import load_spectrum
 from core.models import EISSpectrum
 
 
@@ -38,7 +40,8 @@ def _randles_spectrum(
     idx = np.argsort(f)[::-1]
     return EISSpectrum(
         label="synthetic",
-        f=f[idx], Zre=Z.real[idx], Zim=Z.imag[idx],
+        # Convention loader/EISSpectrum : Zim = -Im(Z) > 0 (demi-cercle capacitif).
+        f=f[idx], Zre=Z.real[idx], Zim=-Z.imag[idx],
         concentration=1e-9, step="hybridization",
         n_points=n,
     )
@@ -53,7 +56,8 @@ def _zarc_spectrum(R: float = 3000.0, tau0: float = 1e-3, phi: float = 0.8,
     idx = np.argsort(f)[::-1]
     return EISSpectrum(
         label="zarc",
-        f=f[idx], Zre=Z.real[idx], Zim=Z.imag[idx],
+        # Convention loader/EISSpectrum : Zim = -Im(Z) > 0 (demi-cercle capacitif).
+        f=f[idx], Zre=Z.real[idx], Zim=-Z.imag[idx],
         concentration=1e-9, step="hybridization",
         n_points=n,
     )
@@ -113,7 +117,8 @@ def _rc_spectrum(R: float = 1000.0, C: float = 1e-6, n: int = 30) -> EISSpectrum
     Z = R / (1.0 + 1j * omega * R * C)
     idx = np.argsort(f)[::-1]
     return EISSpectrum(
-        label="rc", f=f[idx], Zre=Z.real[idx], Zim=Z.imag[idx],
+        # Convention loader/EISSpectrum : Zim = -Im(Z) > 0.
+        label="rc", f=f[idx], Zre=Z.real[idx], Zim=-Z.imag[idx],
         concentration=1e-9, step="hybridization", n_points=n,
     )
 
@@ -135,3 +140,32 @@ def test_drt_fft():
     # reconstruction relative élevée même pour un Rct correctement extrait
     # (cf. test_drt_fft_randles_simple, qui valide la précision de Rct).
     assert result.reconstruction_error < 2.0
+
+
+# ── Bout-en-bout : loader → RandlesFullModel().fit (garde-fou du signe B1) ──
+
+def _eclab_csv(Rct: float, n: int = 100) -> bytes:
+    """Construit un CSV façon export EC-Lab : colonne '-Im(Z)/Ohm' POSITIVE
+    (comme les fichiers réels), pour un spectre Randles de Rct connu."""
+    omega = np.logspace(-1, 5, n)
+    f = omega / (2.0 * np.pi)
+    Z = Z_randles_full(omega, 500.0, 50.0, 1e-9, Rct, 1e-6, 0.90, 0.1, 0.5)
+    lines = ["freq/Hz,Re(Z)/Ohm,-Im(Z)/Ohm"]
+    for a, b, c in zip(f, Z.real, -Z.imag):  # -Im(Z) > 0
+        lines.append(f"{a:.6e},{b:.6e},{c:.6e}")
+    return ("\n".join(lines)).encode()
+
+
+@pytest.mark.parametrize("Rct_true", [1000.0, 3000.0, 8000.0, 30000.0])
+def test_randles_recovers_rct_end_to_end(Rct_true):
+    """Chemin réel loader → fit : le Rct ajusté doit retrouver le Rct vrai à ±5 %.
+
+    Garde-fou contre une inversion de signe du résidu imaginaire (B1) :
+    load_spectrum produit Zim = -Im(Z) > 0 ; un résidu au mauvais signe fait
+    diverger le fit (biais fort ou effondrement sur la borne basse).
+    """
+    sp = load_spectrum(_eclab_csv(Rct_true), label="e2e")
+    assert np.all(sp.Zim >= 0), "le loader doit produire Zim positif"
+    result = RandlesFullModel().fit(sp, {"fit": {"alpha_noise": 0.001, "max_iter": 10000}})
+    rel_err = abs(result.Rct - Rct_true) / Rct_true
+    assert rel_err < 0.05, f"Rct={result.Rct:.1f} vs {Rct_true:.1f} (rel_err={rel_err:.2%})"

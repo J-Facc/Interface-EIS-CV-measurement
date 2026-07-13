@@ -114,7 +114,10 @@ class RandlesFullModel(BaseFitModel):
             Z = Z_randles_full(omega, Re, Re_p, Cb, Rct, Qdl, alpha_p, R_D, tau_d)
             return np.concatenate([
                 (Z.real - spectrum.Zre) * weight,
-                (Z.imag - spectrum.Zim) * weight,
+                # spectrum.Zim suit la convention positive du loader (-Im(Z) > 0),
+                # alors que Z.imag est l'imaginaire physique (< 0) : le résidu doit
+                # comparer -Z.imag à spectrum.Zim, cohérent avec le χ² plus bas.
+                (-Z.imag - spectrum.Zim) * weight,
             ])
 
         max_iter = int(config.get("fit", {}).get("max_iter", 10000))
