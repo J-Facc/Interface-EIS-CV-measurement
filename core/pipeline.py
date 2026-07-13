@@ -28,6 +28,11 @@ def validate_session(replicate_groups: dict, config) -> dict:
     -------
     dict label → ValidationResult
     """
+    # NB : les seuils KK (mu, résidu %) sont laissés aux valeurs par défaut de
+    # core/validator.py (MU_THRESHOLD, RESIDUAL_THRESHOLD_PCT), source unique.
+    # L'ancien code lisait getattr(config, "kk_mu_threshold"/"kk_residual_pct")
+    # sur un dict → renvoyait toujours le défaut, et ces clés n'existaient ni
+    # dans le YAML ni dans Pydantic. Supprimé pour éviter une config fantôme.
     results = {}
     for label, group in replicate_groups.items():
         vr = validate_replicate_group(
@@ -35,8 +40,6 @@ def validate_session(replicate_groups: dict, config) -> dict:
             zre_list=group["zre"],
             zim_list=group["zim"],
             label=label,
-            mu_threshold=getattr(config, "kk_mu_threshold", 0.85),
-            residual_threshold_pct=getattr(config, "kk_residual_pct", 2.0),
         )
         results[label] = vr
     return results
@@ -50,7 +53,9 @@ def _build_weights(spectrum, config) -> np.ndarray:
     if spectrum.sigma_re is not None and spectrum.sigma_im is not None:
         sigma2 = np.asarray(spectrum.sigma_re)**2 + np.asarray(spectrum.sigma_im)**2
         return 1.0 / sigma2
-    alpha = getattr(config, "alpha_noise", 0.001)
+    # config est le dict de config_to_dict(load_config()) : lire par clé, pas
+    # via getattr (qui, sur un dict, renvoyait toujours 0.001 et ignorait le YAML).
+    alpha = float(config.get("fit", {}).get("alpha_noise", 0.001)) if isinstance(config, dict) else 0.001
     Z_mod = np.sqrt(np.asarray(spectrum.Zre)**2 + np.asarray(spectrum.Zim)**2)
     return 1.0 / (alpha * Z_mod)**2
 
