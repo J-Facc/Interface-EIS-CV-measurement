@@ -3,6 +3,7 @@ name: Validate app
 on:
   push:
     branches: [main]
+  pull_request:
 
 jobs:
   validate:
@@ -11,8 +12,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Check syntax
-        run: python -m py_compile app.py
+      - name: Compile all sources
+        run: python -m compileall app.py core fits plotting exports ui pages
+      - name: Run tests
+        run: python -m pytest tests/ -v
