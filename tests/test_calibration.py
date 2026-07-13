@@ -11,9 +11,14 @@ import io
 import numpy as np
 
 from core.models import EISSession, EISSpectrum, FitResult, ConcentrationGroup
-from core.calibration import compute_calibration
+from core.cv_models import CVSession, CVConcentrationGroup, CVScan
+from core.calibration import compute_calibration, compute_cv_calibration
 from plotting.eis_plots import calibration_figure
-from exports.exporter import export_calibration_csv
+from exports.exporter import (
+    export_calibration_csv,
+    export_cv_calibration_csv,
+    export_cv_calibration_csv_multi,
+)
 
 MODEL = "randles_full"
 
@@ -84,3 +89,37 @@ def test_figure_matches_core_and_export():
     # ... et l'export porte exactement les mêmes chiffres.
     slope, intercept, r2 = _export_regression({1: session})
     assert (f"{slope:.4f}", f"{intercept:.4f}", f"{r2:.4f}") == (s_str, i_str, r2_str)
+
+
+# ── I5b : calibration CV ────────────────────────────────────────────────────
+
+def _cv_session() -> CVSession:
+    s = CVSession()
+    s.probe = CVScan(label="probe", E=np.linspace(-0.5, 0.5, 5),
+                     I=np.ones(5), concentration=0.0, step="probe")
+    for conc, sig in [(1e-13, 0.10), (1e-11, 0.25), (1e-9, 0.40), (1e-7, 0.55)]:
+        scan = CVScan(label=f"c{conc}", E=np.linspace(-0.5, 0.5, 5),
+                      I=np.ones(5), concentration=conc, step="hybridization")
+        s.groups.append(CVConcentrationGroup(
+            concentration=conc, scan=scan, delta_signal=np.full(5, sig)))
+    return s
+
+
+def _cv_export_regression(csv_bytes, model_col_absent=True):
+    reader = csv.reader(io.StringIO(csv_bytes.decode()))
+    rows = list(reader)
+    header = rows[0]
+    i_slope, i_int, i_r2 = (header.index(c) for c in ("slope", "intercept", "r2"))
+    r = rows[1]
+    return float(r[i_slope]), float(r[i_int]), float(r[i_r2])
+
+
+def test_cv_export_matches_core_exactly():
+    s = _cv_session()
+    cal = compute_cv_calibration(s)
+    for exporter in (lambda: export_cv_calibration_csv(s),
+                     lambda: export_cv_calibration_csv_multi({1: s})):
+        slope, intercept, r2 = _cv_export_regression(exporter())
+        assert slope == cal.slope
+        assert intercept == cal.intercept
+        assert r2 == cal.r2
