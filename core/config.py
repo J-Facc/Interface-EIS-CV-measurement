@@ -27,14 +27,20 @@ class ConditionsSettings(BaseModel):
 
 
 class BoundsRandlesFull(BaseModel):
-    Re: list = Field(default_factory=lambda: [100.0, 100000.0])
-    Re_prime: list = Field(default_factory=lambda: [1.0, 100000.0])
-    Cb: list = Field(default_factory=lambda: [1e-12, 1e-4])
-    Rct: list = Field(default_factory=lambda: [100.0, 1e9])
-    Qdl: list = Field(default_factory=lambda: [1e-12, 1e-4])
-    alpha: list = Field(default_factory=lambda: [0.6, 1.0])
-    ZD0: list = Field(default_factory=lambda: [10.0, 1e6])
-    D_eff: list = Field(default_factory=lambda: [1e-11, 1e-8])
+    # Bornes [min, max] typees list[float] : Pydantic coerce et valide, ce qui
+    # neutralise le piege du resolveur float YAML 1.1 (ex. "1.0e+9" ou meme
+    # "1.0e9" seraient convertis en float au lieu de rester des chaines).
+    # Les cles doivent correspondre exactement a fits.randles_full._PARAM_NAMES
+    # (Re, Re_prime, Cb, Rct, Qdl, alpha, R_D, tau_d) sinon les bornes YAML de
+    # R_D/tau_d sont silencieusement ignorees au profit du fallback en dur.
+    Re: list[float] = Field(default_factory=lambda: [100.0, 100000.0])
+    Re_prime: list[float] = Field(default_factory=lambda: [1.0, 100000.0])
+    Cb: list[float] = Field(default_factory=lambda: [1e-12, 1e-4])
+    Rct: list[float] = Field(default_factory=lambda: [100.0, 1e9])
+    Qdl: list[float] = Field(default_factory=lambda: [1e-12, 1e-4])
+    alpha: list[float] = Field(default_factory=lambda: [0.6, 1.0])
+    R_D: list[float] = Field(default_factory=lambda: [10.0, 1e6])
+    tau_d: list[float] = Field(default_factory=lambda: [1e-4, 1e3])
 
 
 class DRTSettings(BaseModel):

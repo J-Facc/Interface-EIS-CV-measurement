@@ -42,12 +42,26 @@ def _read_mpr_dataframe(tmp_path: str) -> pd.DataFrame:
         log.warning(f"eclabfiles a échoué ({exc_ecf}), tentative avec galvani")
         try:
             from galvani import BioLogic
+        except ImportError:
+            # galvani est une dépendance OPTIONNELLE (cf. requirements-optional.txt) :
+            # son setup.py casse le build sur les runtimes non-Debian, on ne peut
+            # pas l'imposer en dépendance dure. Message actionnable plutôt qu'une
+            # ImportError brute pour l'utilisateur.
+            raise RuntimeError(
+                f"Lecture du fichier .mpr impossible : le lecteur principal "
+                f"eclabfiles a échoué ({exc_ecf}) et le lecteur de secours "
+                f"'galvani' n'est pas installé. Installez-le "
+                f"(pip install galvani) ou ré-exportez le fichier en CSV/TXT "
+                f"depuis EC-Lab."
+            ) from exc_ecf
+        try:
             mpr = BioLogic.MPRfile(tmp_path)
             return pd.DataFrame(mpr.data)
         except Exception as exc_galvani:
             raise RuntimeError(
                 f"Impossible de lire le fichier .mpr avec eclabfiles "
-                f"({exc_ecf}) ni avec galvani ({exc_galvani})"
+                f"({exc_ecf}) ni avec galvani ({exc_galvani}). "
+                f"Ré-exportez le fichier en CSV/TXT depuis EC-Lab."
             ) from exc_galvani
 
 
