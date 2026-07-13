@@ -313,7 +313,7 @@ def main() -> None:
                 "circular":            "Fit circulaire",
                 "randles_constrained": "Randles contraint",
                 "randles_full":        "Randles complet",
-                "drt_tikhonov":        "DRT (Tikhonov + NNLS)",
+                "drt_tikhonov":        "DRT (Tikhonov, QP)",
                 "drt_fft_ideal":       "DRT FFT (spectre idéal Randles — étude MAD)",
             }
             _displayed = {"randles_full", "drt_tikhonov"}
