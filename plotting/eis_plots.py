@@ -3,9 +3,9 @@
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from scipy import stats
 
 from core.models import EISSession, EISSpectrum
+from core.calibration import compute_calibration_all, compute_calibration_loglog
 from plotting.theme import get_theme, apply_theme_to_figure
 
 
@@ -585,39 +585,21 @@ def calibration_figure(session: EISSession) -> go.Figure:
         apply_theme_to_figure(fig, "light")
         return fig
 
-    model_names = list(probe_fr.keys())
     dashes = ["solid", "dash", "dot", "dashdot"]
 
-    # Collect per-model regression results first
+    # Calcul délégué à core/calibration.py : source unique partagée avec
+    # export_calibration_csv (pente/ordonnée/R² identiques figure ↔ export).
     model_data = []
-    for mi, model in enumerate(model_names):
-        probe_fit = probe_fr.get(model)
-        if probe_fit is None or probe_fit.Rct <= 0:
-            continue
-        probe_rct = probe_fit.Rct
-
-        concs: list = []
-        signals: list = []
-        for grp in session.groups:
-            if grp.concentration <= 0:
-                continue
-            fr = grp.fit_results.get(model)
-            if fr is None or fr.Rct <= 0:
-                continue
-            concs.append(grp.concentration)
-            signals.append(abs(probe_rct - fr.Rct) / abs(probe_rct))
-
-        if len(concs) < 2:
-            continue
-
-        log_c = np.log10(concs)
-        reg = stats.linregress(log_c, signals)
+    for mi, cal in enumerate(compute_calibration_all(session)):
         model_data.append({
-            "model": model,
-            "log_c": log_c,
-            "signals": signals,
-            "reg": reg,
-            "r2": reg.rvalue ** 2,
+            "model": cal.model,
+            "log_c": cal.log_c,
+            "signals": cal.y,
+            "slope": cal.slope,
+            "intercept": cal.intercept,
+            "r2": cal.r2,
+            "pvalue": cal.pvalue,
+            "stderr": cal.stderr,
             "color": colors[mi % len(colors)],
             "dash": dashes[mi % len(dashes)],
         })
@@ -640,15 +622,14 @@ def calibration_figure(session: EISSession) -> go.Figure:
     )
 
     for d in model_data:
-        reg = d["reg"]
         log_c = d["log_c"]
         log_c_line = np.linspace(log_c.min(), log_c.max(), 200)
-        y_line = reg.slope * log_c_line + reg.intercept
-        sign = "+" if reg.intercept >= 0 else "-"
+        y_line = d["slope"] * log_c_line + d["intercept"]
+        sign = "+" if d["intercept"] >= 0 else "-"
         legend_label = (
             f"{d['model']}  "
             f"R²={d['r2']:.3f}  "
-            f"y={reg.slope:.3f}x {sign} {abs(reg.intercept):.3f}"
+            f"y={d['slope']:.3f}x {sign} {abs(d['intercept']):.3f}"
         )
 
         # Data points
@@ -686,10 +667,10 @@ def calibration_figure(session: EISSession) -> go.Figure:
             values=[
                 [d["model"] for d in model_data],
                 [f"{d['r2']:.4f}" for d in model_data],
-                [f"{d['reg'].slope:.4f}" for d in model_data],
-                [f"{d['reg'].intercept:.4f}" for d in model_data],
-                [f"{d['reg'].pvalue:.2e}" for d in model_data],
-                [f"{d['reg'].stderr:.4f}" for d in model_data],
+                [f"{d['slope']:.4f}" for d in model_data],
+                [f"{d['intercept']:.4f}" for d in model_data],
+                [f"{d['pvalue']:.2e}" for d in model_data],
+                [f"{d['stderr']:.4f}" for d in model_data],
             ],
             fill_color=[row_colors] * 6,
             align="center",
@@ -835,18 +816,9 @@ def calibration_drt_figure(session: EISSession, model_name: str = "drt_tikhonov"
 
     Côte à côte : nuage de points + droite de régression (gauche), résidus (droite).
     """
-    concs, rcts, errs = [], [], []
-    for grp in session.groups:
-        if grp.concentration <= 0:
-            continue
-        fr = grp.fit_results.get(model_name)
-        if fr is None or fr.Rct <= 0:
-            continue
-        concs.append(grp.concentration)
-        rcts.append(fr.Rct)
-        errs.append(fr.reconstruction_error or 0.0)
-
-    if len(concs) < 2:
+    # Calcul délégué à core/calibration.py (calibration log-log Rct).
+    cal = compute_calibration_loglog(session, model_name)
+    if cal is None:
         fig = go.Figure()
         fig.add_annotation(
             text="Pas assez de points (min. 2 concentrations positives avec fit DRT).",
@@ -855,11 +827,9 @@ def calibration_drt_figure(session: EISSession, model_name: str = "drt_tikhonov"
         apply_theme_to_figure(fig, "light")
         return fig
 
-    log_c = np.log10(concs)
-    log_rct = np.log10(rcts)
-    reg = stats.linregress(log_c, log_rct)
+    log_c, log_rct, rcts, errs = cal.log_c, cal.y, cal.rcts, cal.errs
     log_c_line = np.linspace(log_c.min(), log_c.max(), 200)
-    y_line = reg.slope * log_c_line + reg.intercept
+    y_line = cal.slope * log_c_line + cal.intercept
 
     fig = make_subplots(rows=1, cols=2, subplot_titles=[
         "log(Rct) vs log([c])", "Résidus de régression",
@@ -873,11 +843,11 @@ def calibration_drt_figure(session: EISSession, model_name: str = "drt_tikhonov"
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=log_c_line, y=y_line, mode="lines",
-        name=f"R²={reg.rvalue**2:.3f}  y={reg.slope:.3f}x+{reg.intercept:.3f}",
+        name=f"R²={cal.r2:.3f}  y={cal.slope:.3f}x+{cal.intercept:.3f}",
         line=dict(color="#dc2626", width=2),
     ), row=1, col=1)
 
-    residuals = log_rct - (reg.slope * log_c + reg.intercept)
+    residuals = log_rct - (cal.slope * log_c + cal.intercept)
     fig.add_trace(go.Scatter(
         x=log_c, y=residuals, mode="markers", name="Résidus",
         marker=dict(color="#7c3aed", size=9), showlegend=False,
@@ -1284,7 +1254,6 @@ def open_calibration_matplotlib_window(sessions: dict) -> None:
     drt_tikhonov), reproduisant la logique de calibration_figure() en matplotlib.
     """
     import matplotlib.pyplot as plt
-    from scipy import stats as _stats
 
     n_graphs = max(len(sessions), 1)
     fig, axes = plt.subplots(nrows=n_graphs, ncols=1, figsize=(8, 5 * n_graphs))
@@ -1293,32 +1262,16 @@ def open_calibration_matplotlib_window(sessions: dict) -> None:
 
     for i, (e, session) in enumerate(sorted(sessions.items())):
         ax = axes[i]
-        probe_fr = getattr(session.probe, "fit_results", {}) if session.probe else {}
-        if not probe_fr:
-            ax.set_title(f"Électrode {e} — pas de probe")
+        # Calcul délégué à core/calibration.py (même source que calibration_figure).
+        cals = compute_calibration_all(session)
+        if not cals:
+            ax.set_title(f"Électrode {e} — pas de calibration")
             continue
-        for model in probe_fr:
-            probe_fit = probe_fr.get(model)
-            if probe_fit is None or probe_fit.Rct <= 0:
-                continue
-            probe_rct = probe_fit.Rct
-            concs, signals = [], []
-            for grp in session.groups:
-                if grp.concentration <= 0:
-                    continue
-                fr = grp.fit_results.get(model)
-                if fr is None or fr.Rct <= 0:
-                    continue
-                concs.append(grp.concentration)
-                signals.append(abs(probe_rct - fr.Rct) / abs(probe_rct))
-            if len(concs) < 2:
-                continue
-            log_c = np.log10(concs)
-            reg = _stats.linregress(log_c, signals)
-            ax.plot(log_c, signals, "o", label=f"{model} (données)")
-            log_c_line = np.linspace(log_c.min(), log_c.max(), 200)
-            ax.plot(log_c_line, reg.slope * log_c_line + reg.intercept, "-",
-                     label=f"{model} R²={reg.rvalue**2:.3f}")
+        for cal in cals:
+            ax.plot(cal.log_c, cal.y, "o", label=f"{cal.model} (données)")
+            log_c_line = np.linspace(cal.log_c.min(), cal.log_c.max(), 200)
+            ax.plot(log_c_line, cal.slope * log_c_line + cal.intercept, "-",
+                     label=f"{cal.model} R²={cal.r2:.3f}")
         ax.set_title(f"Calibration — Électrode {e}")
         ax.set_xlabel("log([c] / M)")
         ax.set_ylabel("|Rct_probe − Rct_c| / |Rct_probe|")

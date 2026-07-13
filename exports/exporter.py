@@ -12,6 +12,7 @@ from scipy import stats
 
 from core.models import EISSession
 from core.cv_models import CVSession
+from core.calibration import compute_calibration_all
 
 
 def _as_sessions_dict(sessions) -> dict:
@@ -150,36 +151,14 @@ def export_calibration_csv(sessions: dict) -> bytes:
         "slope", "intercept", "r2", "p_value", "std_err",
     ])
 
+    # Calcul délégué à core/calibration.py : mêmes pente/ordonnée/R² que
+    # plotting.eis_plots.calibration_figure (source unique).
     for e, session in sorted(sessions.items()):
-        probe_fr = getattr(session.probe, "fit_results", {}) if session.probe else {}
-        if not probe_fr:
-            continue
-        for model, probe_fit in probe_fr.items():
-            if probe_fit is None or probe_fit.Rct <= 0:
-                continue
-            probe_rct = probe_fit.Rct
-
-            concs, signals, rcts = [], [], []
-            for grp in session.groups:
-                if grp.concentration <= 0:
-                    continue
-                fr = grp.fit_results.get(model)
-                if fr is None or fr.Rct <= 0:
-                    continue
-                concs.append(grp.concentration)
-                rcts.append(fr.Rct)
-                signals.append(abs(probe_rct - fr.Rct) / abs(probe_rct))
-
-            if len(concs) < 2:
-                continue
-
-            log_c = [math.log10(c) for c in concs]
-            reg = stats.linregress(log_c, signals)
-
-            for conc, lc, sig, rct in zip(concs, log_c, signals, rcts):
+        for cal in compute_calibration_all(session):
+            for conc, lc, sig, rct in zip(cal.concentrations, cal.log_c, cal.y, cal.rcts):
                 writer.writerow([
-                    e, model, conc, lc, sig, rct, probe_rct,
-                    reg.slope, reg.intercept, reg.rvalue ** 2, reg.pvalue, reg.stderr,
+                    e, cal.model, conc, lc, sig, rct, cal.probe_rct,
+                    cal.slope, cal.intercept, cal.r2, cal.pvalue, cal.stderr,
                 ])
 
     return buf.getvalue().encode()
