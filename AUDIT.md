@@ -35,7 +35,8 @@ surtout des items de propreté (duplication, code mort, doc).**
 | `fix(randles)` | **B1**, I1 | Signe du résidu imaginaire corrigé (`-Z.imag - spectrum.Zim`) ; fixtures `test_fits.py` passées en convention loader (Zim>0) ; test bout-en-bout loader→fit (±5 %, 4 Rct). |
 | `fix(launcher/deps)` | **B2**, C7, **B3**, C6 | `)` orphelin supprimé ; `pip install` échoue proprement ; `matplotlib` ajouté ; `lmfit` (inutilisé) retiré. |
 | `ci` | **I3** | Renommé `validate.yml` ; Python 3.12 ; compile tous les paquets ; lance `pytest` ; tourne aussi sur PR. |
-| `fix(ci)` | **cv_loader**, dép. galvani | Trou de validation `cv_loader` fermé (voir V1) ; `galvani` retiré (build cassé en CI). |
+| `fix(ci)` | **V1** cv_loader, dép. galvani | Corruption silencieuse de colonnes CV fermée (voir V1) ; `galvani` sorti des dépendances dures (build cassé en CI). |
+| `fix(mpr)` | galvani (compromis) | `galvani` **déplacé** en dépendance optionnelle (`requirements-optional.txt`) — pas supprimé : c'est un **compromis assumé** (CI verte vs robustesse `.mpr`, voir note ci-dessous). Message actionnable si eclabfiles échoue et galvani absent. |
 | `fix(config)` | **I2**, **I2b** | Clés `bounds_randles_full` réalignées `R_D`/`tau_d` ; bornes typées `list[float]` ; `1.0e9→1.0e+9` ; tests `test_config.py`. |
 | `fix(pipeline)` | **I4** | `alpha_noise` lu par clé ; suppression des `getattr` KK fantômes. |
 
@@ -49,7 +50,18 @@ surtout des items de propreté (duplication, code mort, doc).**
 
 Collatéral vérifié : `drt_fft` consommait des paramètres Randles effondrés (2083/100/100/100 →
 2968/3865/4783/5690/6589 après) ; `drt_tikhonov` **n'a pas** ce bug (flip explicite `:131`,
-reconstruction 0.08 % en convention loader). Reste non traité (propreté) : I5, I6, I7, I8, C1–C12.
+reconstruction 0.08 % en convention loader).
+
+**Compromis galvani (assumé).** `core/mpr_converter._read_mpr_dataframe` bascule sur `galvani`
+**dans un `except` sur échec d'`eclabfiles`** — c'est donc un vrai lecteur de secours, pas un
+choix de format. Le retirer des dépendances dures **n'est pas sans perte** : un `.mpr` qu'`eclabfiles`
+ne sait pas lire ne sera plus récupéré automatiquement. Choix retenu : **CI verte > robustesse `.mpr`
+de secours**, car galvani ne peut pas s'installer sur le runtime CI (setup.py `install_layout`). galvani
+est donc **déplacé en optionnel** (`requirements-optional.txt`, `pip install -r requirements-optional.txt`)
+et non supprimé ; l'utilisateur qui en a besoin l'installe et le fallback revit. Message d'erreur rendu
+actionnable si `eclabfiles` échoue et galvani absent (au lieu d'une `ImportError` brute).
+
+Reste non traité (propreté) : I5, I6, I7, I8, C1–C12.
 
 ---
 
@@ -67,7 +79,8 @@ reconstruction 0.08 % en convention loader). Reste non traité (propreté) : I5,
 | I2b ✅ | **IMPORTANT** | `config/default.yaml:33,36,37` | **Piège résolveur float YAML 1.1** : `1.0e9`, `1.0e6`, `1.0e3` (exposant sans signe) parsés comme **chaînes**, et les champs Pydantic `list` nus ne les coerçaient pas. Inoffensif aujourd'hui (scipy coerce via `asarray(dtype=float)` : fit OK), mais fragile. Balayage complet : seules ces 3 valeurs touchées. | **Appliqué** : `→ 1.0e+9/1.0e+6/1.0e+3` + typage `list[float]` (Pydantic coerce) + test `isinstance(b,float)`. | Faible. |
 | I3 ✅ | **IMPORTANT** | `.github/workflows/build_exe.yml` | CI = seulement `py_compile app.py` : **jamais pytest**, autres modules non compilés, nom trompeur, Python 3.11 (projet : 3.12). | **Appliqué** : renommé `validate.yml`, Python 3.12, `compileall` de tous les paquets, `pytest`, trigger PR. | Faible. |
 | I4 ✅ | **IMPORTANT** | `core/pipeline.py:38-39,53` | `getattr(config_dict, ...)` → toujours le défaut. `alpha_noise` YAML ignoré ; `kk_mu_threshold`/`kk_residual_pct` inexistants (ni YAML ni Pydantic). | **Appliqué** : `alpha_noise` lu par clé ; `getattr` KK fantômes supprimés (seuils = défauts `validator.py`, source unique). | Faible. |
-| V1 ✅ | **IMPORTANT** | `core/cv_loader.py:24-29` | **Trou de validation** : le repli « sous-chaîne » de `_find_column` acceptait à tort des colonnes sans vraie colonne E/I (`"voltage_x"` contient `"voltage"`/`"e"`, `"time"` contient `"i"`) → CV chargé silencieusement avec de mauvaises colonnes. Révélé par `test_missing_e_column_raises` (échec « DID NOT RAISE » quand la CI a branché pytest). | **Appliqué** : repli sous-chaîne supprimé, match exact (unité `/…` retirée) uniquement. | Faible (formats EC-Lab légitimes couverts par le match exact). |
+| V1 ✅ | **BLOQUANT** | `core/cv_loader.py:24-29` | **Corruption silencieuse de données** (même classe que B1, pas un simple « test rouge ») : le repli « sous-chaîne » de `_find_column` avec les alias 1-lettre `"e"`/`"i"` matchait `"time"→I` (le **temps** chargé comme courant !), `"temperature"→E`, `"voltage_x"→E`. Un CV pouvait donc être analysé avec les mauvaises colonnes, sans erreur. Révélé par `test_missing_e_column_raises` quand la CI a branché pytest. | **Appliqué** : repli sous-chaîne supprimé, match exact (unité `/…` retirée) uniquement. Formats EC-Lab légitimes couverts. | Faible. |
+| V2 ✅ | — (vérifié) | `core/loader.py:51-88` | **Contre-vérification** : le loader **EIS** utilise-t-il le même matching permissif ? **Non** — match **exact** (`normed in aliases`), pas de sous-chaîne. Vérifié empiriquement : colonnes `time`/`temperature` distractrices ignorées, `f`/`Zre`/`Zim` correctement identifiés ; en-têtes inconnus → `ValueError` propre. **Pas le bug V1.** Reste un repli **positionnel** (3 premières colonnes numériques) mais **avec avertissement** (pas silencieux) → risque moindre, laissé tel quel. | Aucune action requise. | — |
 | I5 | **IMPORTANT** | `plotting/eis_plots.py:614,860` + `exports/exporter.py:177,214,281` | **Duplication + violation de couche** : la logique « signal normalisé + régression `linregress` » est réimplémentée ≥4 fois (2 figures Plotly, 1 matplotlib, plusieurs exports CSV). `plotting/` **calcule** (interdit par la règle « plotting ne calcule rien »). | Extraire une fonction unique `core/calibration.py::compute_calibration(session, model)` ; figures et exports la consomment. | Moyen (refactor transverse). |
 | I6 | **IMPORTANT** | `fits/registry.py:19-21` | `_discover` fait `except Exception: continue` : si un modèle échoue à l'import (ex. `cvxopt` absent), il **disparaît silencieusement** de l'app, sans message. | Logger le nom du module + l'exception avant de continuer. | Faible. |
 | I7 | **IMPORTANT** | `fits/randles_full.py:139` + `core/pipeline.py:164,189,210` | Échecs de fit avalés : `except Exception` renvoie `x0`/`converged=False` sans signaler à l'UI ; le pipeline se contente de `log.error`. L'utilisateur voit un Rct sans savoir que le fit a échoué. | Propager un état d'échec au FitResult et l'afficher (badge/`st.warning`). | Faible. |

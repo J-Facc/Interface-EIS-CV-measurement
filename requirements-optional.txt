@@ -1,0 +1,12 @@
+# Dépendances OPTIONNELLES — non requises pour lancer l'app ni pour la CI.
+# Installer avec :  pip install -r requirements-optional.txt
+#
+# galvani : second lecteur de fichiers .mpr (BioLogic), utilisé en secours par
+#   core/mpr_converter.py quand le lecteur principal (eclabfiles, en dépendance
+#   dure dans requirements.txt) échoue sur un .mpr atypique. Retiré des
+#   dépendances dures car son setup.py s'appuie sur `install_layout` (patch
+#   distutils propre à Debian), absent de setuptools upstream → le build échoue
+#   sur les runtimes non-Debian (CI GitHub Actions, Python 3.12). Sans galvani,
+#   les .mpr lisibles par eclabfiles fonctionnent normalement ; seuls les .mpr
+#   qu'eclabfiles ne sait pas lire nécessitent ce fallback.
+galvani>=0.5.0
