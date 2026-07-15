@@ -51,6 +51,8 @@ class DRTSettings(BaseModel):
 
 
 class FitSettings(BaseModel):
+    # "modulus" (pondération 1/(alpha_noise·|Z|)²) ou "sigma" (1/σ² inter-réplicats).
+    weight_mode: str = "modulus"
     alpha_noise: float = 0.001
     n_freqs_parasites: list = Field(default_factory=lambda: [50.0, 100.0])
     tol_parasites: float = 3.0

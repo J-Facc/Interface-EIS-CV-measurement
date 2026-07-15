@@ -9,6 +9,7 @@ from core.models import EISSession, EISSpectrum, ConcentrationGroup
 from core.loader import load_spectrum, average_replicates
 from core.logger import get_logger
 from core.validator import validate_replicate_group
+from fits.weighting import resolve_weights
 
 log = get_logger("pipeline")
 
@@ -45,19 +46,17 @@ def validate_session(replicate_groups: dict, config) -> dict:
     return results
 
 
-def _build_weights(spectrum, config) -> np.ndarray:
+def _build_weights(spectrum, config) -> tuple:
+    """Construit le couple de poids (w_re, w_im) du CNLS pour ce spectre.
+
+    Délègue à fits.weighting.resolve_weights : mode "sigma" (1/σ² inter-réplicats,
+    poids DIFFÉRENTS sur réel et imaginaire) si demandé et σ disponible, sinon
+    pondération modulus (w_re = w_im = 1/(alpha_noise·|Z|)²). Le drapeau
+    absolute_sigma est recalculé côté modèle (mêmes conditions) pour décider du
+    rééchelonnement de la covariance.
     """
-    Construit w(f) = 1/σ²(f) si σ(f) disponible,
-    sinon retombe sur pondération Modulus uniforme (comportement actuel).
-    """
-    if spectrum.sigma_re is not None and spectrum.sigma_im is not None:
-        sigma2 = np.asarray(spectrum.sigma_re)**2 + np.asarray(spectrum.sigma_im)**2
-        return 1.0 / sigma2
-    # config est le dict de config_to_dict(load_config()) : lire par clé, pas
-    # via getattr (qui, sur un dict, renvoyait toujours 0.001 et ignorait le YAML).
-    alpha = float(config.get("fit", {}).get("alpha_noise", 0.001)) if isinstance(config, dict) else 0.001
-    Z_mod = np.sqrt(np.asarray(spectrum.Zre)**2 + np.asarray(spectrum.Zim)**2)
-    return 1.0 / (alpha * Z_mod)**2
+    w_re, w_im, _absolute_sigma = resolve_weights(spectrum, config)
+    return w_re, w_im
 
 
 def _run_kk(spectrum, config, label: str) -> Optional[dict]:

@@ -170,12 +170,26 @@ def _render_drt_tab(sessions: dict) -> None:
         open_drt_matplotlib_window(sessions, st.session_state.get("drt_exclusions", {}))
 
 
-def _render_reconstruction_tab(sessions: dict) -> None:
+def _render_reconstruction_tab(sessions: dict, config: dict | None = None) -> None:
     """Onglet 3 — Reconstructions Nyquist (Randles vs DRT)."""
     st.subheader("Reconstructions Nyquist — Randles vs DRT")
 
+    # Pondération active du fit (modulus / sigma) — exposée depuis la config.
+    weight_mode = (config or {}).get("fit", {}).get("weight_mode", "modulus")
+    if weight_mode == "sigma":
+        st.caption(
+            "⚖️ Pondération : **variance inter-réplicats (σ mesuré)** — les poids "
+            "sont de vraies 1/variance, donc **χ²ᵣ ≈ 1 vaut test d'adéquation** "
+            "modèle + erreur (retombe sur modulus s'il n'y a qu'un réplicat)."
+        )
+    else:
+        st.caption(
+            "⚖️ Pondération : **modulus** — 1/(α·|Z|)² avec α arbitraire. "
+            "χ²ᵣ est une métrique de misfit relative, **pas** un test d'adéquation."
+        )
+
     # (0) niveau paramètre : Rct_randles vs Rct_drt par étape et modèle
-    st.markdown("**Comparaison des paramètres (Rct)**")
+    st.markdown("**Comparaison des paramètres (Rct, χ²ᵣ)**")
     for e, session in sorted(sessions.items()):
         st.caption(f"Électrode {e}")
         st.plotly_chart(params_table_figure(session), width='stretch', key=f"params_table_e{e}")
@@ -280,7 +294,7 @@ def render_eis_tabs(sessions: dict, normalized: dict, config: dict, validations:
         config: app config dict.
         validations: {electrode_index: {label: ValidationResult}}.
     """
-    del normalized, config  # non utilisés directement ici (cf. docstring)
+    del normalized  # non utilisé directement ici (cf. docstring)
 
     tab1, tab2, tab3, tab4 = st.tabs([
         "1️⃣ Validation KK", "2️⃣ Courbes DRT",
@@ -294,7 +308,7 @@ def render_eis_tabs(sessions: dict, normalized: dict, config: dict, validations:
         _render_drt_tab(sessions)
 
     with tab3:
-        _render_reconstruction_tab(sessions)
+        _render_reconstruction_tab(sessions, config)
 
     with tab4:
         _render_calibration_tab(sessions)

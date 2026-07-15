@@ -5,6 +5,7 @@ from scipy.optimize import least_squares
 
 from fits.base import BaseFitModel
 from fits.physics import Z_randles_full
+from fits.weighting import resolve_weights
 from core.models import EISSpectrum, FitResult
 
 _PARAM_NAMES = ["Re", "Re_prime", "Cb", "Rct", "Qdl", "alpha", "R_D", "tau_d"]
@@ -105,23 +106,32 @@ class RandlesFullModel(BaseFitModel):
         blo = [lo[k] for k in _PARAM_NAMES]
         bhi = [hi[k] for k in _PARAM_NAMES]
 
-        alpha_noise = float(config.get("fit", {}).get("alpha_noise", 0.001))
-        Z_data = spectrum.Zre + 1j * spectrum.Zim
+        # Pondération : couple (w_re, w_im) — potentiellement DIFFÉRENT sur réel et
+        # imaginaire (mode "sigma" : σ_re ≠ σ_im). absolute_sigma indique si les
+        # poids sont de vraies 1/variance (→ covariance non rééchelonnée).
+        w_re_resolved, w_im_resolved, absolute_sigma = resolve_weights(spectrum, config)
         if weights is not None:
-            _w = np.asarray(weights)
+            # Poids explicites (typiquement le couple de core.pipeline._build_weights).
+            if isinstance(weights, (tuple, list)) and len(weights) == 2:
+                w_re = np.asarray(weights[0], dtype=float)
+                w_im = np.asarray(weights[1], dtype=float)
+            else:  # tableau unique hérité → même poids sur les deux composantes
+                w_re = w_im = np.asarray(weights, dtype=float)
         else:
-            _w = 1.0 / (alpha_noise * np.maximum(np.abs(Z_data), 1.0))**2
-        weight = np.sqrt(_w)
+            w_re, w_im = w_re_resolved, w_im_resolved
+
+        sw_re = np.sqrt(w_re)
+        sw_im = np.sqrt(w_im)
 
         def residuals(x):
             Re, Re_p, Cb, Rct, Qdl, alpha_p, R_D, tau_d = x
             Z = Z_randles_full(omega, Re, Re_p, Cb, Rct, Qdl, alpha_p, R_D, tau_d)
             return np.concatenate([
-                (Z.real - spectrum.Zre) * weight,
+                (Z.real - spectrum.Zre) * sw_re,
                 # spectrum.Zim suit la convention positive du loader (-Im(Z) > 0),
                 # alors que Z.imag est l'imaginaire physique (< 0) : le résidu doit
                 # comparer -Z.imag à spectrum.Zim, cohérent avec le χ² plus bas.
-                (-Z.imag - spectrum.Zim) * weight,
+                (-Z.imag - spectrum.Zim) * sw_im,
             ])
 
         max_iter = int(config.get("fit", {}).get("max_iter", 10000))
@@ -135,14 +145,19 @@ class RandlesFullModel(BaseFitModel):
             converged = result.success
             x_fit = result.x
 
-            # Approximate parameter covariance from Jacobian.
-            # least_squares renvoie result.cost = ½·Σr² : la SSR pondérée vaut
-            # 2·result.cost, donc le χ² réduit est s² = 2·result.cost / (2N − P).
+            # Covariance des paramètres depuis la jacobienne pondérée.
+            #  - mode "sigma" (absolute_sigma=True) : les poids sont de vraies
+            #    1/variance → cov = inv(JᵀJ) directement, PAS de rééchelonnement.
+            #  - mode "modulus" (absolute_sigma=False) : poids arbitraires →
+            #    rééchelonnement par le χ² réduit s² = 2·result.cost/(2N−P).
+            #    least_squares renvoie result.cost = ½·Σr² : la SSR pondérée vaut
+            #    2·result.cost, d'où le facteur 2 (fix √2).
             J = result.jac
             try:
                 dof = max(2 * len(spectrum.f) - len(_PARAM_NAMES), 1)
-                s2 = 2.0 * result.cost / dof
-                cov = np.linalg.inv(J.T @ J) * s2
+                cov = np.linalg.inv(J.T @ J)
+                if not absolute_sigma:
+                    cov = cov * (2.0 * result.cost / dof)
                 std = np.sqrt(np.abs(np.diag(cov)))
             except np.linalg.LinAlgError:
                 std = np.zeros(len(_PARAM_NAMES))
@@ -162,12 +177,13 @@ class RandlesFullModel(BaseFitModel):
         res_im = spectrum.Zim + Z_fit.imag
 
         # χ² réduit pondéré effectivement minimisé : Σ(w_re·Δre² + w_im·Δim²)/(2N−P),
-        # avec les mêmes poids par point que le fit (w_re = w_im = _w, cf. residuals()).
-        # NB : sous pondération modulus rééchelonnée (w = 1/(alpha_noise·|Z|)² avec
-        # alpha_noise arbitraire), chi2_reduced≈1 n'est PAS un test d'adéquation —
-        # c'est une métrique de misfit relative comparable entre spectres (prompt C).
+        # avec les poids par point du fit (w_re, w_im, cf. residuals()).
+        # En mode "sigma" (poids = 1/σ² mesurés), chi2_reduced≈1 EST le test
+        # d'adéquation modèle+erreur. En mode "modulus" rééchelonné (alpha_noise
+        # arbitraire), chi2_reduced≈1 n'a PAS de sens statistique — juste une
+        # métrique de misfit relative comparable entre spectres (prompt C).
         dof = max(2 * len(spectrum.f) - len(_PARAM_NAMES), 1)
-        chi2_reduced = float(np.sum(_w * (res_re ** 2 + res_im ** 2)) / dof)
+        chi2_reduced = float(np.sum(w_re * res_re ** 2 + w_im * res_im ** 2) / dof)
 
         # ── Diagnostics d'ajustement (I7) : les 3 gardes qui auraient crié B1 ──
         Zmod2 = spectrum.Zre ** 2 + spectrum.Zim ** 2 + 1e-30
