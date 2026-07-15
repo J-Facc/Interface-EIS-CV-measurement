@@ -1,8 +1,9 @@
 # EIS Analyzer — Architecture & Contexte général
 ## Document de référence — Maintenance & Développement
 
-> Version courante : v3 — Repo : https://github.com/J-Facc/Interface-EIS-CV-measurement
-> Dernière mise à jour : 09/06/2026
+> Repo : https://github.com/J-Facc/Interface-EIS-CV-measurement
+> Navigation multipage `st.navigation` (pages/) — EIS **et** CV.
+> Dernière mise à jour : 13/07/2026 (réalignée sur l'état réel du code — audit)
 
 ---
 
@@ -23,60 +24,69 @@ log(Rct_norm) = a × log([c]) + b       LOD ≈ 10⁻¹⁷ M
 ```
 Interface-EIS-CV-measurement/          ← racine du repo GitHub
 │
-├── app.py                             ← point d'entrée Streamlit (navigation v3)
-├── requirements.txt                   ← dépendances Python
+├── app.py                             ← point d'entrée Streamlit (st.navigation, pages/)
+├── requirements.txt                   ← dépendances dures
+├── requirements-optional.txt          ← dépendances optionnelles (galvani, lecteur .mpr de secours)
 ├── launch.bat                         ← lanceur Windows (auto-update + venv)
 ├── .version                           ← SHA GitHub du dernier update local
 │
 ├── config/
-│   └── default.yaml                   ← tous les paramètres physiques et de fit
+│   └── default.yaml                   ← paramètres physiques et de fit (bornes typées list[float])
 │
 ├── core/                              ← logique métier pure (JAMAIS d'import Streamlit)
 │   ├── __init__.py
-│   ├── models.py                      ← dataclasses : EISSpectrum, FitResult, EISSession
-│   ├── loader.py                      ← import CSV/TXT, validation, moyennage réplicats
-│   ├── pipeline.py                    ← orchestrateur Import → Fit → Analyse
+│   ├── models.py                      ← dataclasses : EISSpectrum, FitResult (+ warnings), EISSession
+│   ├── loader.py                      ← import CSV/TXT EIS, validation, moyennage réplicats
+│   ├── pipeline.py                    ← orchestrateur Import → Fit → Analyse (EIS)
 │   ├── config.py                      ← chargement YAML + Pydantic AppSettings
+│   ├── calibration.py                 ← calibration EIS/CV (signal normalisé, log-log) — source unique
 │   ├── logger.py                      ← logging centralisé
-│   ├── validator.py                   ← validation KK (lin-KK via impedance.py)
+│   ├── validator.py                   ← validation KK inter-réplicats (Lin-KK natif)
 │   ├── cv_loader.py                   ← chargement fichiers CV
-│   ├── cv_models.py                   ← CVScan, CVConcentrationGroup
+│   ├── cv_models.py                   ← CVScan, CVConcentrationGroup, CVSession
+│   ├── cv_peaks.py                    ← détection de pics CV
 │   ├── cv_pipeline.py                 ← pipeline traitement CV
+│   ├── mpr_converter.py               ← conversion .mpr (BioLogic) → CSV (eclabfiles ; galvani en secours)
 │   └── experiment_io.py               ← sauvegarde/chargement session complète (ZIP)
 │
-├── fits/                              ← système plugin : 1 fichier = 1 modèle
+├── fits/                              ← système plugin : 1 fichier = 1 modèle (BaseFitModel)
 │   ├── __init__.py
 │   ├── base.py                        ← BaseFitModel (ABC) — interface commune
-│   ├── physics.py                     ← fonctions physiques partagées (ZD, alpha_h, Brug)
-│   ├── registry.py                    ← FitRegistry : découverte automatique des modèles
-│   ├── randles_full.py                ← Randles complet (8 paramètres, least_squares)
+│   ├── physics.py                     ← fonctions physiques partagées (Z_D, Z_randles_full, θ_EIS…)
+│   ├── registry.py                    ← découverte auto + discovery_errors() (modèles non chargés)
+│   ├── randles_full.py                ← Randles complet (8 paramètres, least_squares) + diagnostics
 │   ├── drt_tikhonov.py                ← DRT model-free via pyDRTtools (RBF + Tikhonov ordre 1 + QP) — DRT principale
 │   ├── drt_fft.py                     ← DRT FFT/Wiener sur spectre IDÉAL Randles (étude MAD, pas indépendante)
-│   └── kk_validation.py               ← validation Kramers-Kronig (Lin-KK, circuits de Voigt)
+│   ├── kk_validation.py               ← validation Kramers-Kronig (Lin-KK, circuits de Voigt)
+│   └── _pydrttools/                   ← cœur de calcul pyDRTtools vendoré (MIT — NE PAS refactorer)
 │
-├── plotting/
+├── plotting/                          ← reçoit des données, ne calcule rien
 │   ├── __init__.py
-│   ├── theme.py                       ← palettes jour / nuit
-│   └── eis_plots.py                   ← 7 figures Plotly interactives
+│   ├── theme.py                       ← palettes clair / sombre (dark défini mais non câblé aujourd'hui)
+│   ├── eis_plots.py                   ← figures Plotly EIS (+ fenêtres matplotlib)
+│   ├── cv_plots.py                    ← figures CV
+│   └── kk_plots.py                    ← figures validation KK
 │
-├── exports/
-│   ├── __init__.py                    ← ⚠️ obligatoire sinon ModuleNotFoundError
-│   └── exporter.py                    ← export CSV, PNG, HTML, YAML session
+├── exports/                          ← ⚠️ paquet source versionné (PAS ignoré par .gitignore)
+│   ├── __init__.py
+│   └── exporter.py                    ← export CSV, PNG, HTML, YAML, ZIP session
 │
 ├── ui/
 │   ├── __init__.py
-│   ├── sidebar.py                     ← upload fichiers + saisie concentrations + toggle thème
-│   └── tabs.py                        ← 6 onglets (render_tabs)
+│   └── tabs.py                        ← render_eis_tabs / render_cv_tabs (appelés par les pages)
 │
-├── tests/
+├── pages/                             ← pages st.navigation
 │   ├── __init__.py
-│   └── test_fits.py                   ← tests pytest
+│   ├── 0_import.py                    ← import de l'expérience
+│   ├── 1_pretraitement.py             ← exclusions/nettoyage → experiment_clean
+│   ├── A_eis.py                       ← analyse EIS (fits, KK, calibration, diagnostics)
+│   ├── B_cv.py                        ← analyse CV
+│   ├── D_inference.py                 ← inférence/prédiction
+│   └── E_export.py                    ← export
 │
-├── logs/                              ← créé automatiquement
-├── sessions/                          ← créé automatiquement
-└── .github/
-    └── workflows/
-        └── validate.yml               ← CI : syntax check à chaque push
+├── tests/                            ← pytest (fits, physics, loader, cv, drt, config, calibration, diagnostics…)
+├── logs/  · sessions/                 ← créés automatiquement (ignorés par git)
+└── .github/workflows/validate.yml     ← CI : compileall + pytest (Python 3.12)
 ```
 
 ---
@@ -85,12 +95,15 @@ Interface-EIS-CV-measurement/          ← racine du repo GitHub
 
 ```
 app.py  →  st.navigation({
-  "Données":     [0_import.py, 1_pretraitement.py],
-  "Analyse":     [A_eis.py,    B_cv.py           ],
-  "Comparaison": [C_comparatif.py                 ],
-  "Inférence":   [D_inference.py                  ],
+  "Données":   [0_import.py, 1_pretraitement.py],
+  "Analyse":   [A_eis.py,    B_cv.py           ],
+  "Export":    [E_export.py                     ],
+  "Inférence": [D_inference.py                  ],
 })
 ```
+> Il n'y a pas de page « Comparaison » / `C_comparatif.py`. Les onglets EIS/CV
+> sont rendus par `ui/tabs.py::render_eis_tabs` / `render_cv_tabs`, appelés
+> depuis `pages/A_eis.py` et `pages/B_cv.py` (il n'existe plus de `render_tabs`).
 
 ### Flux obligatoire
 
@@ -168,19 +181,18 @@ core/loader.py
         ↓
 core/models.py → EISSpectrum { label, f[], Zre[], Zim[], concentration, step }
         ↓
-core/pipeline.py → run_analysis()
+core/pipeline.py → run_pipeline()
         ↓
-fits/ — 4 modèles en parallèle
-  randles_classique   → FitResult { params, Zfit[], chi2, Rct }
-  randles_contraint   → FitResult
-  drt_fit             → FitResult
-  circulaire_fit      → FitResult
+fits/ — modèles actifs, appliqués SÉQUENTIELLEMENT (pas en parallèle)
+  randles_full   → FitResult { params, Zfit[], chi2, Rct, reconstruction_error, warnings }
+  drt_tikhonov   → FitResult (DRT model-free — principale)
+  drt_fft_ideal  → FitResult (étude MAD ; re-fitte Randles en interne)
         ↓
 core/models.py → EISSession { bare, probe, groups[] }
         ↓
-plotting/eis_plots.py → 7 figures Plotly
+plotting/eis_plots.py → figures Plotly  ·  core/calibration.py → régressions
         ↓
-ui/tabs.py → 6 onglets Streamlit
+ui/tabs.py::render_eis_tabs → onglets Streamlit (appelé par pages/A_eis.py)
 ```
 
 ---
@@ -189,10 +201,14 @@ ui/tabs.py → 6 onglets Streamlit
 
 | Modèle | Fichier | Paramètres libres | Méthode |
 |--------|---------|-------------------|---------|
-| Randles complet | `randles_full.py` | 8 (Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d) | `scipy.optimize.least_squares` (pondération Modulus) |
-| DRT Tikhonov + NNLS | `drt_tikhonov.py` | λ (régularisation, sélection auto par rGCV) | RBF Gaussienne + QP sous contrainte de positivité (cvxopt), **model-free** |
-| DRT FFT/Wiener (spectre idéal) | `drt_fft.py` | hérités du fit Randles + filtre W | FFT + filtre Wiener, sur spectre **idéal** |
-| Circulaire | `circular.py` (référencé dans `ui/sidebar.py`, non présent dans `fits/` à ce jour) | 0 — lecture géométrique | Fit circulaire algébrique |
+| Randles complet (`name="randles_full"`) | `randles_full.py` | 8 (Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d) | `scipy.optimize.least_squares` (pondération Modulus) + diagnostics (résidu/butée) |
+| DRT Tikhonov (QP) (`name="drt_tikhonov"`) | `drt_tikhonov.py` | λ (sélection auto par rGCV) | RBF Gaussienne + Tikhonov ordre 1 + QP sous contrainte de positivité (cvxopt), **model-free** |
+| DRT FFT/Wiener (spectre idéal) (`name="drt_fft_ideal"`) | `drt_fft.py` | hérités du fit Randles + filtre W | FFT + filtre Wiener, sur spectre **idéal** |
+
+> Ce sont les **3 seuls** modèles enregistrés (découverte auto par `fits/registry.py`).
+> Les anciens noms `randles_classique` / `randles_contraint` / `circulaire_fit` /
+> `circular.py` n'existent pas. Un modèle dont l'import échoue (ex. `cvxopt` absent)
+> est signalé par `registry.discovery_errors()` et affiché dans l'UI, pas masqué.
 
 **Circuit physique (Randles modifié) :**
 ```
@@ -250,15 +266,19 @@ microfluidics*, Phys. Rev. E **113**, 025502 (2026), DOI: 10.1103/fn2s-z364.
 
 ---
 
-## 6. Les 6 onglets de l'interface
+## 6. Onglets de l'analyse EIS (`ui/tabs.py::render_eis_tabs`)
+
+Rendus par `pages/A_eis.py` (page **EIS seule**) ; la page **CV seule** utilise
+`render_cv_tabs`. En tête de page EIS, un bandeau **« Diagnostics d'ajustement »**
+remonte les avertissements de fit (non convergé, résidu élevé, paramètre en butée).
 
 | Onglet | Contenu |
 |--------|---------|
-| **1️⃣ Validation KK** | Diagnostic Kramers-Kronig (Lin-KK) par réplicat |
-| **2️⃣ Courbes DRT** | Distribution γ(τ) vs log(τ) — `drt_tikhonov` (model-free, principale) |
-| **3️⃣ Reconstructions Nyquist** | Table Rct_randles vs Rct_drt (écart relatif) + Nyquist mesuré/Randles/DRT superposés |
-| **4️⃣ Calibration** | log(Rct_norm) vs log([c]) + régression + R², une courbe par modèle (Randles et DRT séparées) |
-| **Export** | CSV params, CSV spectres DRT, PNG, HTML, YAML session |
+| **Validation KK** | Diagnostic Kramers-Kronig (Lin-KK) par réplicat |
+| **Courbes DRT** | Distribution γ(τ) vs log(τ) — `drt_tikhonov` (model-free, principale) |
+| **Reconstructions Nyquist** | Table Rct_randles vs Rct_drt (écart relatif) + Nyquist mesuré/Randles/DRT superposés |
+| **Calibration** | Signal normalisé vs log([c]) + régression + R² (via `core/calibration.py`), une courbe par modèle |
+| **Export** (page dédiée `E_export.py`) | CSV params, CSV spectres DRT, PNG, HTML, YAML, ZIP session |
 
 ---
 
@@ -306,11 +326,15 @@ EIS-CV_analyzer/
 
 | Erreur | Cause | Solution |
 |--------|-------|----------|
-| `ModuleNotFoundError: No module named 'exports'` | `exports/__init__.py` absent | Créer ce fichier vide |
-| `ImportError: cannot import name 'render_tabs'` | Streamlit lancé hors de `eis_app/` | `cd /d "%APP_DIR%"` avant streamlit |
 | `OSError: No such file or directory ... streamlit` | Chemin trop long (MS Store Python) | Utiliser venv local (chemin court) |
 | `SSL: CERTIFICATE_VERIFY_FAILED` | Proxy d'entreprise | `ssl.CERT_NONE` dans les requêtes urllib |
 | Fenêtre .bat qui se ferme | Variable `%VAR%` non évaluée après `cd` | Utiliser `!VAR!` + `setlocal enabledelayedexpansion` |
+
+> **Historique** — le `ModuleNotFoundError: No module named 'exports'`, longtemps
+> « soigné » en recréant `exports/__init__.py`, avait pour cause réelle une ligne
+> `exports/` dans `.gitignore` : le paquet source était ignoré, donc absent du ZIP
+> téléchargé par `launch.bat`. Corrigé (`.gitignore` nettoyé) — le rituel n'a plus
+> lieu d'être. De même, `render_tabs` n'existe plus (voir `ui/tabs.py`).
 
 ---
 

@@ -103,9 +103,9 @@ class DRTTikhonovModel(BaseFitModel):
     Bissessur, Man, Gamby PRE 2026, section III.B)."""
 
     name = "drt_tikhonov"
-    label = "DRT Tikhonov + NNLS"
+    label = "DRT Tikhonov (QP)"
     method = "drt_tikhonov"
-    display_name = "DRT Tikhonov + NNLS"
+    display_name = "DRT Tikhonov (QP)"
     description = (
         "Déconvolution model-free de la distribution des temps de relaxation "
         "via le cœur de calcul de pyDRTtools (RBF gaussienne + Tikhonov "

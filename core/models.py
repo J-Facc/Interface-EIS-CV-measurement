@@ -72,6 +72,9 @@ class FitResult:
     # Validation Kramers-Kronig (fits/kk_validation.py)
     kk_passed: Optional[bool] = None
     kk_residuals: Optional[dict] = None
+    # Diagnostics d'ajustement remontés à l'UI (I7) : fit non convergé, résidu
+    # relatif élevé, paramètre en butée sur une borne. Liste de messages lisibles.
+    warnings: list = field(default_factory=list)
 
 
 @dataclass

@@ -39,6 +39,31 @@ def _filter_session_display(session):
     return s
 
 
+def _collect_fit_diagnostics(sessions: dict) -> list:
+    """Rassemble les avertissements d'ajustement (I7) de tous les fits d'une
+    session, pour affichage : `warnings` posés par le modèle (résidu élevé,
+    paramètre en butée) + non-convergence, pour chaque électrode/spectre/modèle.
+    """
+    out = []
+    for e, session in sorted(sessions.items()):
+        spectra = []
+        if session.bare is not None:
+            spectra.append(("bare", session.bare))
+        if session.probe is not None:
+            spectra.append(("probe", session.probe))
+        for grp in session.groups:
+            spectra.append((f"{grp.concentration:.2e} M", grp.spectrum))
+
+        for label, sp in spectra:
+            for model, fr in sp.fit_results.items():
+                msgs = list(getattr(fr, "warnings", []) or [])
+                if not fr.converged and not any("convergé" in m for m in msgs):
+                    msgs.append("ajustement non convergé")
+                for m in msgs:
+                    out.append(f"E{e} · {label} · {model} : {m}")
+    return out
+
+
 def _merge_overrides(base: dict, overrides: dict) -> dict:
     """Apply user physical-parameter overrides to a config copy."""
     cfg = {k: dict(v) if isinstance(v, dict) else v for k, v in base.items()}
@@ -288,7 +313,7 @@ def main() -> None:
                 "circular":            "Fit circulaire",
                 "randles_constrained": "Randles contraint",
                 "randles_full":        "Randles complet",
-                "drt_tikhonov":        "DRT (Tikhonov + NNLS)",
+                "drt_tikhonov":        "DRT (Tikhonov, QP)",
                 "drt_fft_ideal":       "DRT FFT (spectre idéal Randles — étude MAD)",
             }
             _displayed = {"randles_full", "drt_tikhonov"}
@@ -308,6 +333,19 @@ def main() -> None:
             }
 
     cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
+
+    # I6 : un modèle sélectionné mais non chargé (import échoué, ex. cvxopt
+    # absent → drt_tikhonov) ou non implémenté ne doit pas disparaître en
+    # silence — on le signale et on le retire de la liste avant l'analyse.
+    from fits.registry import all_models as _all_models, discovery_errors as _discovery_errors
+    _available = {m.name for m in _all_models()}
+    _load_errors = _discovery_errors()
+    _unavailable = [m for m in active_models if m not in _available]
+    if _unavailable:
+        for m in _unavailable:
+            reason = _load_errors.get(m) or "modèle non disponible dans cette installation"
+            st.warning(f"⚠️ Modèle « {model_choices.get(m, m)} » indisponible : {reason}")
+        active_models = [m for m in active_models if m in _available]
 
     if st.button("↺ Relancer l'analyse", key="eis_rerun_btn"):
         st.session_state["eis_sessions"]    = None
@@ -351,6 +389,15 @@ def main() -> None:
     sessions = st.session_state.get("eis_sessions")
     if not sessions:
         return
+
+    # I7 : remonter les diagnostics d'ajustement (non convergé, résidu relatif
+    # élevé, paramètre en butée sur une borne) à l'utilisateur — au lieu de les
+    # laisser dans les logs. Ces gardes auraient signalé B1 immédiatement.
+    diags = _collect_fit_diagnostics(sessions)
+    if diags:
+        with st.expander(f"⚠️ Diagnostics d'ajustement ({len(diags)})", expanded=True):
+            for line in diags:
+                st.warning(line)
 
     # --- Diagrammes Nyquist par électrode ---
     st.markdown("### Diagrammes de Nyquist")

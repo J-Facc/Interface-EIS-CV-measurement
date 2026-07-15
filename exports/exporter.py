@@ -8,11 +8,10 @@ import math
 import zipfile
 import yaml
 import numpy as np
-from scipy import stats
 
 from core.models import EISSession
 from core.cv_models import CVSession
-from core.calibration import compute_calibration_all
+from core.calibration import compute_calibration_all, compute_cv_calibration
 
 
 def _as_sessions_dict(sessions) -> dict:
@@ -177,25 +176,14 @@ def export_cv_calibration_csv(cv_session: CVSession) -> bytes:
         "slope", "intercept", "r2", "p_value", "std_err",
     ])
 
-    concs, signals = [], []
-    for grp in cv_session.groups:
-        if grp.concentration <= 0:
-            continue
-        mean_sig = np.nanmean(grp.delta_signal)
-        if np.isfinite(mean_sig):
-            concs.append(grp.concentration)
-            signals.append(float(mean_sig))
-
-    if len(concs) < 2:
+    cal = compute_cv_calibration(cv_session)  # source unique (core/calibration.py)
+    if cal is None:
         return buf.getvalue().encode()
 
-    log_c = list(np.log10(concs))
-    reg = stats.linregress(log_c, signals)
-
-    for conc, lc, sig in zip(concs, log_c, signals):
+    for conc, lc, sig in zip(cal.concentrations, cal.log_c, cal.signals):
         writer.writerow([
             conc, lc, sig,
-            reg.slope, reg.intercept, reg.rvalue ** 2, reg.pvalue, reg.stderr,
+            cal.slope, cal.intercept, cal.r2, cal.pvalue, cal.stderr,
         ])
 
     return buf.getvalue().encode()
@@ -239,25 +227,13 @@ def export_cv_calibration_csv_multi(cv_sessions: dict) -> bytes:
     ])
 
     for elec, session in sorted(cv_sessions.items()):
-        concs, signals = [], []
-        for grp in session.groups:
-            if grp.concentration <= 0:
-                continue
-            mean_sig = np.nanmean(grp.delta_signal)
-            if np.isfinite(mean_sig):
-                concs.append(grp.concentration)
-                signals.append(float(mean_sig))
-
-        if len(concs) < 2:
+        cal = compute_cv_calibration(session)  # source unique (core/calibration.py)
+        if cal is None:
             continue
-
-        log_c = list(np.log10(concs))
-        reg = stats.linregress(log_c, signals)
-
-        for conc, lc, sig in zip(concs, log_c, signals):
+        for conc, lc, sig in zip(cal.concentrations, cal.log_c, cal.signals):
             writer.writerow([
                 elec, conc, lc, sig,
-                reg.slope, reg.intercept, reg.rvalue ** 2, reg.pvalue, reg.stderr,
+                cal.slope, cal.intercept, cal.r2, cal.pvalue, cal.stderr,
             ])
 
     return buf.getvalue().encode()

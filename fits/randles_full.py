@@ -9,6 +9,10 @@ from core.models import EISSpectrum, FitResult
 
 _PARAM_NAMES = ["Re", "Re_prime", "Cb", "Rct", "Qdl", "alpha", "R_D", "tau_d"]
 
+# Seuils de diagnostic (I7) — rendre visibles les échecs d'ajustement muets.
+_REL_RESIDUAL_WARN = 0.10   # résidu relatif RMS > 10 % → ajustement médiocre
+_BOUND_PROXIMITY = 0.01     # paramètre à < 1 % d'une borne → contraint par la borne
+
 
 class RandlesFullModel(BaseFitModel):
     """Full Randles fit with 8 free parameters.
@@ -154,6 +158,25 @@ class RandlesFullModel(BaseFitModel):
         res_im = spectrum.Zim + Z_fit.imag
         chi2 = float(np.mean(res_re ** 2 + res_im ** 2))
 
+        # ── Diagnostics d'ajustement (I7) : les 3 gardes qui auraient crié B1 ──
+        Zmod2 = spectrum.Zre ** 2 + spectrum.Zim ** 2 + 1e-30
+        rel_residual = float(np.sqrt(np.mean((res_re ** 2 + res_im ** 2) / Zmod2)))
+
+        warnings: list = []
+        if not converged:
+            warnings.append("ajustement non convergé")
+        if rel_residual > _REL_RESIDUAL_WARN:
+            warnings.append(
+                f"résidu relatif élevé ({rel_residual * 100:.0f} %) — "
+                f"ajustement médiocre, résultat peu fiable"
+            )
+        for name, value in params.items():
+            lo_b, hi_b = lo[name], hi[name]
+            if abs(value - lo_b) <= _BOUND_PROXIMITY * max(abs(lo_b), 1e-30):
+                warnings.append(f"{name} collé à la borne basse ({lo_b:.3g})")
+            elif abs(value - hi_b) <= _BOUND_PROXIMITY * max(abs(hi_b), 1e-30):
+                warnings.append(f"{name} collé à la borne haute ({hi_b:.3g})")
+
         return FitResult(
             model_name=self.name,
             params=params,
@@ -166,4 +189,6 @@ class RandlesFullModel(BaseFitModel):
             Rct=float(Rct),
             Rct_std=float(params_std.get("Rct", 0.0)),
             converged=converged,
+            reconstruction_error=rel_residual,
+            warnings=warnings,
         )

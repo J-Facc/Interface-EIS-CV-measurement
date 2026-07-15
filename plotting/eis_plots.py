@@ -777,8 +777,8 @@ def _single_drt_figure(fit_result, label: str, title: str) -> go.Figure:
 
 
 def drt_tikhonov_figure(fit_result, label: str = "") -> go.Figure:
-    """ln(Γ) vs ln(τ) pour le modèle DRT Tikhonov + NNLS."""
-    return _single_drt_figure(fit_result, label, "DRT Tikhonov + NNLS")
+    """ln(Γ) vs ln(τ) pour le modèle DRT Tikhonov (QP sous contrainte de positivité)."""
+    return _single_drt_figure(fit_result, label, "DRT Tikhonov (QP)")
 
 
 def drt_fft_ideal_figure(fit_result, label: str = "") -> go.Figure:
@@ -835,7 +835,9 @@ def calibration_drt_figure(session: EISSession, model_name: str = "drt_tikhonov"
         "log(Rct) vs log([c])", "Résidus de régression",
     ])
 
-    yerr = np.array(errs) * np.array(rcts) / (np.array(rcts) * np.log(10.0))
+    # Barre d'erreur sur log10(Rct) : d(log10 Rct) = dRct/(Rct·ln10) avec
+    # dRct = err·Rct → err/ln10 (les Rct se simplifient).
+    yerr = np.asarray(errs) / np.log(10.0)
     fig.add_trace(go.Scatter(
         x=log_c, y=log_rct, mode="markers", name="Données",
         error_y=dict(type="data", array=yerr, visible=True),
