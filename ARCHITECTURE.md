@@ -184,7 +184,7 @@ core/models.py → EISSpectrum { label, f[], Zre[], Zim[], concentration, step }
 core/pipeline.py → run_pipeline()
         ↓
 fits/ — modèles actifs, appliqués SÉQUENTIELLEMENT (pas en parallèle)
-  randles_full   → FitResult { params, Zfit[], chi2, Rct, reconstruction_error, warnings }
+  randles_full   → FitResult { params, Zfit[], chi2_reduced, Rct, reconstruction_error, warnings }
   drt_tikhonov   → FitResult (DRT model-free — principale)
   drt_fft_ideal  → FitResult (étude MAD ; re-fitte Randles en interne)
         ↓

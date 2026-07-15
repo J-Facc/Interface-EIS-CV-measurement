@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 
 from fits.physics import Z_randles_full
-from fits.randles_full import RandlesFullModel
+from fits.randles_full import RandlesFullModel, _PARAM_NAMES
 from fits.drt_fft import DRTFFTModel
 from fits.kk_validation import kramers_kronig_check
-from core.loader import load_spectrum
+from core.loader import load_spectrum, average_replicates
 from core.models import EISSpectrum
 
 
@@ -169,3 +169,148 @@ def test_randles_recovers_rct_end_to_end(Rct_true):
     result = RandlesFullModel().fit(sp, {"fit": {"alpha_noise": 0.001, "max_iter": 10000}})
     rel_err = abs(result.Rct - Rct_true) / Rct_true
     assert rel_err < 0.05, f"Rct={result.Rct:.1f} vs {Rct_true:.1f} (rel_err={rel_err:.2%})"
+
+
+# ── Écarts-types des paramètres : cohérence avec scipy.optimize.curve_fit ──
+
+def test_randles_std_matches_curve_fit():
+    """Les σ des paramètres doivent coïncider avec ceux de curve_fit (à qq %).
+
+    Le fit maison empile [Re(Z), -Im(Z)] pondérés par w = 1/(alpha_noise·|Z|) et
+    met la covariance à l'échelle par le χ² réduit s² = 2·result.cost/(2N-P).
+    curve_fit sur le même modèle empilé, avec sigma = 1/w et absolute_sigma=False
+    (même mise à l'échelle par χ² réduit), doit produire les mêmes σ. Une erreur
+    de facteur 2 dans s² (bug corrigé) ferait diverger les σ d'un facteur √2 ≈ 41 %,
+    bien au-delà de la tolérance de 5 %.
+
+    Régime choisi bien conditionné (arc de transfert de charge et queue de
+    diffusion tous deux dans la fenêtre) : la comparaison porte sur les paramètres
+    du demi-cercle Rct/Qdl/α, physiquement primordiaux et stables. Re et Cb ne sont
+    pas comparés car la covariance maison passe par inv(JᵀJ) (équations normales)
+    tandis que curve_fit utilise une SVD : les deux divergent pour ces paramètres
+    légèrement colinéaires, indépendamment de la mise à l'échelle testée ici.
+    """
+    from scipy.optimize import curve_fit
+
+    rng = np.random.default_rng(0)
+    true = dict(Re=500.0, Re_prime=200.0, Cb=2e-8, Rct=5000.0,
+                Qdl=1e-6, alpha=0.85, R_D=2000.0, tau_d=50.0)
+
+    n = 120
+    f = np.logspace(-3, 5, n)                  # 1e-3 → 1e5 Hz
+    omega = 2.0 * np.pi * f
+    Z = Z_randles_full(omega, *[true[k] for k in _PARAM_NAMES])
+
+    # Bruit gaussien ~0.5 % du module, indépendant sur réel et imaginaire.
+    noise = 0.005 * np.abs(Z)
+    Zre = Z.real + rng.normal(0.0, noise)
+    Zim = -Z.imag + rng.normal(0.0, noise)    # convention Zim = -Im(Z) > 0
+
+    idx = np.argsort(f)[::-1]                  # stockage HF→BF
+    sp = EISSpectrum(
+        label="cov", f=f[idx], Zre=Zre[idx], Zim=Zim[idx],
+        concentration=1e-9, step="hybridization", n_points=n,
+    )
+
+    config = {"fit": {"alpha_noise": 0.001, "max_iter": 20000}}
+    result = RandlesFullModel().fit(sp, config)
+    assert result.converged
+
+    # ── Référence curve_fit sur le même modèle empilé et la même pondération ──
+    alpha_noise = config["fit"]["alpha_noise"]
+    omega_sp = 2.0 * np.pi * sp.f
+    Z_data = sp.Zre + 1j * sp.Zim
+    sigma_pt = alpha_noise * np.maximum(np.abs(Z_data), 1.0)   # = 1/weight du modèle
+    sigma_stacked = np.concatenate([sigma_pt, sigma_pt])
+    ydata = np.concatenate([sp.Zre, sp.Zim])
+    xdata = np.arange(ydata.size)             # abscisse factice (modèle empilé)
+
+    def model_stacked(_x, Re, Re_p, Cb, Rct, Qdl, alpha_p, R_D, tau_d):
+        Zm = Z_randles_full(omega_sp, Re, Re_p, Cb, Rct, Qdl, alpha_p, R_D, tau_d)
+        return np.concatenate([Zm.real, -Zm.imag])
+
+    p0 = [result.params[k] for k in _PARAM_NAMES]
+    _popt, pcov = curve_fit(
+        model_stacked, xdata, ydata, p0=p0,
+        sigma=sigma_stacked, absolute_sigma=False, maxfev=200000,
+    )
+    std_scipy = dict(zip(_PARAM_NAMES, np.sqrt(np.diag(pcov))))
+
+    for k in ("Rct", "Qdl", "alpha"):
+        s_model = result.params_std[k]
+        s_scipy = std_scipy[k]
+        assert s_scipy > 0
+        rel = abs(s_model - s_scipy) / s_scipy
+        assert rel < 0.05, (
+            f"σ({k}) maison={s_model:.4g} vs curve_fit={s_scipy:.4g} "
+            f"(écart={rel:.1%})"
+        )
+
+
+# ── Pondération "sigma" (Measurement Model) : chi2_reduced → 1 ──────────────
+
+def test_sigma_weighting_chi2_reduced_around_one():
+    """En mode weight_mode="sigma" avec σ_re/σ_im connus (= vrai bruit injecté),
+    le χ² réduit pondéré tombe autour de 1 : c'est le test d'adéquation.
+
+    On génère un Randles bien conditionné, on ajoute un bruit gaussien de σ CONNUS
+    et DIFFÉRENTS sur réel et imaginaire (σ_im = 2·σ_re), on renseigne
+    spectrum.sigma_re/sigma_im avec ces σ vrais, puis on fitte en mode sigma.
+    Les poids étant les vraies 1/variance (absolute_sigma), E[chi2_reduced] = 1.
+    Moyenné sur plusieurs graines pour amortir la fluctuation ~√(2/dof).
+    """
+    true = dict(Re=500.0, Re_prime=200.0, Cb=2e-8, Rct=5000.0,
+                Qdl=1e-6, alpha=0.85, R_D=2000.0, tau_d=50.0)
+    n = 120
+    f = np.logspace(-3, 5, n)
+    omega = 2.0 * np.pi * f
+    Z = Z_randles_full(omega, *[true[k] for k in _PARAM_NAMES])
+    idx = np.argsort(f)[::-1]
+
+    sigma_re = 0.01 * np.abs(Z)          # σ connus, DIFFÉRENTS sur re/im
+    sigma_im = 0.02 * np.abs(Z)
+    config = {"fit": {"weight_mode": "sigma", "max_iter": 20000}}
+
+    chi2_vals = []
+    for seed in range(6):
+        rng = np.random.default_rng(seed)
+        Zre = Z.real + rng.normal(0.0, sigma_re)
+        Zim = -Z.imag + rng.normal(0.0, sigma_im)   # convention Zim = -Im(Z)
+        sp = EISSpectrum(
+            label="sig", f=f[idx], Zre=Zre[idx], Zim=Zim[idx],
+            concentration=1e-9, step="hybridization", n_points=n,
+        )
+        sp.sigma_re = sigma_re[idx]
+        sp.sigma_im = sigma_im[idx]
+        result = RandlesFullModel().fit(sp, config)
+        assert result.converged
+        chi2_vals.append(result.chi2_reduced)
+
+    mean_chi2 = float(np.mean(chi2_vals))
+    assert 0.85 < mean_chi2 < 1.15, (
+        f"chi2_reduced moyen (mode sigma) = {mean_chi2:.3f}, attendu ≈ 1 "
+        f"(valeurs={[round(v, 3) for v in chi2_vals]})"
+    )
+
+
+def test_average_replicates_fills_sigma():
+    """average_replicates renseigne σ_re/σ_im (>1 réplicat) et laisse None sinon."""
+    sp0 = _randles_spectrum(Rct=5000.0)
+
+    # Un seul réplicat → pas de σ.
+    single = average_replicates([sp0])
+    assert single.sigma_re is None and single.sigma_im is None
+
+    # Deux réplicats bruités → σ renseigné, positif, même longueur que la grille.
+    rng = np.random.default_rng(3)
+    reps = []
+    for _ in range(3):
+        sp = _randles_spectrum(Rct=5000.0)
+        noise = 0.01 * np.abs(sp.Zre + 1j * sp.Zim)
+        sp.Zre = sp.Zre + rng.normal(0.0, noise)
+        sp.Zim = sp.Zim + rng.normal(0.0, noise)
+        reps.append(sp)
+    avg = average_replicates(reps)
+    assert avg.sigma_re is not None and avg.sigma_im is not None
+    assert len(avg.sigma_re) == len(avg.f) == len(avg.sigma_im)
+    assert np.all(avg.sigma_re > 0) and np.all(avg.sigma_im > 0)

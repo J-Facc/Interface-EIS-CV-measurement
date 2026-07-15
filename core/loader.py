@@ -240,14 +240,32 @@ def average_replicates(spectra: list) -> EISSpectrum:
             Zre_stack.append(Zre_interp)
             Zim_stack.append(Zim_interp)
 
+    Zre_stack = np.asarray(Zre_stack)
+    Zim_stack = np.asarray(Zim_stack)
+
+    # σ(f) empirique inter-réplicats (approche Measurement Model, Orazem) — calculé
+    # AVANT le fit pour pouvoir pondérer par 1/σ² (cf. fits/weighting.py). ddof=1
+    # (estimateur non biaisé) ; plancher à 0,1 % du module moyen pour éviter des
+    # poids infinis là où les réplicats coïncident exactement.
+    Zre_mean = np.mean(Zre_stack, axis=0)
+    Zim_mean = np.mean(Zim_stack, axis=0)
+    sigma_re = np.std(Zre_stack, axis=0, ddof=1)
+    sigma_im = np.std(Zim_stack, axis=0, ddof=1)
+    Zmod_mean = np.sqrt(Zre_mean ** 2 + Zim_mean ** 2)
+    floor = 0.001 * Zmod_mean
+    sigma_re = np.maximum(sigma_re, floor)
+    sigma_im = np.maximum(sigma_im, floor)
+
     ref = spectra[0]
     return EISSpectrum(
         label=ref.label + " (avg)",
         f=f_ref,
-        Zre=np.mean(Zre_stack, axis=0),
-        Zim=np.mean(Zim_stack, axis=0),
+        Zre=Zre_mean,
+        Zim=Zim_mean,
         concentration=ref.concentration,
         step=ref.step,
         n_points=len(f_ref),
         source_files=[s.label for s in spectra],
+        sigma_re=sigma_re,
+        sigma_im=sigma_im,
     )

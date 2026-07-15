@@ -21,6 +21,9 @@ conditions:
 
 # Paramètres de fit
 fit:
+  # Pondération du CNLS : "modulus" (1/(alpha_noise·|Z|)²) ou "sigma"
+  # (1/σ² inter-réplicats, approche Measurement Model — requiert ≥2 réplicats).
+  weight_mode: modulus
   alpha_noise: 0.001
   n_freqs_parasites: [50.0, 100.0]
   tol_parasites: 3.0

@@ -368,7 +368,25 @@ def main() -> None:
                 "C0": st.number_input("C0 (M)",    value=0.02,  format="%.4f",  key="eis_C0"),
             }
 
+        st.markdown("**Pondération du fit**")
+        _WEIGHT_LABELS = {
+            "modulus": "Modulus — 1/(α·|Z|)² (défaut)",
+            "sigma":   "Variance inter-réplicats — 1/σ² (mesuré, ≥ 2 réplicats)",
+        }
+        weight_mode = st.radio(
+            "Mode de pondération",
+            options=list(_WEIGHT_LABELS.keys()),
+            format_func=lambda k: _WEIGHT_LABELS[k],
+            key="eis_weight_mode",
+            help="Modulus : bruit relatif supposé constant. Sigma (Measurement Model, "
+                 "Orazem) : pondère par la variance réellement mesurée entre réplicats — "
+                 "chi²_réduit≈1 devient alors un test d'adéquation. Nécessite ≥ 2 réplicats ; "
+                 "à défaut, retombe automatiquement sur Modulus.",
+        )
+
     cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
+    cfg.setdefault("fit", {})
+    cfg["fit"]["weight_mode"] = weight_mode
 
     # I6 : un modèle sélectionné mais non chargé (import échoué, ex. cvxopt
     # absent → drt_tikhonov) ou non implémenté ne doit pas disparaître en

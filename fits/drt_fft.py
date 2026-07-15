@@ -228,7 +228,9 @@ class DRTFFTModel(BaseFitModel):
         residuals_im = Zim_exp - Zfit_im
 
         Zmod2 = Zre_exp**2 + Zim_exp**2 + 1e-30
-        chi2 = float(np.mean((residuals_re**2 + residuals_im**2) / Zmod2))
+        # Métrique de misfit normalisée par le module (modèle-libre : pas de χ²
+        # réduit classique ici) ; stockée dans FitResult.chi2_reduced.
+        chi2_reduced = float(np.mean((residuals_re**2 + residuals_im**2) / Zmod2))
         reconstruction_error = float(np.mean(
             np.sqrt(residuals_re**2 + residuals_im**2) / np.sqrt(Zmod2)
         ))
@@ -251,7 +253,7 @@ class DRTFFTModel(BaseFitModel):
             params_std={k: 0.0 for k in params},
             Zfit_re=Zfit_re,
             Zfit_im=Zfit_im,
-            chi2=chi2,
+            chi2_reduced=chi2_reduced,
             residuals_re=residuals_re,
             residuals_im=residuals_im,
             Rct=Rct,

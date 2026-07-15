@@ -552,6 +552,12 @@ def params_table_figure(session: EISSession) -> go.Figure:
             return None
         return float(fr.Rct)
 
+    def _chi2_str(fit_results: dict, model: str) -> str:
+        fr = fit_results.get(model)
+        if fr is None or fr.chi2_reduced is None or not np.isfinite(fr.chi2_reduced):
+            return "—"
+        return f"{fr.chi2_reduced:.2f}"
+
     has_comparison = "randles_full" in model_names and "drt_tikhonov" in model_names
 
     def _delta_str(fit_results: dict) -> str:
@@ -564,12 +570,14 @@ def params_table_figure(session: EISSession) -> go.Figure:
 
     step_col: list = []
     model_cols: list = [[] for _ in model_names]
+    chi2_cols: list = [[] for _ in model_names]
     delta_col: list = []
 
     def _append_row(step_label: str, fit_results: dict) -> None:
         step_col.append(step_label)
         for i, m in enumerate(model_names):
             model_cols[i].append(_rct_str(fit_results, m))
+            chi2_cols[i].append(_chi2_str(fit_results, m))
         if has_comparison:
             delta_col.append(_delta_str(fit_results))
 
@@ -584,11 +592,14 @@ def params_table_figure(session: EISSession) -> go.Figure:
 
     n_rows = len(step_col)
     row_colors = ["#EEF0F8" if i % 2 == 0 else "#FFFFFF" for i in range(n_rows)]
-    header_values = ["Étape"] + model_names
+    header_values = ["Étape"] + [f"Rct — {m}" for m in model_names]
     cell_values = [step_col] + model_cols
     if has_comparison:
         header_values = header_values + ["Écart relatif Randles/DRT"]
         cell_values = cell_values + [delta_col]
+    # Colonnes χ²_réduit par modèle (≈1 = adéquation en pondération sigma).
+    header_values = header_values + [f"χ²ᵣ — {m}" for m in model_names]
+    cell_values = cell_values + chi2_cols
 
     fig = go.Figure(data=[go.Table(
         header=dict(values=header_values, fill_color="#4472C4",
