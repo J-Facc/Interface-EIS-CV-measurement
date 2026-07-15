@@ -42,6 +42,28 @@ class EISSpectrum:
 
 
 @dataclass
+class CVCurve:
+    """Courbe voltammétrique légère issue du parseur EC-Lab robuste.
+
+    Structure minimale (Ewe, I, label) destinée au routage des fichiers CV
+    détectés par core.robust_loader.parse_eclab_file lorsqu'aucun traitement CV
+    complet n'est requis : elle permet de stocker la courbe en session sans la
+    tracer. Le courant `I` est déjà en ampères (conversion d'unité appliquée par
+    le parseur). Pour l'analyse CV complète (concentration, step, réplicats,
+    delta_signal), utiliser core.cv_models.CVScan.
+
+    Attributes:
+        Ewe: Potentiel appliqué (V).
+        I: Courant mesuré (A) — déjà converti en ampères par le parseur.
+        label: Nom d'affichage (typiquement le nom de fichier).
+    """
+
+    Ewe: np.ndarray
+    I: np.ndarray
+    label: str
+
+
+@dataclass
 class FitResult:
     """Result of a fit model applied to an EIS spectrum.
 

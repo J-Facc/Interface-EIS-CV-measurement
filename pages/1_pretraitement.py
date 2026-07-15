@@ -114,31 +114,86 @@ def _init_exclusions(experiment: dict) -> None:
 # Chargement des spectres / scans
 # ─────────────────────────────────────────────
 
-def _bio_to_eis(bio, label: str) -> Optional[EISSpectrum]:
+def _bio_to_eis(bio, label: str, report: Optional[dict] = None) -> Optional[EISSpectrum]:
     if bio is None:
         return None
     try:
         bio.seek(0)
         content = bio.read()
         bio.seek(0)
-        return load_spectrum(content, label=label)
-    except Exception:
+        warns: list = []
+        sp = load_spectrum(content, label=label, warnings_out=warns)
+        _record_load(report, label, "EIS", ok=True, warnings=warns)
+        return sp
+    except Exception as exc:
+        _record_load(report, label, "EIS", ok=False, error=str(exc))
         return None
 
 
-def _bio_to_cv(bio, label: str, concentration: float, step: str) -> Optional[CVScan]:
+def _bio_to_cv(bio, label: str, concentration: float, step: str,
+               report: Optional[dict] = None) -> Optional[CVScan]:
     if bio is None:
         return None
     try:
         bio.seek(0)
         content = bio.read()
         bio.seek(0)
-        return load_cv_file(content, label=label, concentration=concentration, step=step)
-    except Exception:
+        warns: list = []
+        sc = load_cv_file(content, label=label, concentration=concentration, step=step,
+                          warnings_out=warns)
+        _record_load(report, label, "CV", ok=True, warnings=warns)
+        return sc
+    except Exception as exc:
+        _record_load(report, label, "CV", ok=False, error=str(exc))
         return None
 
 
-def _load_eis_spectra(experiment: dict) -> Dict[str, Any]:
+def _record_load(report: Optional[dict], label: str, kind: str, ok: bool,
+                 warnings: Optional[list] = None, error: str = "") -> None:
+    """Accumule le bilan de chargement d'un fichier (chargés / ignorés / avertissements).
+
+    `report` est un dict {"loaded": int, "skipped": list, "warnings": list} ;
+    None désactive la collecte (aucun effet de bord) pour les appels internes qui
+    n'affichent pas de récapitulatif.
+    """
+    if report is None:
+        return
+    if ok:
+        report["loaded"] += 1
+        for w in (warnings or []):
+            report["warnings"].append(f"{label} ({kind}) : {w}")
+    else:
+        report["skipped"].append(f"{label} ({kind}) : {error}")
+
+
+def _new_load_report() -> dict:
+    return {"loaded": 0, "skipped": [], "warnings": []}
+
+
+def _render_load_report(report: dict) -> None:
+    """Affiche un récapitulatif « N chargés / M ignorés » et les avertissements.
+
+    Un fichier illisible n'interrompt jamais l'upload : il est simplement listé
+    ici avec le type détecté et la cause, sans faire planter la page.
+    """
+    n_loaded = report["loaded"]
+    skipped = report["skipped"]
+    warnings = report["warnings"]
+    if not skipped and not warnings:
+        return
+    n_skipped = len(skipped)
+    if n_skipped:
+        st.warning(f"⚠️ {n_loaded} fichier(s) chargé(s) / {n_skipped} ignoré(s).")
+        with st.expander(f"Détails des {n_skipped} fichier(s) ignoré(s)", expanded=False):
+            for msg in skipped:
+                st.markdown(f"- {msg}")
+    if warnings:
+        with st.expander(f"Avertissements de lecture ({len(warnings)})", expanded=False):
+            for msg in warnings:
+                st.markdown(f"- {msg}")
+
+
+def _load_eis_spectra(experiment: dict, report: Optional[dict] = None) -> Dict[str, Any]:
     calibration = (experiment.get("calibration") or {}).get("eis") or {}
     probe_dict  = (experiment.get("probe") or {}).get("eis") or {}
     n_elec = experiment.get("n_electrodes", 2)
@@ -149,20 +204,20 @@ def _load_eis_spectra(experiment: dict) -> Dict[str, Any]:
         key = f"electrode_{e}"
         spectra["probe"][key] = [
             sp for ri, bio in enumerate(probe_dict.get(key) or [])
-            if (sp := _bio_to_eis(bio, f"probe_e{e}_r{ri+1}")) is not None
+            if (sp := _bio_to_eis(bio, f"probe_e{e}_r{ri+1}", report)) is not None
         ]
         spectra["calibration"][key] = []
         for ci, rep_files in enumerate(calibration.get(key) or []):
             reps = [
                 sp for ri, bio in enumerate(rep_files or [])
-                if (sp := _bio_to_eis(bio, f"e{e}_c{ci+1}_r{ri+1}")) is not None
+                if (sp := _bio_to_eis(bio, f"e{e}_c{ci+1}_r{ri+1}", report)) is not None
             ]
             spectra["calibration"][key].append(reps)
 
     return spectra
 
 
-def _load_cv_scans(experiment: dict) -> Dict[str, Any]:
+def _load_cv_scans(experiment: dict, report: Optional[dict] = None) -> Dict[str, Any]:
     calibration = (experiment.get("calibration") or {}).get("cv") or {}
     probe_dict  = (experiment.get("probe") or {}).get("cv") or {}
     concentrations = experiment.get("concentrations") or []
@@ -174,14 +229,14 @@ def _load_cv_scans(experiment: dict) -> Dict[str, Any]:
         key = f"electrode_{e}"
         scans["probe"][key] = [
             sc for ri, bio in enumerate(probe_dict.get(key) or [])
-            if (sc := _bio_to_cv(bio, f"probe_e{e}_r{ri+1}", 0.0, "probe")) is not None
+            if (sc := _bio_to_cv(bio, f"probe_e{e}_r{ri+1}", 0.0, "probe", report)) is not None
         ]
         scans["calibration"][key] = []
         for ci, rep_files in enumerate(calibration.get(key) or []):
             conc = concentrations[ci] if ci < len(concentrations) else 0.0
             reps = [
                 sc for ri, bio in enumerate(rep_files or [])
-                if (sc := _bio_to_cv(bio, f"e{e}_c{ci+1}_r{ri+1}", conc, "hybridization")) is not None
+                if (sc := _bio_to_cv(bio, f"e{e}_c{ci+1}_r{ri+1}", conc, "hybridization", report)) is not None
             ]
             scans["calibration"][key].append(reps)
 
@@ -1098,8 +1153,10 @@ def main() -> None:
     has_eis = mode in ("eis_only", "both")
     has_cv  = mode in ("cv_only", "both")
 
-    eis_spectra = _load_eis_spectra(experiment) if has_eis else {"probe": {}, "calibration": {}}
-    cv_scans    = _load_cv_scans(experiment)    if has_cv  else {"probe": {}, "calibration": {}}
+    load_report = _new_load_report()
+    eis_spectra = _load_eis_spectra(experiment, load_report) if has_eis else {"probe": {}, "calibration": {}}
+    cv_scans    = _load_cv_scans(experiment, load_report)    if has_cv  else {"probe": {}, "calibration": {}}
+    _render_load_report(load_report)
 
     # ── Deux colonnes ────────────────────────────────────────────────────────
     col_left, col_right = st.columns([0.65, 0.35])

@@ -1,10 +1,14 @@
 """CV file loader: auto-detect separator, find E/I columns, return CVScan."""
 
 import io
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 
 from core.cv_models import CVScan
+from core.loader import parse_robust
+from core.models import CVCurve
 
 _E_ALIASES = {"ewe", "e", "potential", "voltage"}
 _I_ALIASES = {"i", "current", "<i>"}
@@ -29,8 +33,60 @@ def _find_column(columns: list[str], aliases: set[str]) -> str | None:
     return None
 
 
-def load_cv_file(content: bytes, label: str, concentration: float, step: str) -> CVScan:
-    """Parse a CV file and return a CVScan."""
+def load_cv_file(
+    content: bytes,
+    label: str,
+    concentration: float,
+    step: str,
+    warnings_out: Optional[list] = None,
+) -> CVScan:
+    """Parse a CV file and return a CVScan.
+
+    Reads real EC-Lab ASCII exports via core.robust_loader.parse_eclab_file
+    (FR decimal comma, tab/;/space delimiters, Windows encodings, name-based
+    column mapping, mA→A unit conversion) and falls back to a generic pandas
+    reader for other layouts.
+
+    Args:
+        content: Raw file bytes.
+        label: Display label (typically the filename).
+        concentration: Analyte concentration in mol/L.
+        step: Measurement step ('probe', 'hybridization', 'bare').
+        warnings_out: Optional list; parser warnings are appended to it when the
+            robust parser is used, so callers can relay them to the UI.
+
+    Returns:
+        A CVScan with E in volts and I in amperes, sorted by ascending E.
+
+    Raises:
+        ValueError: If E/I columns cannot be found, or if an EIS file was
+            supplied to the CV loader.
+    """
+    # ── Parseur EC-Lab robuste en priorité ──────────────────────────────────
+    pf = parse_robust(content)
+    if pf is not None and pf.kind == "CV" and pf.n_rows > 0:
+        if warnings_out is not None:
+            warnings_out.extend(pf.warnings)
+        E = np.asarray(pf.columns["Ewe"], dtype=float)
+        I = np.asarray(pf.columns["I"], dtype=float)  # déjà converti en ampères
+        mask = np.isfinite(E) & np.isfinite(I)
+        E, I = E[mask], I[mask]
+        order = np.argsort(E)
+        return CVScan(
+            label=label,
+            E=E[order],
+            I=I[order],
+            concentration=concentration,
+            step=step,
+            source_files=[label],
+        )
+    if pf is not None and pf.kind == "EIS":
+        raise ValueError(
+            f"Fichier {label} : spectre EIS détecté (colonnes {sorted(pf.columns)}), "
+            f"pas une courbe CV. Utilisez le canal EIS."
+        )
+
+    # ── Repli : lecture pandas générique ────────────────────────────────────
     text = content.decode("utf-8", errors="replace")
     sep = _detect_separator(text[:2000])
     df = pd.read_csv(io.StringIO(text), sep=sep, engine="python")
@@ -70,6 +126,26 @@ def load_cv_file(content: bytes, label: str, concentration: float, step: str) ->
         step=step,
         source_files=[label],
     )
+
+
+def load_cv_curve(content: bytes, label: str, warnings_out: Optional[list] = None) -> CVCurve:
+    """Parse a CV file into a lightweight CVCurve(Ewe, I, label).
+
+    Thin wrapper over load_cv_file for callers that only need the raw (Ewe, I)
+    curve — e.g. to stash a detected CV file in session without plotting it,
+    before a dedicated CV view exists. `I` is already in amperes. For full CV
+    analysis (concentration, step, replicates), use load_cv_file → CVScan.
+
+    Args:
+        content: Raw file bytes.
+        label: Display label (typically the filename).
+        warnings_out: Optional list; parser warnings are appended to it.
+
+    Returns:
+        A CVCurve with Ewe in volts and I in amperes.
+    """
+    scan = load_cv_file(content, label=label, concentration=0.0, step="cv", warnings_out=warnings_out)
+    return CVCurve(Ewe=scan.E, I=scan.I, label=label)
 
 
 def average_cv_replicates(scans: list) -> CVScan:
