@@ -67,8 +67,18 @@ def cv_figure_electrode(
     return fig
 
 
-def cv_current_figure(cv_session: CVSession) -> go.Figure:
-    """I (A) vs E (V) for probe + each concentration group."""
+# Gris atténué par thème pour la trace de référence bare (cohérent avec
+# plotting/eis_plots.py). Aucun calcul n'en dépend.
+_BARE_REF_COLOR = {"light": "#8a8f98", "dark": "#c7ccd4"}
+
+
+def cv_current_figure(cv_session: CVSession, theme_mode: str = "light") -> go.Figure:
+    """I (A) vs E (V) for probe + each concentration group.
+
+    Si `cv_session.bare_reference` est renseigné, la courbe « électrode nue » est
+    superposée en style référence (pointillés gris, opacité réduite). AFFICHAGE
+    SEUL — n'entre dans aucun calcul.
+    """
     fig = go.Figure()
 
     if cv_session.probe is not None:
@@ -85,6 +95,17 @@ def cv_current_figure(cv_session: CVSession) -> go.Figure:
             x=s.E, y=s.I,
             mode="lines",
             name=f"{grp.concentration:.2e} M",
+        ))
+
+    bare = getattr(cv_session, "bare_reference", None)
+    if bare is not None:
+        color = _BARE_REF_COLOR.get(theme_mode, _BARE_REF_COLOR["light"])
+        fig.add_trace(go.Scatter(
+            x=bare.E, y=bare.I,
+            mode="lines",
+            name="Électrode nue (réf.)",
+            line=dict(color=color, dash="dot", width=1.5),
+            opacity=0.6,
         ))
 
     fig.update_layout(

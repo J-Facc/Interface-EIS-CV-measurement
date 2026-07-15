@@ -140,6 +140,39 @@ def _load_electrode_spectra(experiment: dict, elec_idx: int) -> list:
     return result
 
 
+def _load_bare_eis(experiment: dict, elec_idx: int):
+    """Charge et moyenne les fichiers « électrode nue » EIS d'une électrode.
+
+    Réutilise les loaders EXISTANTS (load_spectrum + average_replicates) — aucun
+    parsing maison. Retourne un EISSpectrum (moyenne des réplicats, UNE seule
+    trace) ou None. Référence d'AFFICHAGE SEULE : jamais passée au pipeline.
+    """
+    key = f"electrode_{elec_idx}"
+    bare_dict = (experiment.get("bare") or {}).get("eis") or {}
+    bare_files = bare_dict.get(key) or []
+
+    specs = []
+    for ri, bio in enumerate(bare_files):
+        if bio is None:
+            continue
+        try:
+            bio.seek(0)
+            sp = load_spectrum(
+                bio.read(),
+                label="Électrode nue (réf.)",
+                concentration=0.0,
+                step="bare",
+            )
+            bio.seek(0)
+            specs.append(sp)
+        except Exception:
+            pass
+
+    if not specs:
+        return None
+    return average_replicates(specs) if len(specs) > 1 else specs[0]
+
+
 def _build_normalized_session(sessions: dict) -> dict:
     """Combine les sessions par électrode en spectres normalisés par concentration.
 
@@ -220,16 +253,19 @@ def _render_three_nyquist(experiment: dict, sessions: dict) -> None:
         for d in sorted(normalized.values(), key=lambda d: d["concentration"])
     ] if normalized else []
 
+    bare_e1 = sessions.get(1).bare_reference if sessions.get(1) else None
+    bare_e2 = sessions.get(2).bare_reference if sessions.get(2) else None
+
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
         if specs_e1:
-            st.plotly_chart(nyquist_figure_electrode(specs_e1, title="Électrode 1"),
+            st.plotly_chart(nyquist_figure_electrode(specs_e1, title="Électrode 1", bare=bare_e1),
                             width='stretch', key="nyq_e1")
         else:
             st.info("Aucun spectre EIS — Électrode 1")
     with col2:
         if specs_e2:
-            st.plotly_chart(nyquist_figure_electrode(specs_e2, title="Électrode 2"),
+            st.plotly_chart(nyquist_figure_electrode(specs_e2, title="Électrode 2", bare=bare_e2),
                             width='stretch', key="nyq_e2")
         else:
             st.info("Aucun spectre EIS — Électrode 2")
@@ -370,6 +406,9 @@ def main() -> None:
                         config=cfg,
                         active_models=active_models,
                     )
+                    # Référence « électrode nue » — attachée APRÈS l'analyse,
+                    # jamais lue par run_pipeline (affichage seul).
+                    session.bare_reference = _load_bare_eis(experiment, e)
                     sessions[e] = session
                     validations[e] = vr_pipeline or None
             except Exception as exc:

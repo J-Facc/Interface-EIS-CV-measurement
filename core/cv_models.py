@@ -24,3 +24,8 @@ class CVConcentrationGroup:
 class CVSession:
     probe: Optional[CVScan] = None
     groups: list = field(default_factory=list)  # list[CVConcentrationGroup]
+    # Référence « électrode nue » — AFFICHAGE SEUL, JAMAIS utilisée dans les
+    # calculs (ni delta_signal, ni calibration, ni export de valeurs calculées).
+    # Champ dédié et séparé de `probe`/`groups` : attachée à la session APRÈS
+    # l'analyse et seulement superposée à la courbe I/E.
+    bare_reference: Optional[CVScan] = None
