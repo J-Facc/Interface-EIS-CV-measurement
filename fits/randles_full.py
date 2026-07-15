@@ -135,10 +135,14 @@ class RandlesFullModel(BaseFitModel):
             converged = result.success
             x_fit = result.x
 
-            # Approximate parameter covariance from Jacobian
+            # Approximate parameter covariance from Jacobian.
+            # least_squares renvoie result.cost = ½·Σr² : la SSR pondérée vaut
+            # 2·result.cost, donc le χ² réduit est s² = 2·result.cost / (2N − P).
             J = result.jac
             try:
-                cov = np.linalg.inv(J.T @ J) * (result.cost / max(2 * len(spectrum.f) - len(_PARAM_NAMES), 1))
+                dof = max(2 * len(spectrum.f) - len(_PARAM_NAMES), 1)
+                s2 = 2.0 * result.cost / dof
+                cov = np.linalg.inv(J.T @ J) * s2
                 std = np.sqrt(np.abs(np.diag(cov)))
             except np.linalg.LinAlgError:
                 std = np.zeros(len(_PARAM_NAMES))
