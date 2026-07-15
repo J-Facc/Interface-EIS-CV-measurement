@@ -1,17 +1,54 @@
 """EIS data loader: CSV/TXT import, validation, sign correction, replicate averaging."""
 
 import io
+import os
+import tempfile
 import numpy as np
 import pandas as pd
-from typing import Union
+from typing import Optional, Union
 
 from core.models import EISSpectrum
+from core.robust_loader import ParsedFile, parse_eclab_file
 from core.logger import get_logger
 
 log = get_logger("loader")
 
 _PARASITIC_FREQS_DEFAULT = [50.0, 100.0]
 _PARASITIC_TOL_DEFAULT = 3.0
+
+
+def parse_robust(content: Union[str, bytes]) -> Optional[ParsedFile]:
+    """Passe le contenu d'un fichier au parseur EC-Lab robuste (core.robust_loader).
+
+    Le parseur travaille sur un chemin de fichier ; on écrit donc le contenu dans
+    un fichier temporaire le temps de l'analyse. Gère les exports FR (virgule
+    décimale), les délimiteurs tab/;/espaces, les encodages Windows, le mapping
+    des colonnes PAR NOM et la discrimination EIS vs CV.
+
+    Args:
+        content: Contenu brut du fichier (bytes ou str).
+
+    Returns:
+        Le ParsedFile produit par parse_eclab_file, ou None si le parseur
+        lui-même lève une exception (l'appelant retombe alors sur la lecture
+        pandas générique).
+    """
+    data = content.encode("utf-8", errors="replace") if isinstance(content, str) else content
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        return parse_eclab_file(tmp_path)
+    except Exception as e:  # repli défensif : le parseur ne doit jamais bloquer l'upload
+        log.warning(f"parse_eclab_file a échoué, repli lecture générique — {e}")
+        return None
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def _detect_separator(content: str) -> str:
@@ -94,6 +131,7 @@ def _clean_spectrum(
     Zim: np.ndarray,
     parasitic_freqs: list,
     tol: float,
+    correct_sign: bool = True,
 ) -> tuple:
     """Remove NaN/inf, suppress parasitic frequencies, correct sign, sort HF→BF.
 
@@ -103,9 +141,13 @@ def _clean_spectrum(
         Zim: Imaginary impedance (Ω).
         parasitic_freqs: List of frequencies to suppress (Hz).
         tol: Tolerance window around each parasitic frequency (Hz).
+        correct_sign: If True, apply the EC-Lab negative-convention heuristic
+            (flip Zim if the majority is negative). Set to False when the input
+            already respects the -Im(Z) > 0 convention (e.g. produced by
+            core.robust_loader.parse_eclab_file) to AVOID a double sign flip.
 
     Returns:
-        Tuple (f, Zre, Zim) after cleaning.
+        Tuple (f, Zre, Zim) after cleaning, sorted HF→BF.
     """
     mask = np.isfinite(f) & np.isfinite(Zre) & np.isfinite(Zim)
     f, Zre, Zim = f[mask], Zre[mask], Zim[mask]
@@ -115,7 +157,7 @@ def _clean_spectrum(
         f, Zre, Zim = f[keep], Zre[keep], Zim[keep]
 
     # EC-Lab convention: Zim exported as negative → make positive
-    if len(Zim) > 0 and np.sum(Zim < 0) > np.sum(Zim > 0):
+    if correct_sign and len(Zim) > 0 and np.sum(Zim < 0) > np.sum(Zim > 0):
         Zim = -Zim
         log.info("Auto-corrected Zim sign (EC-Lab negative convention detected)")
 
@@ -129,11 +171,15 @@ def load_spectrum(
     concentration: float = 0.0,
     step: str = "hybridization",
     config: dict = None,
+    warnings_out: Optional[list] = None,
 ) -> EISSpectrum:
     """Parse one CSV/TXT file into a validated EISSpectrum.
 
-    Auto-detects separator and header row. Applies sign correction,
-    parasitic frequency removal, and HF→BF sorting.
+    Reads real EC-Lab ASCII exports via core.robust_loader.parse_eclab_file
+    (FR decimal comma, tab/;/space delimiters, Windows encodings, name-based
+    column mapping, EIS/CV discrimination) and falls back to a generic pandas
+    reader for the app's own normalised CSV format and other layouts. Applies
+    parasitic frequency removal and HF→BF sorting downstream.
 
     Args:
         content: Raw file bytes or string.
@@ -141,12 +187,16 @@ def load_spectrum(
         concentration: Analyte concentration in mol/L.
         step: Measurement step: 'bare', 'probe', or 'hybridization'.
         config: App config dict (for parasitic freq parameters).
+        warnings_out: Optional list; parser warnings (e.g. skipped rows) are
+            appended to it when the robust parser is used, so callers can relay
+            them to the UI. Left untouched on the generic-reader fallback path.
 
     Returns:
         Validated EISSpectrum.
 
     Raises:
-        ValueError: If fewer than 5 valid points remain after cleaning.
+        ValueError: If fewer than 5 valid points remain after cleaning, or if a
+            CV file was supplied to the EIS loader.
     """
     if isinstance(content, bytes):
         content = content.decode("utf-8", errors="replace")
@@ -158,6 +208,43 @@ def load_spectrum(
         parasitic_freqs = fit_cfg.get("n_freqs_parasites", _PARASITIC_FREQS_DEFAULT)
         tol = float(fit_cfg.get("tol_parasites", _PARASITIC_TOL_DEFAULT))
 
+    # ── Parseur EC-Lab robuste en priorité ──────────────────────────────────
+    pf = parse_robust(content)
+    if pf is not None and pf.kind == "EIS" and pf.n_rows > 0:
+        if warnings_out is not None:
+            warnings_out.extend(pf.warnings)
+        # pf.Zim est DÉJÀ en convention -Im(Z) > 0 → correct_sign=False pour
+        # ne PAS ré-inverser le signe (anti-double-signe).
+        f, Zre, Zim = _clean_spectrum(
+            np.asarray(pf.f, dtype=float),
+            np.asarray(pf.Zre, dtype=float),
+            np.asarray(pf.Zim, dtype=float),
+            parasitic_freqs,
+            tol,
+            correct_sign=False,
+        )
+        if len(f) < 5:
+            raise ValueError(
+                f"Fichier {label} : moins de 5 points valides après nettoyage "
+                f"(trouvé {len(f)} points)"
+            )
+        return EISSpectrum(
+            label=label,
+            f=f,
+            Zre=Zre,
+            Zim=Zim,
+            concentration=concentration,
+            step=step,
+            n_points=len(f),
+            source_files=[label],
+        )
+    if pf is not None and pf.kind == "CV":
+        raise ValueError(
+            f"Fichier {label} : courbe CV détectée (colonnes {sorted(pf.columns)}), "
+            f"pas un spectre EIS. Utilisez le canal CV."
+        )
+
+    # ── Repli : lecture pandas générique (format normalisé de l'app, CSV US…) ─
     lines = content.splitlines()
     header_row = _find_header_row(lines)
     sep = _detect_separator(content)
