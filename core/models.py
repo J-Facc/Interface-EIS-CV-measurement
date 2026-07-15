@@ -54,7 +54,12 @@ class FitResult:
     params_std: dict
     Zfit_re: np.ndarray
     Zfit_im: np.ndarray
-    chi2: float
+    # χ² réduit pondéré = Σ(w·Δ²)/(2N−P), avec les poids w effectivement utilisés
+    # par le fit (cf. fits/randles_full.py). ATTENTION : sous pondération modulus
+    # rééchelonnée (w = 1/(alpha_noise·|Z|)², alpha_noise arbitraire), chi2_reduced≈1
+    # n'est PAS un test d'adéquation statistique — juste une métrique de misfit
+    # relative comparable entre spectres (voir prompt C).
+    chi2_reduced: float
     residuals_re: np.ndarray
     residuals_im: np.ndarray
     Rct: float

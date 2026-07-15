@@ -189,7 +189,7 @@ def run_pipeline(
                 sp.fit_results[model.name] = fr
                 log.info(
                     f"Fit '{model.name}' [{label}]: "
-                    f"Rct={fr.Rct:.1f} Ω chi2={fr.chi2:.3e} ok={fr.converged}"
+                    f"Rct={fr.Rct:.1f} Ω chi2_red={fr.chi2_reduced:.3e} ok={fr.converged}"
                 )
             except Exception as e:
                 log.error(f"Fit '{model.name}' [{label}] failed: {e}")
@@ -210,7 +210,7 @@ def run_pipeline(
                 fit_results[model.name] = fr
                 log.info(
                     f"Fit '{model.name}' [{conc:.2e} M]: "
-                    f"Rct={fr.Rct:.1f} Ω chi2={fr.chi2:.3e} ok={fr.converged}"
+                    f"Rct={fr.Rct:.1f} Ω chi2_red={fr.chi2_reduced:.3e} ok={fr.converged}"
                 )
             except Exception as e:
                 log.error(f"Fit '{model.name}' [{conc:.2e} M] failed: {e}")

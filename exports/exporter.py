@@ -42,7 +42,7 @@ def export_params_csv(sessions) -> bytes:
                     "model": model_name,
                     "Rct": fit.Rct,
                     "Rct_std": fit.Rct_std,
-                    "chi2": fit.chi2,
+                    "chi2_reduced": fit.chi2_reduced,
                     "converged": fit.converged,
                 }
                 row_base.update(fit.params)
@@ -116,7 +116,7 @@ def export_session_yaml(session: EISSession) -> str:
             grp_data["fits"][model_name] = {
                 "Rct": float(fit.Rct),
                 "Rct_std": float(fit.Rct_std),
-                "chi2": float(fit.chi2),
+                "chi2_reduced": float(fit.chi2_reduced),
                 "converged": bool(fit.converged),
                 "params": {
                     k: (v.tolist() if hasattr(v, "tolist") else

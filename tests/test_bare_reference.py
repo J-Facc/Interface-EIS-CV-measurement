@@ -32,7 +32,7 @@ def _fr(rct: float) -> FitResult:
     z = np.array([])
     return FitResult(
         model_name=MODEL, params={}, params_std={},
-        Zfit_re=z, Zfit_im=z, chi2=0.0, residuals_re=z, residuals_im=z,
+        Zfit_re=z, Zfit_im=z, chi2_reduced=0.0, residuals_re=z, residuals_im=z,
         Rct=rct, Rct_std=0.0, converged=True,
     )
 

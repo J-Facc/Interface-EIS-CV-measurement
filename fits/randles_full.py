@@ -160,7 +160,14 @@ class RandlesFullModel(BaseFitModel):
 
         res_re = spectrum.Zre - Z_fit.real
         res_im = spectrum.Zim + Z_fit.imag
-        chi2 = float(np.mean(res_re ** 2 + res_im ** 2))
+
+        # χ² réduit pondéré effectivement minimisé : Σ(w_re·Δre² + w_im·Δim²)/(2N−P),
+        # avec les mêmes poids par point que le fit (w_re = w_im = _w, cf. residuals()).
+        # NB : sous pondération modulus rééchelonnée (w = 1/(alpha_noise·|Z|)² avec
+        # alpha_noise arbitraire), chi2_reduced≈1 n'est PAS un test d'adéquation —
+        # c'est une métrique de misfit relative comparable entre spectres (prompt C).
+        dof = max(2 * len(spectrum.f) - len(_PARAM_NAMES), 1)
+        chi2_reduced = float(np.sum(_w * (res_re ** 2 + res_im ** 2)) / dof)
 
         # ── Diagnostics d'ajustement (I7) : les 3 gardes qui auraient crié B1 ──
         Zmod2 = spectrum.Zre ** 2 + spectrum.Zim ** 2 + 1e-30
@@ -187,7 +194,7 @@ class RandlesFullModel(BaseFitModel):
             params_std=params_std,
             Zfit_re=Z_fit.real,
             Zfit_im=-Z_fit.imag,
-            chi2=chi2,
+            chi2_reduced=chi2_reduced,
             residuals_re=res_re,
             residuals_im=res_im,
             Rct=float(Rct),
