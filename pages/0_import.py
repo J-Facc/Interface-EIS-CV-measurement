@@ -247,6 +247,55 @@ def _upload_probe_elec(sig: str, n_elec: int) -> dict:
     return result
 
 
+def _section_bare_uploads(n_elec: int, mode_key: str) -> dict:
+    """Section 'Électrode nue (Bare)'. Retourne dict {sig: {electrode_k: [BytesIO, ...]}}.
+
+    Référence d'AFFICHAGE SEULE : ces courbes sont superposées au Nyquist (EIS)
+    et à la courbe I/E (CV), et n'entrent dans AUCUN calcul.
+    """
+    st.subheader("⬜ Électrode nue (Bare) — référence, hors calcul")
+    st.caption(
+        "Optionnel — superposée au Nyquist (EIS) et à la courbe I/E (CV) comme "
+        "simple repère visuel. **N'entre dans aucun calcul** : ni fit, ni "
+        "normalisation, ni calibration, ni export de valeurs."
+    )
+
+    sig_types = _sig_types_for_mode(mode_key)
+    bare: dict = {}
+
+    if len(sig_types) == 1:
+        sig = sig_types[0]
+        bare[sig] = _upload_bare_elec(sig, n_elec)
+    else:
+        cols = st.columns(len(sig_types))
+        for col, sig in zip(cols, sig_types):
+            with col:
+                st.markdown(f"**{sig.upper()}**")
+                bare[sig] = _upload_bare_elec(sig, n_elec)
+
+    return bare
+
+
+def _upload_bare_elec(sig: str, n_elec: int) -> dict:
+    result = {}
+    for e in range(1, n_elec + 1):
+        files = st.file_uploader(
+            f"Électrode {e}",
+            accept_multiple_files=True,
+            key=_sk(f"bare_{sig}_e{e}"),
+        )
+        bios, n_converted = _files_to_bytesio(files)
+        result[f"electrode_{e}"] = bios
+        n = len(bios)
+        if n > 0:
+            st.caption(f"✔ {n} réplicat(s) bare chargé(s) — réf. hors calcul")
+        else:
+            st.caption("Aucun fichier")
+        if n_converted > 0:
+            st.caption(f"🔄 {n_converted} fichier(s) .mpr converti(s) automatiquement")
+    return result
+
+
 def _section_calibration_uploads(
     concentrations: list[float],
     n_elec: int,
@@ -479,6 +528,10 @@ def main() -> None:
     probe = _section_probe_uploads(n_elec, mode_label)
     st.divider()
 
+    # ── 3bis. Électrode nue (Bare) — référence d'affichage, hors calcul ──
+    bare = _section_bare_uploads(n_elec, mode_label)
+    st.divider()
+
     # ── 4. Calibration ──────────────────────────────────────────────────
     calibration = _section_calibration_uploads(concentrations, n_elec, n_rep, mode_label)
     st.divider()
@@ -508,6 +561,7 @@ def main() -> None:
             "n_electrodes": n_elec,
             "n_replicats":  n_rep,
             "probe":        probe,
+            "bare":         bare,   # référence d'affichage seule — hors calcul
             "calibration":  calibration,
             "validation":   validation,
         }
@@ -533,6 +587,7 @@ def main() -> None:
         "n_electrodes": n_elec,
         "n_replicats": n_rep,
         "probe": probe,
+        "bare": bare,   # référence d'affichage seule — hors calcul
         "calibration": calibration,
         "validation": validation,
     }

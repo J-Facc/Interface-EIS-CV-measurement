@@ -104,3 +104,9 @@ class EISSession:
     # pour bare/probe, avec fit_results par réplicat. Optionnel, vide par défaut.
     bare_replicate_spectra: list = field(default_factory=list)
     probe_replicate_spectra: list = field(default_factory=list)
+    # Référence « électrode nue » — AFFICHAGE SEUL, JAMAIS utilisée dans les
+    # calculs (ni fit, ni θ_EIS, ni normalisation, ni calibration, ni export de
+    # valeurs calculées). Champ dédié et séparé de `bare`/`probe`/`groups` afin
+    # que le pipeline soit structurellement incapable de la lire : elle est
+    # attachée à la session APRÈS l'analyse et seulement superposée au Nyquist.
+    bare_reference: Optional[EISSpectrum] = None

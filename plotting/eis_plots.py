@@ -29,6 +29,27 @@ def _spectrum_label(sp: EISSpectrum) -> str:
     return f"[{mant:.1f}×10{_sup(exp)} M]"
 
 
+# ── Référence « électrode nue » (affichage seul) ──────────────────────────────────────
+
+# Gris atténué par thème pour la trace de référence bare (contraste doux sur
+# fond clair comme sombre). Aucun calcul n'en dépend.
+_BARE_REF_COLOR = {"light": "#8a8f98", "dark": "#c7ccd4"}
+
+
+def _add_bare_reference_trace(fig, x, y, theme_mode: str, hovertemplate: str) -> None:
+    """Superpose une courbe de référence « électrode nue » (pointillés gris,
+    opacité réduite, légende dédiée). AFFICHAGE SEUL — ne calcule rien."""
+    color = _BARE_REF_COLOR.get(theme_mode, _BARE_REF_COLOR["light"])
+    fig.add_trace(go.Scatter(
+        x=x, y=y,
+        mode="lines",
+        name="Électrode nue (réf.)",
+        line=dict(color=color, dash="dot", width=1.5),
+        opacity=0.6,
+        hovertemplate=hovertemplate,
+    ))
+
+
 # ── Nyquist ───────────────────────────────────────────────────────────────────────────
 
 def nyquist_figure(
@@ -185,6 +206,8 @@ def _conc_color(concentration: float, c_min: float, c_max: float) -> str:
 def nyquist_figure_electrode(
     spectra: list,
     title: str = "",
+    bare=None,
+    theme_mode: str = "light",
 ) -> go.Figure:
     """Nyquist pour une électrode : une trace par concentration, couleur log-scale.
 
@@ -193,6 +216,9 @@ def nyquist_figure_electrode(
     spectra : list de dicts avec clés "label", "Zre", "Zim", "concentration".
               Passer le probe avec concentration=0 pour l'afficher en noir.
     title   : titre du graphique.
+    bare    : EISSpectrum optionnel (référence « électrode nue »). AFFICHAGE SEUL
+              — simplement superposé, aucun calcul. None = pas de superposition.
+    theme_mode : 'light' ou 'dark' (thème jour/nuit).
     """
     fig = go.Figure()
 
@@ -224,6 +250,18 @@ def nyquist_figure_electrode(
             ),
         ))
 
+    # Référence « électrode nue » — superposition d'affichage seule (pointillés,
+    # gris atténué, opacité réduite). Ne dérive aucun calcul.
+    if bare is not None:
+        _add_bare_reference_trace(
+            fig, np.asarray(bare.Zre), np.asarray(bare.Zim), theme_mode,
+            hovertemplate=(
+                "<b>Électrode nue (réf.)</b><br>"
+                "Re(Z) = %{x:.1f} Ω<br>"
+                "−Im(Z) = %{y:.1f} Ω<extra></extra>"
+            ),
+        )
+
     fig.update_layout(
         title=title or "Diagramme de Nyquist",
         xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
@@ -232,7 +270,7 @@ def nyquist_figure_electrode(
         hovermode="closest",
         margin=dict(r=120),
     )
-    apply_theme_to_figure(fig, "light")
+    apply_theme_to_figure(fig, theme_mode)
     return fig
 
 
