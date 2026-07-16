@@ -8,6 +8,7 @@ set BRANCH=main
 set APP_DIR=%~dp0eis_app
 set VENV_DIR=%~dp0venv
 set VERSION_FILE=%~dp0.version
+set TOKEN_FILE=%~dp0token.txt
 set PORT=8501
 :: ───────────────────────────────────────────────────────────────
 
@@ -18,11 +19,29 @@ echo ============================================
 :: Activer les chemins longs Windows
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f >nul 2>&1
 
+:: ── Lecture du token (repo prive) ──────────────────────────────
+:: token.txt doit etre a COTE de ce .bat (jamais dans eis_app\)
+if not exist "%TOKEN_FILE%" (
+    echo.
+    echo   ERREUR : token.txt introuvable a cote de launch.bat
+    echo   Placez le fichier token.txt fourni dans CE dossier :
+    echo   %~dp0
+    echo.
+    pause
+    exit /b 1
+)
+set GITHUB_TOKEN=
+set /p GITHUB_TOKEN=<"%TOKEN_FILE%"
+if "!GITHUB_TOKEN!"=="" (
+    echo   ERREUR : token.txt est vide.
+    pause
+    exit /b 1
+)
+
 :: 1. Verifier si une mise a jour est disponible
 echo [1/5] Verification des mises a jour...
-
 set REMOTE_SHA=
-for /f "delims=" %%i in ('powershell -Command "try { (Invoke-RestMethod -Uri 'https://api.github.com/repos/%GITHUB_USER%/%GITHUB_REPO%/commits/%BRANCH%' -UseBasicParsing).sha } catch { '' }" 2^>nul') do set REMOTE_SHA=%%i
+for /f "delims=" %%i in ('powershell -Command "try { [Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}; $h=@{Authorization='Bearer %GITHUB_TOKEN%'; 'User-Agent'='EIS-Launcher'; Accept='application/vnd.github+json'}; (Invoke-RestMethod -Uri 'https://api.github.com/repos/%GITHUB_USER%/%GITHUB_REPO%/commits/%BRANCH%' -Headers $h -UseBasicParsing).sha } catch { '' }" 2^>nul') do set REMOTE_SHA=%%i
 
 set LOCAL_SHA=
 if exist "%VERSION_FILE%" (
@@ -30,25 +49,22 @@ if exist "%VERSION_FILE%" (
 )
 
 if "!REMOTE_SHA!"=="" (
-    echo Hors ligne - utilisation version locale.
+    echo Hors ligne ou token invalide - utilisation version locale.
     goto INSTALL
 )
-
 if "!REMOTE_SHA!"=="!LOCAL_SHA!" (
     if exist "%APP_DIR%\app.py" (
         echo Deja a jour - demarrage direct.
         goto INSTALL
     )
 )
-
 echo Mise a jour disponible - telechargement...
 
-:: 2. Telecharger le ZIP
+:: 2. Telecharger le ZIP (endpoint zipball authentifie - obligatoire repo prive)
 echo [2/5] Telechargement...
-set ZIP_URL=https://github.com/%GITHUB_USER%/%GITHUB_REPO%/archive/refs/heads/%BRANCH%.zip
+set ZIP_URL=https://api.github.com/repos/%GITHUB_USER%/%GITHUB_REPO%/zipball/%BRANCH%
 set ZIP_FILE=%TEMP%\eis_update.zip
-
-powershell -Command "Invoke-WebRequest -Uri '%ZIP_URL%' -OutFile '%ZIP_FILE%' -UseBasicParsing" 2>nul
+powershell -Command "try { [Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}; $h=@{Authorization='Bearer %GITHUB_TOKEN%'; 'User-Agent'='EIS-Launcher'}; Invoke-WebRequest -Uri '%ZIP_URL%' -Headers $h -OutFile '%ZIP_FILE%' -UseBasicParsing; exit 0 } catch { exit 1 }" 2>nul
 if !errorlevel! neq 0 (
     echo Telechargement echoue - utilisation version locale.
     goto INSTALL
@@ -98,7 +114,6 @@ if not exist "%APP_DIR%\app.py" (
     pause
     exit /b 1
 )
-
 echo.
 echo Interface disponible sur http://localhost:!PORT!
 echo Fermez cette fenetre pour arreter l'application.
@@ -106,6 +121,5 @@ echo.
 start "" "http://localhost:!PORT!"
 cd /d "%APP_DIR%"
 "!STREAMLIT_EXE!" run app.py --server.port !PORT! --server.headless true --browser.gatherUsageStats false
-
 pause
 endlocal
