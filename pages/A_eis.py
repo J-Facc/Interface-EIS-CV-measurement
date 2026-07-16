@@ -16,9 +16,11 @@ from ui.tabs import render_eis_tabs
 
 _DEFAULT_CONFIG = config_to_dict(load_config())
 
-# Seules ces deux méthodes sont affichées dans les graphes et tableaux EIS.
-# Le pipeline peut en calculer d'autres en arrière-plan.
-METHODS_TO_DISPLAY = ["randles_full", "drt_tikhonov"]
+# Méthodes de fit paramétrique affichées dans les graphes et tableaux EIS.
+# Le pipeline peut en calculer d'autres en arrière-plan. La DRT n'est plus un
+# fit du pipeline : c'est un moteur dédié (fits/drt_fit.py, wrapper bayes-drt2)
+# rendu dans l'onglet DRT.
+METHODS_TO_DISPLAY = ["randles_full"]
 
 
 def _filter_session_display(session):
@@ -349,10 +351,12 @@ def main() -> None:
                 "circular":            "Fit circulaire",
                 "randles_constrained": "Randles contraint",
                 "randles_full":        "Randles complet",
-                "drt_tikhonov":        "DRT (Tikhonov, QP)",
-                "drt_fft_ideal":       "DRT FFT (spectre idéal Randles — étude MAD)",
             }
-            _displayed = {"randles_full", "drt_tikhonov"}
+            _displayed = {"randles_full"}
+            st.caption(
+                "La DRT (aperçu ridge + bayésienne HMC) est calculée dans "
+                "l'onglet **Courbes DRT**, pas ici."
+            )
             active_models = [
                 m for m, label in model_choices.items()
                 if st.checkbox(label, value=(m in _displayed), key=f"eis_model_{m}")
@@ -388,9 +392,9 @@ def main() -> None:
     cfg.setdefault("fit", {})
     cfg["fit"]["weight_mode"] = weight_mode
 
-    # I6 : un modèle sélectionné mais non chargé (import échoué, ex. cvxopt
-    # absent → drt_tikhonov) ou non implémenté ne doit pas disparaître en
-    # silence — on le signale et on le retire de la liste avant l'analyse.
+    # I6 : un fit paramétrique sélectionné mais non chargé (import échoué) ou
+    # non implémenté ne doit pas disparaître en silence — on le signale et on
+    # le retire de la liste avant l'analyse.
     from fits.registry import all_models as _all_models, discovery_errors as _discovery_errors
     _available = {m.name for m in _all_models()}
     _load_errors = _discovery_errors()

@@ -1,5 +1,5 @@
 streamlit>=1.32.0
-numpy>=1.26.0
+numpy>=2.0
 scipy>=1.12.0
 pandas>=2.2.0
 plotly>=5.20.0
@@ -10,4 +10,6 @@ kaleido>=0.2.1
 pytest>=8.0
 scikit-learn>=1.3.0
 eclabfiles>=0.4.1
-cvxopt>=1.3.0
+# La DRT (moteur bayes-drt2 vendoré) est un extra optionnel : voir
+# requirements-drt.txt (cvxopt + cmdstanpy). L'app reste fonctionnelle sans lui,
+# l'onglet DRT se désactivant proprement.

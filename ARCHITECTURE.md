@@ -55,10 +55,10 @@ Interface-EIS-CV-measurement/          ← racine du repo GitHub
 │   ├── physics.py                     ← fonctions physiques partagées (Z_D, Z_randles_full, θ_EIS…)
 │   ├── registry.py                    ← découverte auto + discovery_errors() (modèles non chargés)
 │   ├── randles_full.py                ← Randles complet (8 paramètres, least_squares) + diagnostics
-│   ├── drt_tikhonov.py                ← DRT model-free via pyDRTtools (RBF + Tikhonov ordre 1 + QP) — DRT principale
-│   ├── drt_fft.py                     ← DRT FFT/Wiener sur spectre IDÉAL Randles (étude MAD, pas indépendante)
-│   ├── kk_validation.py               ← validation Kramers-Kronig (Lin-KK, circuits de Voigt)
-│   └── _pydrttools/                   ← cœur de calcul pyDRTtools vendoré (MIT — NE PAS refactorer)
+│   ├── drt_fit.py                     ← moteur DRT (wrapper bayes-drt2) : ridge (aperçu) + HMC (référence, incertitudes)
+│   └── kk_validation.py               ← validation Kramers-Kronig (Lin-KK, circuits de Voigt)
+│
+│   (le paquet de calcul DRT lui-même est vendoré dans vendor/bayes_drt2/)
 │
 ├── plotting/                          ← reçoit des données, ne calcule rien
 │   ├── __init__.py
@@ -183,16 +183,19 @@ core/models.py → EISSpectrum { label, f[], Zre[], Zim[], concentration, step }
         ↓
 core/pipeline.py → run_pipeline()
         ↓
-fits/ — modèles actifs, appliqués SÉQUENTIELLEMENT (pas en parallèle)
+fits/ — fits paramétriques, appliqués SÉQUENTIELLEMENT (pas en parallèle)
   randles_full   → FitResult { params, Zfit[], chi2_reduced, Rct, reconstruction_error, warnings }
-  drt_tikhonov   → FitResult (DRT model-free — principale)
-  drt_fft_ideal  → FitResult (étude MAD ; re-fitte Randles en interne)
         ↓
 core/models.py → EISSession { bare, probe, groups[] }
         ↓
 plotting/eis_plots.py → figures Plotly  ·  core/calibration.py → régressions
         ↓
 ui/tabs.py::render_eis_tabs → onglets Streamlit (appelé par pages/A_eis.py)
+
+DRT (hors pipeline) — moteur dédié fits/drt_fit.py (wrapper bayes-drt2) :
+  drt_preview(spectrum) → DRTResult (ridge, aperçu live, pas d'intervalles)
+  run_drt_bayes_batch(session) → HMC parallèle → DRTResult { γ, γ_lo, γ_hi,
+     Rp, Rp_lo, Rp_hi, Z_fit } mis en cache + persisté dans sessions/
 ```
 
 ---
@@ -202,67 +205,55 @@ ui/tabs.py::render_eis_tabs → onglets Streamlit (appelé par pages/A_eis.py)
 | Modèle | Fichier | Paramètres libres | Méthode |
 |--------|---------|-------------------|---------|
 | Randles complet (`name="randles_full"`) | `randles_full.py` | 8 (Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d) | `scipy.optimize.least_squares` (pondération Modulus) + diagnostics (résidu/butée) |
-| DRT Tikhonov (QP) (`name="drt_tikhonov"`) | `drt_tikhonov.py` | λ (sélection auto par rGCV) | RBF Gaussienne + Tikhonov ordre 1 + QP sous contrainte de positivité (cvxopt), **model-free** |
-| DRT FFT/Wiener (spectre idéal) (`name="drt_fft_ideal"`) | `drt_fft.py` | hérités du fit Randles + filtre W | FFT + filtre Wiener, sur spectre **idéal** |
 
-> Ce sont les **3 seuls** modèles enregistrés (découverte auto par `fits/registry.py`).
-> Les anciens noms `randles_classique` / `randles_contraint` / `circulaire_fit` /
-> `circular.py` n'existent pas. Un modèle dont l'import échoue (ex. `cvxopt` absent)
-> est signalé par `registry.discovery_errors()` et affiché dans l'UI, pas masqué.
+> Les fits paramétriques sont découverts automatiquement par `fits/registry.py`
+> (sous-classes de `BaseFitModel`). Un modèle dont l'import échoue est signalé
+> par `registry.discovery_errors()` et affiché dans l'UI, pas masqué.
+> **La DRT n'est plus un plugin du registre** : c'est un moteur dédié
+> (`fits/drt_fit.py`, voir §5bis) appelé directement par l'onglet DRT.
 
 **Circuit physique (Randles modifié) :**
 ```
 Re — [ R'e // Cb ] — [ Rct // CPE(Qdl, α) ] — ZD(ω)
 ```
 
-### Deux méthodes DRT distinctes — ne jamais les confondre
+## 5bis. Le moteur DRT (`fits/drt_fit.py`, wrapper `vendor/bayes_drt2/`)
 
-Référence : Bissessur, Man, Gamby, *Use of an approach with a distribution of
-relaxation times for impedance analysis of a channel electrode in
-microfluidics*, Phys. Rev. E **113**, 025502 (2026), DOI: 10.1103/fn2s-z364.
+DRT unique, bâtie sur le paquet **bayes-drt2** vendoré (inversion hiérarchique
+bayésienne, Jake Huang — voir `vendor/README.md`, `THIRD_PARTY_LICENSES.md`).
+Deux méthodes, un seul paquet de calcul :
 
-- **`fits/drt_tikhonov.py` (DRT principale, section III.B "DRT with
-  DRTtools")** — model-free, appliquée DIRECTEMENT sur les données
-  expérimentales brutes déposées via l'onglet Import (`pages/0_import.py`).
-  Appelle directement le cœur de calcul de
-  [pyDRTtools](https://github.com/ciuccislab/pyDRTtools) (Ciucci lab, MIT,
-  vendoré dans `fits/_pydrttools/` — voir `THIRD_PARTY_LICENSES.md`) plutôt
-  qu'une réimplémentation maison, pour la fidélité à l'outil de référence
-  cité dans la littérature : points de collocation τ = 1/f sur les
-  fréquences expérimentales elles-mêmes, discrétisation par fonctions de
-  base radiales (RBF gaussienne) du noyau de Fredholm, régularisation de
-  Tikhonov d'ordre 1, λ sélectionné automatiquement par validation croisée
-  généralisée robuste (rGCV), résolution par programmation quadratique sous
-  contrainte de positivité (cvxopt ; γ(τ) ≥ 0). Remplace une précédente
-  réimplémentation Dirac-basis + NNLS qui souffrait d'un bug de "peigne" de
-  pics isolés sur données bruitées. C'est le modèle `"drt_tikhonov"` utilisé
-  par défaut dans les graphes DRT, la reconstruction Nyquist et la
-  calibration.
+- **`drt_preview(spectrum)` — aperçu instantané (ridge).**
+  `Inverter.ridge_fit(freq, Z, hyper_lambda=True)` : ridge hyperparamétrique,
+  rapide, sans cmdstan. Affiché en direct pour tous les spectres, et sert
+  d'**initialiseur** du HMC. Pas d'intervalles (`gamma_lo/hi = None`).
 
-  Références : Wan, Saccoccio, Chen, Ciucci, *Electrochim. Acta* **184**,
-  483 (2015) ; Maradesa, Py, Wan, Effat, Ciucci, *J. Electrochem. Soc.*
-  **170**, 030502 (2023) (sélection de λ par GCV/rGCV/mGCV).
+- **`drt_bayes(spectrum)` / `run_drt_bayes_batch(session)` — référence (HMC).**
+  `Inverter.fit(freq, Z, mode='sample', init_from_ridge=True)` : échantillonnage
+  HMC qui produit en plus les **intervalles de crédibilité** (γ_lo/γ_hi à
+  2.5/97.5 %, Rp_lo/Rp_hi). Le batch parallélise (`ProcessPoolExecutor`,
+  `max_workers` = nombre de cœurs) sur tous les spectres non encore en cache.
 
-- **`fits/drt_fft.py` (modèle `"drt_fft_ideal"`, section III.C "DRT with
-  DFT")** — reconstruit la DRT EXACTE d'un spectre **idéal**, c'est-à-dire le
-  modèle Randles déjà fitté (`randles_full.py`) réévalué sur une grille
-  log-ω dense, puis déconvolué par FFT/filtre Wiener. Cette méthode n'est
-  PAS indépendante du fit Randles — elle sert exclusivement à l'étude
-  théorique des lois d'échelle MAD (Maxima Asymptotic Dynamics) sur des cas
-  contrôlés, pas à produire un Rct à comparer à Rct_randles.
+**Convention d'impédance** : le loader stocke `Zim = -Im(Z) > 0` ; bayes-drt2
+attend `Z'' < 0`, d'où `Z = spectrum.Zre - 1j·spectrum.Zim`.
 
-### Comparaison Randles vs DRT (model-free) — trois niveaux
+**Cache + persistance** : clé = hash de `(freq, Z)` arrondis. Le DRTResult HMC est
+mis en cache mémoire et persisté en YAML dans `sessions/drt_cache/`. Au
+rechargement d'une session, un HMC déjà en cache **n'est jamais recalculé**.
 
-1. **Paramètre** — `plotting/eis_plots.py::params_table_figure` affiche, pour
-   chaque étape (bare/probe/concentration), Rct_randles, Rct_drt et leur
-   écart relatif. Branché dans l'onglet "3️⃣ Reconstructions Nyquist".
-2. **Reconstruction Nyquist** — `reconstruction_comparison_figure` et
-   `drt_reconstruction_figure_dual` superposent points expérimentaux,
-   courbe Randles et courbe DRT Tikhonov pour un même spectre.
-3. **Calibration** — `calibration_figure` trace une régression log-log
-   distincte (avec son propre R²) par modèle présent dans la session,
-   donc une courbe pour `randles_full` et une pour `drt_tikhonov`,
-   visibles simultanément sur le même graphe avec légende séparée.
+**Garde-fous** :
+- L'import de `vendor.bayes_drt2` est protégé (`try/except`) : extra DRT non
+  installé (`cvxopt`/`cmdstanpy` absents) → DRT désactivée proprement, pas de
+  crash (`drt_fit.bayes_available()` renvoie `False`).
+- `drt_bayes` teste `cmdstanpy.cmdstan_path()` **sans compiler à la volée** :
+  cmdstan absent → repli sur le ridge + statut « lancez setup_drt_bayesien.bat ».
+  L'app reste fonctionnelle en aperçu ; seul le HMC est bloqué.
+
+Dépendances : `requirements-drt.txt` (`cvxopt` + `cmdstanpy`). `requirements.txt`
+de base reste léger.
+
+Référence DRT (contexte capteur) : Bissessur, Man, Gamby, Phys. Rev. E **113**,
+025502 (2026), DOI: 10.1103/fn2s-z364.
 
 ---
 
@@ -275,10 +266,10 @@ remonte les avertissements de fit (non convergé, résidu élevé, paramètre en
 | Onglet | Contenu |
 |--------|---------|
 | **Validation KK** | Diagnostic Kramers-Kronig (Lin-KK) par réplicat |
-| **Courbes DRT** | Distribution γ(τ) vs log(τ) — `drt_tikhonov` (model-free, principale) |
-| **Reconstructions Nyquist** | Table Rct_randles vs Rct_drt (écart relatif) + Nyquist mesuré/Randles/DRT superposés |
+| **Courbes DRT** | γ(τ) vs log₁₀(τ) — ridge en direct pour tous les spectres ; bouton « Calculer DRT bayésienne » → HMC + bande d'incertitude γ_lo–γ_hi (`fits/drt_fit.py`) |
+| **Reconstructions Nyquist** | Table Rct_randles + reconstruction Nyquist mesuré/Randles |
 | **Calibration** | Signal normalisé vs log([c]) + régression + R² (via `core/calibration.py`), une courbe par modèle |
-| **Export** (page dédiée `E_export.py`) | CSV params, CSV spectres DRT, PNG, HTML, YAML, ZIP session |
+| **Export** (page dédiée `E_export.py`) | CSV params, PNG, HTML, YAML, ZIP session |
 
 ---
 

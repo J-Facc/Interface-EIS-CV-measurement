@@ -5,7 +5,6 @@ import pytest
 
 from fits.physics import Z_randles_full
 from fits.randles_full import RandlesFullModel, _PARAM_NAMES
-from fits.drt_fft import DRTFFTModel
 from fits.kk_validation import kramers_kronig_check
 from core.loader import load_spectrum, average_replicates
 from core.models import EISSpectrum
@@ -63,7 +62,7 @@ def _zarc_spectrum(R: float = 3000.0, tau0: float = 1e-3, phi: float = 0.8,
     )
 
 
-# ── DRT FFT tests ──────────────────────────────────────────────────────
+# ── Config synthétique pour la validation KK ────────────────────────────
 
 _DRT_CONFIG = {
     "fit": {
@@ -73,42 +72,7 @@ _DRT_CONFIG = {
 }
 
 
-def test_drt_returns_positive_rct():
-    sp = _randles_spectrum()
-    result = DRTFFTModel().fit(sp, _DRT_CONFIG)
-    assert result.Rct > 0
-
-
-def test_drt_gamma_non_zero():
-    sp = _randles_spectrum()
-    result = DRTFFTModel().fit(sp, _DRT_CONFIG)
-    gamma = np.array(result.drt_gamma)
-    assert gamma.max() > 0, "DRT should have at least one non-zero value"
-
-
-def test_drt_fit_arrays_finite():
-    sp = _randles_spectrum()
-    result = DRTFFTModel().fit(sp, _DRT_CONFIG)
-    assert np.all(np.isfinite(result.Zfit_re))
-    assert np.all(np.isfinite(result.Zfit_im))
-
-
-def test_drt_fft_randles_simple():
-    """Spectre Randles synthétique propre, vérifie drt_tau/drt_gamma et Rct_drt
-    cohérent avec Rct_randles à 30% près."""
-    sp = _randles_spectrum()
-    result = DRTFFTModel().fit(sp, _DRT_CONFIG)
-    assert len(result.drt_tau) == len(result.drt_gamma)
-    assert result.Rct > 0
-    Rct_randles = result.params["Rct_randles"]
-    rel_err = abs(result.Rct - Rct_randles) / Rct_randles
-    assert rel_err < 0.30, (
-        f"Rct_drt = {result.Rct:.0f} Ω vs Rct_randles = {Rct_randles:.0f} Ω "
-        f"(rel_err={rel_err:.2f})"
-    )
-
-
-# ── New architecture: KK validation, stricter FFT DRT ──────────────────
+# ── KK validation ───────────────────────────────────────────────────────
 
 def _rc_spectrum(R: float = 1000.0, C: float = 1e-6, n: int = 30) -> EISSpectrum:
     """30-point log-spaced synthetic R // C spectrum."""
@@ -128,18 +92,6 @@ def test_kk_validation():
     result = kramers_kronig_check(sp, _DRT_CONFIG)
     assert result["kk_passed"]
     assert result["max_residual"] < 0.05
-
-
-def test_drt_fft():
-    sp = _randles_spectrum()
-    result = DRTFFTModel().fit(sp, _DRT_CONFIG)
-    assert len(result.drt_tau) == _DRT_CONFIG["fit"]["drt_n_z"]
-    # Le filtre Wiener FFT souffre d'artefacts de bord (ringing) aux extrémités
-    # du domaine log-ω (cf. fits/drt_fft.py) ; cette ringing contamine la
-    # reconstruction de Im(Z) sur tout le domaine, d'où une erreur de
-    # reconstruction relative élevée même pour un Rct correctement extrait
-    # (cf. test_drt_fft_randles_simple, qui valide la précision de Rct).
-    assert result.reconstruction_error < 2.0
 
 
 # ── Bout-en-bout : loader → RandlesFullModel().fit (garde-fou du signe B1) ──
