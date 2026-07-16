@@ -9,9 +9,6 @@ from core.models import EISSession
 from core.cv_models import CVSession
 from plotting.eis_plots import (
     drt_figure,
-    drt_figure_multi,
-    drt_replicates_figure,
-    open_drt_matplotlib_window,
     reconstruction_comparison_figure,
     drt_reconstruction_figure,
     drt_reconstruction_figure_dual,
@@ -20,6 +17,7 @@ from plotting.eis_plots import (
     open_calibration_matplotlib_window,
     params_table_figure,
 )
+from fits import drt_fit
 from core.cv_peaks import detect_redox_peaks
 from plotting.cv_plots import (
     cv_current_figure,
@@ -94,80 +92,93 @@ def _render_kk_tab(validations: dict) -> None:
                 )
 
 
+def _drt_labeled_spectra(session: EISSession) -> list:
+    """Liste [(label, spectrum)] des moyennes d'une session (bare, probe, groupes)."""
+    out = []
+    if session.bare is not None:
+        out.append(("Bare", session.bare))
+    if session.probe is not None:
+        out.append(("Probe", session.probe))
+    for grp in session.groups:
+        out.append((f"{grp.concentration:.2e} M", grp.spectrum))
+    return out
+
+
+def _drt_result_for(spectrum):
+    """Meilleur résultat DRT disponible pour un spectre : HMC en cache sinon ridge live."""
+    cached = drt_fit.get_cached(spectrum, engine="bayes")
+    if cached is not None:
+        return cached
+    return drt_fit.drt_preview(spectrum)
+
+
 def _render_drt_tab(sessions: dict) -> None:
-    """Onglet 2 — Courbes DRT."""
+    """Onglet 2 — Distribution des temps de relaxation (DRT).
+
+    Affiche le ridge en direct (aperçu instantané) pour tous les spectres. Un
+    bouton déclenche le calcul de la DRT bayésienne (HMC) en parallèle, qui
+    ajoute les intervalles de crédibilité une fois disponibles (points 6/7).
+    """
     st.subheader("Distribution des temps de relaxation (DRT)")
 
-    # (a) graphe global toutes électrodes
-    st.markdown("#### Moyenne — toutes électrodes")
-    st.plotly_chart(drt_figure_multi(sessions), width='stretch', key="drt_multi")
+    # Garde-fou : moteur DRT (paquet vendoré) indisponible.
+    if not drt_fit.bayes_available():
+        st.error(
+            "Moteur DRT indisponible : "
+            f"{drt_fit.import_error()}. Installez l'extra DRT "
+            "(`pip install -r requirements-drt.txt`)."
+        )
+        return
 
-    # (b) deux colonnes par électrode
-    st.markdown("#### Moyenne — par électrode")
     electrodes = sorted(sessions.keys())
+
+    # (a) Bouton DRT bayésienne (HMC) — batch parallèle sur tous les spectres.
+    st.markdown("#### DRT bayésienne (incertitudes)")
+    cmdstan_ok = drt_fit.cmdstan_available()
+    if not cmdstan_ok:
+        st.warning(
+            "Intervalles de crédibilité indisponibles : cmdstan n'est pas "
+            "installé. Lancez **setup_drt_bayesien.bat** pour activer le HMC. "
+            "L'aperçu ridge ci-dessous reste disponible."
+        )
+
+    if st.button(
+        "🎲 Calculer DRT bayésienne (incertitudes)",
+        key="drt_bayes_btn",
+        disabled=not cmdstan_ok,
+        help="Lance l'échantillonnage HMC en parallèle sur tous les spectres "
+             "non encore calculés. Les résultats sont mis en cache et persistés.",
+    ):
+        progress = st.progress(0.0, text="Préparation…")
+
+        def _cb(done: int, total: int, label: str) -> None:
+            frac = 1.0 if total == 0 else done / total
+            progress.progress(frac, text=f"HMC {done}/{total} — {label}")
+
+        try:
+            for e in electrodes:
+                drt_fit.run_drt_bayes_batch(sessions[e], progress_callback=_cb)
+            progress.progress(1.0, text="Terminé.")
+            st.success("DRT bayésienne calculée. Bandes d'incertitude ajoutées.")
+        except Exception as exc:  # pragma: no cover - dépend de cmdstan
+            st.error(f"Échec du calcul HMC : {exc}")
+
+    # (b) Une figure DRT par électrode (ridge live, ou HMC + bande si calculé).
+    st.markdown("#### γ(τ) par électrode")
     cols = st.columns(len(electrodes)) if electrodes else []
     for e, col in zip(electrodes, cols):
         with col:
-            st.plotly_chart(drt_figure(sessions[e]), width='stretch', key=f"drt_avg_e{e}")
-
-    # (c) onglets par électrode — réplicats + exclusions
-    st.markdown("#### Réplicats — sélection par spectre")
-    if "drt_exclusions" not in st.session_state:
-        st.session_state["drt_exclusions"] = {}
-
-    elec_tabs = st.tabs([f"Électrode {e}" for e in electrodes])
-    for e, elec_tab in zip(electrodes, elec_tabs):
-        with elec_tab:
-            session = sessions[e]
-            spectra_map = _spectra_labels_for_session(session)
-            if not spectra_map:
-                st.info("Aucun spectre disponible pour cette électrode.")
-                continue
-
-            sel_label = st.selectbox(
-                "Probe / concentration",
-                list(spectra_map.keys()),
-                key=f"drt_rep_select_e{e}",
-            )
-            reps, _avg_spectrum = spectra_map[sel_label]
-
-            if not reps:
-                st.info("Aucun réplicat individuel disponible pour ce spectre.")
-                continue
-
-            elec_excl = st.session_state["drt_exclusions"].setdefault(e, {})
-            excluded = elec_excl.setdefault(sel_label, [False] * len(reps))
-            if len(excluded) != len(reps):
-                excluded = [False] * len(reps)
-                elec_excl[sel_label] = excluded
-
-            rep_frs = [sp.fit_results.get("drt_tikhonov") for sp in reps]
-            rep_frs_valid = [fr for fr in rep_frs if fr is not None]
-
+            labeled = _drt_labeled_spectra(sessions[e])
+            items = []
+            for lbl, sp in labeled:
+                try:
+                    items.append((lbl, _drt_result_for(sp)))
+                except Exception as exc:
+                    st.warning(f"DRT '{lbl}' : {exc}")
             st.plotly_chart(
-                drt_replicates_figure(rep_frs_valid, excluded, label=sel_label),
-                width='stretch', key=f"drt_rep_fig_e{e}",
+                drt_figure(items, title=f"Électrode {e}"),
+                width='stretch', key=f"drt_e{e}",
             )
-
-            changed = False
-            cbox_cols = st.columns(len(reps))
-            for i, col in enumerate(cbox_cols):
-                with col:
-                    new_val = st.checkbox(
-                        f"Inclure réplicat {i+1}",
-                        value=not excluded[i],
-                        key=f"drt_rep_incl_e{e}_{sel_label}_{i}",
-                    )
-                    if new_val == excluded[i]:
-                        excluded[i] = not new_val
-                        changed = True
-
-            if changed:
-                st.rerun()
-
-    # (d) bouton sauvegarde matplotlib
-    if st.button("🖼 Ouvrir fenêtre de sauvegarde", key="drt_matplotlib_btn"):
-        open_drt_matplotlib_window(sessions, st.session_state.get("drt_exclusions", {}))
 
 
 def _render_reconstruction_tab(sessions: dict, config: dict | None = None) -> None:

@@ -360,33 +360,73 @@ def bode_figure(session: EISSession) -> go.Figure:
 
 # ── DRT ───────────────────────────────────────────────────────────────────────────
 
-def drt_figure(session: EISSession, log_y: bool = True) -> go.Figure:
-    """Distribution des temps de relaxation — axe ln(τ), convention Bissessur (2026).
+def _hex_to_rgba(color: str, alpha: float) -> str:
+    """Convertit une couleur hex (#rrggbb) en rgba() pour les bandes semi-opaques."""
+    c = color.lstrip("#")
+    if len(c) == 6:
+        r, g, b = (int(c[i:i + 2], 16) for i in (0, 2, 4))
+        return f"rgba({r},{g},{b},{alpha})"
+    return color
 
-    Axe X : ln(τ)  où τ = 1/(2πf).
-    Axe Y : ln(γ) si log_y=True (défaut), γ linéaire sinon.
-    Inclut bare, probe et tous les groupes de concentration.
+
+def drt_figure(results, title: str = "Distribution des temps de relaxation (DRT)") -> go.Figure:
+    """Trace γ(τ) vs log₁₀(τ) pour un ou plusieurs DRTResult (point 7).
+
+    Si un résultat expose des intervalles de crédibilité (γ_lo/γ_hi non-None,
+    issu du HMC), une bande d'incertitude est tracée autour de la médiane ;
+    sinon (ridge) seule la courbe est tracée.
+
+    Args:
+        results: itérable de tuples ``(label, DRTResult)``. Un DRTResult seul ou
+            un unique tuple sont aussi acceptés par commodité.
+        title: titre de la figure.
     """
-    theme  = get_theme("light")
+    # Normalisation de l'entrée en liste de (label, result).
+    items = _coerce_drt_items(results)
+
+    theme = get_theme("light")
     colors = theme["colors"]
-    fig    = go.Figure()
+    fig = go.Figure()
 
-    # Collecte : bare → probe → groupes
-    all_items = []
-    ci = 0
-    for sp in (session.bare, session.probe):
-        if sp is not None:
-            fr = sp.fit_results.get("drt_tikhonov")
-            if fr is not None:
-                all_items.append((_spectrum_label(sp), fr, ci))
-            ci += 1
-    for grp in session.groups:
-        fr = grp.fit_results.get("drt_tikhonov")
-        if fr is not None:
-            all_items.append((_spectrum_label(grp.spectrum), fr, ci))
-        ci += 1
+    plotted = 0
+    for idx, (lbl, res) in enumerate(items):
+        if res is None:
+            continue
+        tau = getattr(res, "tau", None)
+        gamma = getattr(res, "gamma", None)
+        if tau is None or gamma is None or len(tau) == 0:
+            continue
 
-    if not all_items:
+        color = colors[idx % len(colors)]
+        x = np.log10(np.asarray(tau, dtype=float))
+        y = np.asarray(gamma, dtype=float)
+
+        # Bande d'incertitude (HMC) : lo→hi en zone remplie sous la courbe.
+        if getattr(res, "gamma_lo", None) is not None and getattr(res, "gamma_hi", None) is not None:
+            lo = np.asarray(res.gamma_lo, dtype=float)
+            hi = np.asarray(res.gamma_hi, dtype=float)
+            fig.add_trace(go.Scatter(
+                x=np.concatenate([x, x[::-1]]),
+                y=np.concatenate([hi, lo[::-1]]),
+                fill="toself", fillcolor=_hex_to_rgba(color, 0.18),
+                line=dict(width=0), hoverinfo="skip",
+                name=f"{lbl} — IC 95 %", showlegend=False,
+            ))
+
+        engine = getattr(res, "engine", "")
+        suffix = " (HMC)" if engine == "bayes" else (" (ridge)" if engine == "ridge" else "")
+        fig.add_trace(go.Scatter(
+            x=x, y=y, mode="lines", name=f"{lbl}{suffix}",
+            line=dict(color=color, width=2),
+            hovertemplate=(
+                f"<b>{lbl}</b><br>"
+                "log₁₀(τ) = %{x:.3f}<br>"
+                "γ(τ) = %{y:.4g} Ω<extra></extra>"
+            ),
+        ))
+        plotted += 1
+
+    if plotted == 0:
         fig.add_annotation(
             text="Aucune DRT disponible — lancez l'analyse.",
             xref="paper", yref="paper", x=0.5, y=0.5,
@@ -395,61 +435,32 @@ def drt_figure(session: EISSession, log_y: bool = True) -> go.Figure:
         apply_theme_to_figure(fig, "light")
         return fig
 
-    x_title = r"$\ln(\tau/\tau_0)$,  $\tau_0 = 1\,\mathrm{s}$"
-    y_title = r"$\ln(\Gamma(\tau)/\Gamma_0)$,  $\Gamma_0 = 1\,\Omega$"
-
-    for lbl, fr, color_idx in all_items:
-        color = colors[color_idx % len(colors)]
-
-        tau   = getattr(fr, "drt_tau", None)
-        gamma = getattr(fr, "drt_gamma", None)
-
-        if tau is None or gamma is None or len(tau) == 0 or len(gamma) == 0:
-            continue
-
-        S     = np.log(np.asarray(tau) + 1e-300)
-        lnGam = np.log(np.asarray(gamma) + 1e-300)
-
-        fig.add_trace(go.Scatter(
-            x=S, y=lnGam, mode="lines", name=lbl,
-            line=dict(color=color, width=2),
-            hovertemplate=(
-                f"<b>{lbl}</b><br>"
-                "ln(τ) = %{x:.3f}<br>"
-                "ln(Γ) = %{y:.4f}<extra></extra>"
-            ),
-        ))
-
-    if not any(
-        getattr(fr, "drt_tau", None) is not None and len(fr.drt_tau) > 0
-        for _, fr, _ in all_items
-    ):
-        fig.add_annotation(
-            text="DRT non disponible",
-            xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=13),
-        )
-        apply_theme_to_figure(fig, "light")
-        return fig
-
-    # Titre avec λ du dernier spectre
-    lam_info = ""
-    if all_items:
-        fr_last  = all_items[-1][1]
-        lam_val  = fr_last.params.get("lambda")
-        lam_meth = fr_last.params.get("_str_lambda_method", "")
-        if lam_val is not None:
-            lam_info = f" — λ={lam_val:.2e} ({lam_meth})"
-
     fig.update_layout(
-        title=f"Distribution des temps de relaxation (DRT){lam_info}",
-        xaxis_title=x_title if all_items else "ln(τ)",
-        yaxis_title=y_title if all_items else "γ(τ)",
+        title=title,
+        xaxis_title=r"$\log_{10}(\tau/\mathrm{s})$",
+        yaxis_title=r"$\gamma(\tau)\ (\Omega)$",
         legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
         hovermode="closest",
     )
     apply_theme_to_figure(fig, "light")
     return fig
+
+
+def _coerce_drt_items(results):
+    """Normalise l'entrée de drt_figure en liste de (label, DRTResult)."""
+    if results is None:
+        return []
+    # DRTResult seul (a un attribut tau mais pas d'itération de tuples).
+    if hasattr(results, "tau") and hasattr(results, "gamma"):
+        return [("DRT", results)]
+    # dict {label: result}
+    if isinstance(results, dict):
+        return list(results.items())
+    # tuple unique (label, result)
+    if isinstance(results, tuple) and len(results) == 2 and isinstance(results[0], str):
+        return [results]
+    # itérable de (label, result)
+    return list(results)
 
 
 def drt_lambda_diag_figure(fit_result, label: str = "") -> go.Figure:

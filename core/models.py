@@ -90,7 +90,9 @@ class FitResult:
 # Incertitude sur Rct propagée depuis σ(f)
     # Renseigné dans un second temps (sprint 2)
     Rct_sigma: Optional[float] = None
-    # DRT (Tikhonov+NNLS ou FFT Wiener) — renseigné par fits/drt_tikhonov.py / fits/drt_fft.py
+    # Champs DRT hérités (Optional, laissés None) : la DRT est désormais un
+    # moteur dédié (fits/drt_fit.py → DRTResult), plus un fit du pipeline.
+    # Conservés pour compat des lectures getattr(..., None) existantes.
     drt_tau: Optional[np.ndarray] = None
     drt_gamma: Optional[np.ndarray] = None
     drt_S: Optional[np.ndarray] = None

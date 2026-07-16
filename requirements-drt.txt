@@ -1,0 +1,20 @@
+# Extra DRT — dépendances du moteur de distribution des temps de relaxation.
+#
+# Le paquet de calcul lui-même (bayes-drt2) est VENDORÉ dans vendor/bayes_drt2/
+# (voir vendor/README.md, THIRD_PARTY_LICENSES.md) : rien à installer pour le
+# code, seulement ses dépendances runtime ci-dessous.
+#
+# Installer avec :  pip install -r requirements-drt.txt
+#
+# cvxopt    : optimisation quadratique sous contrainte de positivité, requise
+#             par ridge_fit (aperçu instantané + initialiseur du HMC).
+# cmdstanpy : interface Python de CmdStan, requise par le HMC (fit mode='sample',
+#             méthode de référence avec intervalles de crédibilité).
+#
+# cmdstanpy fournit le binding Python mais PAS la toolchain CmdStan (compilateur
+# C++ + modèles Stan compilés). Celle-ci s'installe séparément via
+# setup_drt_bayesien.bat (Windows) / cmdstanpy.install_cmdstan(). Sans elle,
+# l'aperçu ridge fonctionne mais le HMC est bloqué (garde-fou, pas de
+# compilation à la volée) — voir fits/drt_fit.py.
+cvxopt>=1.3.0
+cmdstanpy>=1.2.0

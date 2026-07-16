@@ -46,8 +46,7 @@ localement par `cmdstanpy`/`cmdstan` lors du premier HMC.
 ### Modification appliquée (compat numpy ≥ 2) — UNIQUE changement
 
 bayes-drt2 (2020) appelle `np.trapz`, **supprimé dans numpy 2.0** (renommé
-`np.trapezoid`). Le projet, lui, utilise `np.trapezoid` (`fits/drt_fft.py`,
-`fits/drt_tikhonov.py`) et **exige donc numpy ≥ 2** : un simple pin `numpy<2`
+`np.trapezoid`). Le projet **exige numpy ≥ 2** : un simple pin `numpy<2`
 répare bayes-drt2 mais casse le projet (conflit mutuellement exclusif).
 
 **Correctif retenu — remplacement en source** (préféré au monkeypatch global
