@@ -442,9 +442,24 @@ return w_re, w_im, True    # absolute_sigma = True
 
 > **Nature.** `fits/drt_fit.py` est un *wrapper* : le cœur mathématique de la DRT
 > (matrices, régularisation ridge, HMC) réside dans le paquet **tiers vendoré**
-> `vendor/bayes_drt2/` (bayes‑drt2, Jake Huang). Le wrapper appelle cet engin et
-> post‑traite ses sorties. Ce qui suit documente **le code du wrapper** et signale ce
-> qui est délégué au vendored.
+> `vendor/bayes_drt2/` (bayes‑drt2, Jake Huang, Colorado School of Mines, v0.2 —
+> `vendor/README.md`). Le wrapper appelle cet engin et post‑traite ses sorties. Ce qui
+> suit documente **le code du wrapper** et signale ce qui est délégué au vendored.
+>
+> **Mode réellement exécuté = ridge.** Le calcul DRT effectif repose sur
+> `ridge_fit(freq, Z, hyper_lambda=True)` — régression **ridge hyperparamétrique** (pas
+> un HMC). La voie HMC `fit(mode='sample')` existe dans le code (`drt_bayes`) mais n'est
+> **atteinte que si cmdstan est installé** ; à défaut, le garde‑fou renvoie le résultat
+> ridge (`drt_fit.py:363-369`). L'aperçu `drt_preview` utilise **toujours** le ridge. En
+> pratique (cmdstan non activé), les intervalles de crédibilité ne sont **jamais
+> calculés** : `gamma_lo = gamma_hi = None` (voir §7.2, §7.3).
+>
+> **Patch numpy ≥ 2 du vendored.** bayes‑drt2 (2020) appelait `np.trapz`, supprimé en
+> numpy 2.0 (renommé `np.trapezoid`). Le seul correctif appliqué au paquet vendoré est le
+> remplacement en source des 9 occurrences `np.trapz(` → `np.trapezoid(` dans
+> `matrices.py` (×5) et `peak_fit.py` (×4) — `vendor/README.md` § « Modification
+> appliquée ». Toute intégration de γ dans le vendored passe donc par `np.trapezoid`
+> (voir §7.3 pour la distinction avec le calcul de Rp).
 
 ### 7.1 Conversion de convention d'impédance — `drt_fit.py:_impedance:146-151`
 
@@ -454,37 +469,67 @@ $$Z = Z_{re} - j\,Z_{im}\quad(\text{car } Z_{im} = -\text{Im}(Z) > 0 \Rightarrow
 return np.asarray(spectrum.Zre, dtype=float) - 1j * np.asarray(spectrum.Zim, dtype=float)
 ```
 
-### 7.2 Aperçu ridge — `drt_fit.py:_ridge_inverter:295-299`, `drt_preview:320-338`
+### 7.2 Mode opératoire réel — ridge hyperparamétrique — `drt_fit.py:_ridge_inverter:295-299`, `drt_preview:320-338`, `_result_from_ridge:302-317`
 
 ```python
 inv = Inverter()
-inv.ridge_fit(freq, Z, hyper_lambda=True)
+inv.ridge_fit(freq, Z, hyper_lambda=True)          # _ridge_inverter, drt_fit.py:297-298
+...
+tau   = inv.distributions["DRT"]["tau"]             # _result_from_ridge, drt_fit.py:303
+gamma = inv.predict_distribution("DRT", tau=tau)    # drt_fit.py:304
+# gamma_lo=None, gamma_hi=None, Rp_lo=None, Rp_hi=None  (drt_fit.py:308-311)
+Rp    = float(inv.predict_Rp())                     # drt_fit.py:311
 ```
 
 - **Méthode** : régression **ridge hyperparamétrique** (`hyper_lambda=True`) du paquet
-  vendoré. Rapide, sans cmdstan. Sert d'aperçu **et** d'initialiseur du HMC.
-- **Régularisation** : gérée par `vendor/bayes_drt2/inversion.py:ridge_fit`
-  (`inversion.py:82`), défaut `lambda_0 = 1e-2` (`inversion.py:86,221`), option de
-  validation croisée Re/Im (`lambda_0='cv'`). **λ n'est donc pas fixé côté wrapper.**
+  vendoré `vendor/bayes_drt2/inversion.py:ridge_fit` (`inversion.py:82`). C'est un ridge
+  régularisé, **pas** un modèle bayésien hiérarchique échantillonné (HMC). Rapide, sans
+  cmdstan. Sert d'aperçu **et** d'initialiseur du HMC lorsque celui‑ci est disponible.
+- **Défauts vendored** (`inversion.py:82-97`) : `penalty='discrete'`, `reg_ord=2`
+  (régularisation du 2ᵉ ordre), `nonneg=True` (γ ≥ 0), `hl_solution='analytic'`,
+  `hl_beta=2.5`, `lambda_0=1e-2` ; option de validation croisée Re/Im (`lambda_0='cv'`,
+  `inversion.py:283-286`). Le wrapper **n'active aucun preset** — les presets nommés dans
+  le vendored sont `'Ciucci'` et `'Huang'` (`inversion.py:209`), non utilisés ici.
+  **λ n'est donc ni fixé ni calculé côté wrapper** : la régularisation est intégralement
+  déterminée dans `vendor/bayes_drt2`.
+- **Intervalles** : **aucun** en mode ridge — `gamma_lo/gamma_hi/Rp_lo/Rp_hi = None`
+  (`drt_fit.py:308-311`). `has_intervals` renvoie `False` (`drt_fit.py:109-112`).
+- **Référence** : lignée ridge/hiérarchique DRT (Ciucci & Chen) telle qu'implémentée
+  dans bayes‑drt2 ; le code applicatif ne cite pas de papier précis pour ce chemin.
 
-### 7.3 DRT bayésienne (HMC) — `drt_fit.py:_run_bayes:376-406`
+### 7.3 Rp et intégration de γ — `drt_fit.py` + `vendor/bayes_drt2`
+
+**Rp (mode ridge, une seule distribution DRT)** — `inversion.py:predict_Rp:3350-3351` :
+
+$$R_p = \Big(\textstyle\sum_k \text{coef}_k\Big)\cdot \frac{\sqrt{\pi}}{\varepsilon}$$
 
 ```python
-inv = Inverter()
-inv.fit(freq, Z, mode="sample", init_from_ridge=True)
-tau   = inv.distributions["DRT"]["tau"]
-gamma = inv.predict_distribution("DRT", tau=tau)                       # médiane
-gamma_lo = inv.predict_distribution("DRT", tau=tau, percentile=2.5)    # 2.5 %
-gamma_hi = inv.predict_distribution("DRT", tau=tau, percentile=97.5)   # 97.5 %
-Rp    = inv.predict_Rp()
+# Rp due to DRT is area under DRT
+Rp = np.sum(self.distribution_fits[dist]['coef']) * np.pi ** 0.5 / info['epsilon']
 ```
 
-- **Méthode** : échantillonnage **HMC** (`mode="sample"`), initialisé par le ridge.
-- **Intervalles de crédibilité** : percentiles 2.5 % / 97.5 % de γ(τ) et de Rp.
-- **Rp** : `∫ γ dlnτ` (résistance de polarisation) — **calcul délégué** à
-  `inv.predict_Rp()` (vendored), non ré‑implémenté dans le wrapper.
-- **Garde‑fou** (`drt_bayes:341-373`) : si cmdstan absent, renvoie le résultat ridge +
-  statut, **sans compiler**.
+- **Important** : pour une DRT simple, Rp est une **somme analytique des coefficients RBF**
+  (× √π/ε, aire des fonctions de base gaussiennes), **et non** une intégration
+  `np.trapezoid`. Le wrapper récupère cette valeur via `inv.predict_Rp()`
+  (`drt_fit.py:311`) sans la ré‑implémenter.
+- **Où intervient `np.trapezoid`** : dans le vendored patché, l'intégration de γ par
+  trapèzes sert à (a) l'aire des **pics** de la DRT — `R = np.trapezoid(gamma, np.log(tau))`
+  (`peak_fit.py:165,245,281,419`, base **ln**), et (b) la construction des matrices A
+  (`matrices.py:237-263`). Ces chemins ne sont **pas** appelés par le wrapper pour Rp.
+
+**HMC (non activé par défaut)** — `drt_fit.py:_run_bayes:376-406` :
+
+```python
+inv.fit(freq, Z, mode="sample", init_from_ridge=True)          # drt_fit.py:383
+gamma_lo = inv.predict_distribution("DRT", tau=tau, percentile=2.5)   # 2.5 %
+gamma_hi = inv.predict_distribution("DRT", tau=tau, percentile=97.5)  # 97.5 %
+Rp_lo = float(inv.predict_Rp(percentile=2.5)); Rp_hi = float(inv.predict_Rp(percentile=97.5))
+```
+
+- **Statut** : ce chemin n'est atteint que si `cmdstan_available()` (`drt_fit.py:363`).
+  cmdstan n'étant pas installé par défaut, `drt_bayes` retombe sur le ridge
+  (`drt_fit.py:364-369`) et **ne produit pas** d'intervalles. Les percentiles 2.5 %/97.5 %
+  de γ(τ) et de Rp ne sont calculés **que** sous HMC effectif.
 
 ### 7.4 Score de reconstruction R² — `drt_fit.py:_score:280-292`
 
@@ -516,6 +561,36 @@ out[nz] = np.round(a[nz] * factor) / factor
 
 Hash SHA‑1 de `[round(f), round(Z.real), round(Z.imag)]` concaténés. Sert d'identité de
 spectre pour le cache (pas une grandeur physique).
+
+### 7.6 Chemin de signe Im(Z) jusqu'à `ridge_fit` — trace complète
+
+Vérification demandée : y a‑t‑il un chemin où la correction de signe s'applique **deux
+fois** ? Réponse d'après le code : **non**. Chaque chemin de chargement applique **au
+plus une** correction, et tous convergent vers `Zim = -Im(Z) > 0`. Le signe final entrant
+dans `ridge_fit` est l'imaginaire **physique** `Im(Z) < 0`.
+
+| Étape | Chemin **robuste** (parseur EC‑Lab) | Chemin **repli pandas** |
+|---|---|---|
+| Correction de signe | **par nom de colonne** : `sign=+1` si libellé `-Im(Z)`, sinon `−1`, puis `val *= sign` — `robust_loader.py:110-113,172` | **par heuristique de majorité** : flip si `#{Zim<0}>#{Zim>0}` — `loader.py:160-161` |
+| Appel `_clean_spectrum` | `correct_sign=False` → **pas** de 2ᵉ flip — `loader.py:224` | `correct_sign=True` (défaut) → heuristique appliquée — `loader.py:274` |
+| Mapping colonnes | n/a (mapping par `_classify`) | `-im_z`/`im_z` → même clé `zimag_ohm`, **sans** correction de signe basée sur le nom — `loader.py:83-84` |
+| Résultat stocké | `spectrum.Zim = -Im(Z) > 0` — `loader.py:231-240` | `spectrum.Zim = -Im(Z) > 0` — `loader.py:282-291` |
+
+Puis, commun aux deux chemins, à l'entrée du calcul DRT :
+
+```python
+# drt_fit.py:_impedance:151  →  Z entrant dans ridge_fit
+Z = spectrum.Zre - 1j * spectrum.Zim        # Zim>0  ⇒  Im(Z) = -Zim < 0  (physique)
+```
+
+`Z` ainsi formé est passé tel quel à `inv.ridge_fit(freq, Z, ...)`
+(`drt_fit.py:334-335` via `drt_preview`, et `drt_fit.py:359-365` via `drt_bayes`).
+
+- **Verdict factuel** : aucune double application. Robuste = correction par nom
+  uniquement (`correct_sign=False`) ; pandas = heuristique de majorité uniquement. Le
+  point d'attention **résiduel** (famille B1/V1) n'est donc **pas** un double flip mais le
+  **risque propre à l'heuristique de majorité** du chemin pandas quand `Im(Z)` change de
+  signe et que `#{Zim<0} ≈ #{Zim>0}` — reporté en §13 (point 4).
 
 ---
 
@@ -763,9 +838,10 @@ average_replicates  (si ≥ 2 réplicats)
       ▼                             ▼                             ▼
 validate_replicate_group      resolve_weights                  (DRT, branche //)
  • Lin-KK Voigt  ...... §8.1   • modulus 1/(α|Z|)² .. §6.1     _impedance Z=Zre−jZim §7.1
- • µ Schönleber  ...... §8.2   • sigma  1/σ²  ....... §6.2     ridge_fit / HMC  ...... §7.2-7.3
- • résidu %, verdict .. §8.4     (choisit absolute_sigma)      R² reconstruction  ... §7.4
- • drift inter-rép.  .. §8.4                                   Rp = ∫γ dlnτ (vendored)
+ • µ Schönleber  ...... §8.2   • sigma  1/σ²  ....... §6.2     ridge_fit (mode réel) . §7.2
+ • résidu %, verdict .. §8.4     (choisit absolute_sigma)      γ_lo/γ_hi=None (pas HMC) §7.2
+ • drift inter-rép.  .. §8.4                                   R² reconstruction  ... §7.4
+                                                              Rp=Σcoef·√π/ε (RBF)  . §7.3
                                     │
                                     ▼
                        RandlesFullModel.fit
@@ -817,8 +893,10 @@ validate_replicate_group      resolve_weights                  (DRT, branche //)
 | Covariance | `(JᵀJ)⁻¹·[2·cost/dof si !abs_sigma]` | randles_full.py:155-160 | — | — |
 | χ²_red | `Σ(w_re Δre²+w_im Δim²)/(2N−P)` | randles_full.py:186 | — | — |
 | rel_residual | `√mean((Δre²+Δim²)/(|Z|²+1e‑30))` | randles_full.py:190 | — | — |
-| DRT ridge | `ridge_fit(hyper_lambda=True)` | drt_fit.py:298 | ridge, λ₀=1e‑2 | bayes‑drt2 |
-| DRT HMC | `fit(mode="sample")` + percentiles | drt_fit.py:383-392 | HMC | bayes‑drt2 |
+| DRT ridge (mode réel) | `ridge_fit(hyper_lambda=True)`, γ_lo/γ_hi=None | drt_fit.py:298, 308-311 | ridge hyperparamétrique, λ déterminé dans le vendored | bayes‑drt2 (lignée Ciucci‑Chen) |
+| DRT Rp (ridge) | `Σ coef · √π/ε` (somme RBF, **pas** trapèze) | inversion.py:3351 | analytique | bayes‑drt2 |
+| DRT aire de pic | `np.trapezoid(gamma, ln(tau))` | peak_fit.py:165 | trapèze (patch numpy≥2) | vendor/README.md |
+| DRT HMC (non activé) | `fit(mode="sample")` + percentiles | drt_fit.py:383-392 | HMC (si cmdstan) | bayes‑drt2 |
 | DRT R² | `1 − ss_res/ss_tot` (Re/Im empilés) | drt_fit.py:288-292 | — | — |
 | Lin‑KK modèle | `R0+ΣR_k/(1+jωτ_k)[+1/jωC]` | kk_validation.py:22-76 | lstsq linéaire | Boukamp/Schönleber |
 | grille τ (KK) | `geomspace(1/ω_max,1/ω_min,M)`, `M=min(max_M,⌊2n/3⌋)` | kk_validation.py:44-45 | fixe | — |
@@ -861,13 +939,18 @@ validate_replicate_group      resolve_weights                  (DRT, branche //)
    Randles est un paramètre **ajusté**, pas dérivé de `D` et de la géométrie. À vérifier :
    la diffusion attendue est‑elle censée être contrainte par ces constantes ?
 
-4. **Deux corrections de signe Im(Z) potentiellement cumulables.**
-   Le signe est corrigé une fois par nom de colonne dans `robust_loader`
-   (§3.2a) et une fois par heuristique de majorité dans `loader._clean_spectrum`
-   (§3.2b). Le code passe explicitement `correct_sign=False` sur le chemin robuste
-   (`loader.py:224`) pour éviter le double flip ; sur le chemin de repli pandas, seule
-   l'heuristique de majorité agit. À vérifier : un fichier au format normalisé de l'app
-   passant par le repli pourrait‑il être mal orienté si `#{Zim<0}≈#{Zim>0}` ?
+4. **Signe Im(Z) : pas de double correction, mais risque propre à l'heuristique de
+   majorité (chemin pandas).**
+   Trace complète en §7.6 : **aucun** chemin n'applique deux fois la correction. Le
+   chemin robuste corrige par nom de colonne puis passe `correct_sign=False`
+   (`loader.py:224`) ; le chemin de repli pandas applique **uniquement** l'heuristique de
+   majorité `flip ⇔ #{Zim<0}>#{Zim>0}` (`loader.py:160`). Le point d'attention
+   B1/V1 résiduel n'est donc **pas** un double flip mais le fait qu'un spectre passant par
+   le repli pandas et présentant un `Im(Z)` qui **change de signe** (p. ex. contribution
+   inductive HF) avec `#{Zim<0} ≈ #{Zim>0}` pourrait être mal orienté. Le mapping pandas
+   `-im_z`/`im_z` → `zimag_ohm` (`loader.py:83-84`) n'utilise **pas** le préfixe `-` du
+   libellé pour corriger le signe, contrairement au chemin robuste. À vérifier : ce cas
+   de bord est‑il atteignable en pratique (fichiers réels EC‑Lab passant par le repli) ?
 
 5. **Base des logarithmes.**
    Toute la calibration utilise `log₁₀` (`np.log10`, §9). La grille τ du Lin‑KK et de la
@@ -894,15 +977,22 @@ validate_replicate_group      resolve_weights                  (DRT, branche //)
    cohérence de signe entre les deux (elles semblent équivalentes mais méritent une
    relecture croisée).
 
-9. **DRT — spectre reconstruit vs données brutes.**
-   Le R² de la DRT (§7.4) et Rp (§7.3) sont calculés à partir de
-   `inv.predict_Z(freq)`, c.‑à‑d. **un spectre reconstruit** par l'engin DRT vendoré, et
-   non directement des données brutes ; la médiane/percentiles de γ(τ) proviennent de
-   l'échantillonnage HMC. La régularisation (valeur effective de λ) est déterminée
-   **dans `vendor/bayes_drt2`** (`hyper_lambda`, `lambda_0=1e-2` par défaut,
-   ou validation croisée Re/Im), **pas** dans le code de l'application. Toute
-   vérification de la régularisation DRT doit porter sur le paquet vendoré, hors
-   périmètre du code applicatif.
+9. **DRT — mode réel (ridge), reconstruction, régularisation dans le vendored.**
+   Le mode réellement exécuté est le **ridge hyperparamétrique** (`ridge_fit`), **pas** le
+   HMC `fit(mode='sample')` : ce dernier n'est atteint que si cmdstan est installé, ce qui
+   n'est pas le cas par défaut → repli ridge sans intervalles (`gamma_lo/gamma_hi = None`,
+   §7.2). La référence n'est donc **pas** un modèle bayésien hiérarchique échantillonné :
+   c'est le **ridge** du même paquet (lignée Ciucci‑Chen ; presets vendored `'Ciucci'`/
+   `'Huang'` non activés par le wrapper). Le R² de la DRT (§7.4) est calculé sur
+   `inv.predict_Z(freq)`, un **spectre reconstruit** par l'engin, et non sur les données
+   brutes. **Rp** provient de `predict_Rp` = **somme analytique des coefficients RBF**
+   `Σ coef·√π/ε` (`inversion.py:3351`), **et non** d'une intégration `np.trapezoid` ;
+   `np.trapezoid` (patch numpy ≥ 2, `vendor/README.md`) n'intervient que pour les aires de
+   pics (`peak_fit.py`, base **ln**) et la construction des matrices A (`matrices.py`). La
+   régularisation (valeur effective de λ) est déterminée **entièrement dans
+   `vendor/bayes_drt2`** (`hyper_lambda`, `lambda_0=1e-2` par défaut, `reg_ord=2`,
+   `nonneg=True`, ou validation croisée Re/Im), **pas** dans le code applicatif. Toute
+   vérification de la régularisation DRT doit donc porter sur le paquet vendoré.
 
 10. **Plancher σ à 0,1 % du module.**
     Le plancher `σ ← max(σ, 0.001·|Z̄|)` (§3.5, §8.4) est appliqué **par point**.
