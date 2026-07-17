@@ -21,10 +21,17 @@ conditions:
 
 # Paramètres de fit
 fit:
-  # Pondération du CNLS : "modulus" (1/(alpha_noise·|Z|)²) ou "sigma"
-  # (1/σ² inter-réplicats, approche Measurement Model — requiert ≥2 réplicats).
-  weight_mode: modulus
-  alpha_noise: 0.001
+  # Pondération UNIQUE du CNLS : structure d'erreur d'Orazem & Tribollet
+  # (measurement model). σ = α·|Z_re| + β·|Z_im| + γ·|Z|²/R_m + δ, poids = 1/σ².
+  # Les coefficients (α,β,γ,δ) NE SONT PAS ici : ils sont caractérisés sur
+  # réplicats (≥ 3) puis persistés dans persistence_path, et réutilisés pour les
+  # spectres sans réplicats. Cf. fits/error_structure.py.
+  error_structure:
+    equal_re_im: true          # impose α = β (variances Re/Im égales — standard)
+    voigt_based: false         # true => σ via résidus de Voigt (Lin-KK) par réplicat
+    R_m: null                  # résistance de mesure (Ω) ; null => terme γ absorbé
+    min_replicates: 3          # nb minimal de réplicats pour caractériser
+    persistence_path: null     # null => config/error_structure.json
   n_freqs_parasites: [50.0, 100.0]
   tol_parasites: 3.0
   max_iter: 10000

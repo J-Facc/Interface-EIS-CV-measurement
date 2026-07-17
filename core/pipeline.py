@@ -9,8 +9,6 @@ from core.models import EISSession, EISSpectrum, ConcentrationGroup
 from core.loader import load_spectrum, average_replicates
 from core.logger import get_logger
 from core.validator import validate_replicate_group
-from fits.weighting import resolve_weights
-
 log = get_logger("pipeline")
 
 
@@ -46,17 +44,40 @@ def validate_session(replicate_groups: dict, config) -> dict:
     return results
 
 
-def _build_weights(spectrum, config) -> tuple:
-    """Construit le couple de poids (w_re, w_im) du CNLS pour ce spectre.
+def _characterize_error_structure_upfront(session, hybridization, config) -> None:
+    """Caractérise (et persiste) la structure d'erreur d'Orazem une fois par run.
 
-    Délègue à fits.weighting.resolve_weights : mode "sigma" (1/σ² inter-réplicats,
-    poids DIFFÉRENTS sur réel et imaginaire) si demandé et σ disponible, sinon
-    pondération modulus (w_re = w_im = 1/(alpha_noise·|Z|)²). Le drapeau
-    absolute_sigma est recalculé côté modèle (mêmes conditions) pour décider du
-    rééchelonnement de la covariance.
+    Parcourt les spectres moyennés porteurs de réplicats (bare, probe, groupes de
+    concentration) et déclenche resolve_error_structure sur le premier éligible :
+    la caractérisation est alors persistée et servira à TOUS les fits du run (y
+    compris les réplicats individuels, qui n'ont pas de σ propre). Si aucun
+    spectre n'a assez de réplicats, on ne fait rien : les fits réutiliseront une
+    caractérisation persistée antérieure, ou seront refusés (ErrorStructureUnavailable).
     """
-    w_re, w_im, _absolute_sigma = resolve_weights(spectrum, config)
-    return w_re, w_im
+    from fits.error_structure import resolve_error_structure, ErrorStructureUnavailable
+
+    candidates = [session.bare, session.probe]
+    for conc in sorted(hybridization.keys()):
+        sp_list = hybridization[conc]
+        candidates.append(sp_list[0] if sp_list else None)
+
+    for sp in candidates:
+        if sp is None or getattr(sp, "sigma_re", None) is None:
+            continue
+        try:
+            es = resolve_error_structure(sp, config)
+        except ErrorStructureUnavailable:
+            continue
+        if es.source == "characterized_now":
+            log.info(
+                f"Structure d'erreur caractérisée sur '{sp.label}' "
+                f"({es.n_replicates} réplicats) et persistée."
+            )
+            return
+    log.info(
+        "Aucune caractérisation de structure d'erreur possible sur ce jeu "
+        "(pas assez de réplicats) — repli sur coefficients persistés si disponibles."
+    )
 
 
 def _run_kk(spectrum, config, label: str) -> Optional[dict]:
@@ -157,13 +178,21 @@ def run_pipeline(
     session.bare = average_replicates(bare_spectra) if bare_spectra else None
     session.probe = average_replicates(probe_spectra) if probe_spectra else None
 
+    # ── Caractérisation de la structure d'erreur (Orazem) AVANT tout fit ──────
+    # On caractérise sur le PREMIER spectre porteur d'assez de réplicats et on
+    # persiste, afin que TOUS les fits (moyennes ET réplicats individuels, qui
+    # n'ont pas de σ propre) partagent une même structure d'erreur — caractérisée
+    # sur ce jeu, ou réutilisée depuis une caractérisation antérieure persistée.
+    _characterize_error_structure_upfront(session, hybridization, config)
+
     def _fit_replicates(reps: list) -> list:
         """Applique tous les modèles actifs à chaque réplicat individuel."""
         for sp in reps:
             for model in models:
                 try:
-                    weights = _build_weights(sp, config)
-                    fr = model.fit(sp, config, weights=weights)
+                    # Pas de poids explicites : le modèle résout lui-même la
+                    # structure d'erreur d'Orazem (caractérisée ou réutilisée).
+                    fr = model.fit(sp, config)
                     sp.fit_results[model.name] = fr
                 except Exception as e:
                     log.error(f"Fit réplicat '{model.name}' [{sp.label}] failed: {e}")
@@ -180,8 +209,7 @@ def run_pipeline(
         kk = _run_kk(sp, config, label)
         for model in models:
             try:
-                weights = _build_weights(sp, config)
-                fr = model.fit(sp, config, weights=weights)
+                fr = model.fit(sp, config)
                 if kk is not None:
                     fr.kk_passed = kk["kk_passed"]
                     fr.kk_residuals = kk
@@ -201,8 +229,7 @@ def run_pipeline(
         fit_results = {}
         for model in models:
             try:
-                weights = _build_weights(spectrum, config)
-                fr = model.fit(spectrum, config, weights=weights)
+                fr = model.fit(spectrum, config)
                 if kk is not None:
                     fr.kk_passed = kk["kk_passed"]
                     fr.kk_residuals = kk

@@ -1,4 +1,10 @@
-"""Full Randles circuit fit: 8 free parameters with modulus weighting."""
+"""Full Randles circuit fit: 8 free parameters, Orazem error-structure weighting.
+
+Méthode de pondération UNIQUE : structure d'erreur d'Orazem & Tribollet
+(fits/error_structure.py, via fits/weighting.py). Les poids valent 1/σ²
+(absolute_sigma=True TOUJOURS) → la covariance des paramètres n'est jamais
+rééchelonnée et χ²_red est un vrai test d'adéquation.
+"""
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -20,7 +26,7 @@ class RandlesFullModel(BaseFitModel):
 
     Parameters: Re, R'e, Cb, Rct, Qdl, α, R_D, tau_d.
     Diffusion element: bounded diffusion Z_D = R_D · tanh(√(jω·τ_d)) / √(jω·τ_d).
-    Weighting: Modulus weighting w = 1 / (alpha_noise · |Z|).
+    Weighting: Orazem error structure w = 1/σ² (σ = α|Z_re|+β|Z_im|+γ|Z|²/R_m+δ).
     Optimiser: scipy.optimize.least_squares with TRF algorithm.
     """
 
@@ -28,7 +34,8 @@ class RandlesFullModel(BaseFitModel):
     label = "Randles complet"
     description = (
         "Circuit Randles complet avec 8 paramètres libres "
-        "(Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d). Pondération Modulus."
+        "(Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d). Pondération : structure d'erreur "
+        "d'Orazem (measurement model)."
     )
 
     def initial_guess(self, spectrum: EISSpectrum, config: dict) -> dict:
@@ -106,19 +113,22 @@ class RandlesFullModel(BaseFitModel):
         blo = [lo[k] for k in _PARAM_NAMES]
         bhi = [hi[k] for k in _PARAM_NAMES]
 
-        # Pondération : couple (w_re, w_im) — potentiellement DIFFÉRENT sur réel et
-        # imaginaire (mode "sigma" : σ_re ≠ σ_im). absolute_sigma indique si les
-        # poids sont de vraies 1/variance (→ covariance non rééchelonnée).
-        w_re_resolved, w_im_resolved, absolute_sigma = resolve_weights(spectrum, config)
+        # Pondération UNIQUE : structure d'erreur d'Orazem, w = 1/σ² (identique sur
+        # réel et imaginaire sous equal_re_im). resolve_weights lève
+        # ErrorStructureUnavailable si aucune structure n'est disponible (ni
+        # réplicats, ni coefficients persistés) : le fit est alors REFUSÉ (on ne
+        # rattrape PAS — pas de repli sur un σ arbitraire).
+        error_structure = None
         if weights is not None:
-            # Poids explicites (typiquement le couple de core.pipeline._build_weights).
+            # Poids explicites injectés (tests / appels avancés) : la structure
+            # d'erreur n'est alors pas résolue (provenance inconnue).
             if isinstance(weights, (tuple, list)) and len(weights) == 2:
                 w_re = np.asarray(weights[0], dtype=float)
                 w_im = np.asarray(weights[1], dtype=float)
             else:  # tableau unique hérité → même poids sur les deux composantes
                 w_re = w_im = np.asarray(weights, dtype=float)
         else:
-            w_re, w_im = w_re_resolved, w_im_resolved
+            w_re, w_im, error_structure = resolve_weights(spectrum, config)
 
         sw_re = np.sqrt(w_re)
         sw_im = np.sqrt(w_im)
@@ -145,19 +155,16 @@ class RandlesFullModel(BaseFitModel):
             converged = result.success
             x_fit = result.x
 
-            # Covariance des paramètres depuis la jacobienne pondérée.
-            #  - mode "sigma" (absolute_sigma=True) : les poids sont de vraies
-            #    1/variance → cov = inv(JᵀJ) directement, PAS de rééchelonnement.
-            #  - mode "modulus" (absolute_sigma=False) : poids arbitraires →
-            #    rééchelonnement par le χ² réduit s² = 2·result.cost/(2N−P).
-            #    least_squares renvoie result.cost = ½·Σr² : la SSR pondérée vaut
-            #    2·result.cost, d'où le facteur 2 (fix √2).
+            # Covariance des paramètres depuis la jacobienne pondérée J (résidus
+            # pondérés r = √w·Δ, cf. residuals()). Les poids étant TOUJOURS de
+            # vraies 1/variance (structure d'erreur d'Orazem, absolute_sigma=True),
+            # la covariance est cov = (JᵀJ)⁻¹ SANS AUCUN rééchelonnement par le χ²
+            # réduit. La branche « modulus » (cov · 2·cost/dof) a été SUPPRIMÉE :
+            # elle n'a plus lieu d'être puisqu'il n'existe plus qu'une seule
+            # pondération. σ_param = sqrt(diag((JᵀJ)⁻¹)).
             J = result.jac
             try:
-                dof = max(2 * len(spectrum.f) - len(_PARAM_NAMES), 1)
                 cov = np.linalg.inv(J.T @ J)
-                if not absolute_sigma:
-                    cov = cov * (2.0 * result.cost / dof)
                 std = np.sqrt(np.abs(np.diag(cov)))
             except np.linalg.LinAlgError:
                 std = np.zeros(len(_PARAM_NAMES))
@@ -178,12 +185,32 @@ class RandlesFullModel(BaseFitModel):
 
         # χ² réduit pondéré effectivement minimisé : Σ(w_re·Δre² + w_im·Δim²)/(2N−P),
         # avec les poids par point du fit (w_re, w_im, cf. residuals()).
-        # En mode "sigma" (poids = 1/σ² mesurés), chi2_reduced≈1 EST le test
-        # d'adéquation modèle+erreur. En mode "modulus" rééchelonné (alpha_noise
-        # arbitraire), chi2_reduced≈1 n'a PAS de sens statistique — juste une
-        # métrique de misfit relative comparable entre spectres (prompt C).
+        # Cohérence de signe du résidu imaginaire : residuals() empile
+        # (−Z.imag − Zim) tandis que res_im = Zim + Z_fit.imag ci-dessus. Ces deux
+        # quantités sont OPPOSÉES ((−Z.imag − Zim) = −(Zim + Z.imag)) → carrés
+        # identiques, même contribution au χ² (cf. test d'équivalence).
+        # Les poids étant 1/σ² (structure d'erreur d'Orazem), chi2_reduced≈1 EST un
+        # vrai test d'adéquation modèle+erreur.
         dof = max(2 * len(spectrum.f) - len(_PARAM_NAMES), 1)
         chi2_reduced = float(np.sum(w_re * res_re ** 2 + w_im * res_im ** 2) / dof)
+
+        # χ²_red est TOUJOURS un test d'adéquation valide (absolute_sigma=True).
+        chi2_is_valid_test = True
+        # Sous H0 (modèle + structure d'erreur corrects), χ²_red ~ χ²(dof)/dof,
+        # d'espérance 1 et d'écart-type √(2/dof) ; intervalle indicatif ~2σ.
+        half = 2.0 * np.sqrt(2.0 / dof)
+        chi2_reduced_ci = (max(1.0 - half, 0.0), 1.0 + half)
+        chi2_warning = None
+        if not (chi2_reduced_ci[0] <= chi2_reduced <= chi2_reduced_ci[1]):
+            chi2_warning = (
+                f"χ²ᵣ = {chi2_reduced:.2f} hors de l'intervalle attendu "
+                f"[{chi2_reduced_ci[0]:.2f}, {chi2_reduced_ci[1]:.2f}] — "
+            )
+            chi2_warning += (
+                "sous-ajustement : bruit réel > σ (modèle ou structure d'erreur "
+                "sous-estimée)." if chi2_reduced > chi2_reduced_ci[1]
+                else "sur-ajustement : σ surestimé ou réplicats corrélés."
+            )
 
         # ── Diagnostics d'ajustement (I7) : les 3 gardes qui auraient crié B1 ──
         Zmod2 = spectrum.Zre ** 2 + spectrum.Zim ** 2 + 1e-30
@@ -192,6 +219,8 @@ class RandlesFullModel(BaseFitModel):
         warnings: list = []
         if not converged:
             warnings.append("ajustement non convergé")
+        if chi2_warning is not None:
+            warnings.append(chi2_warning)
         if rel_residual > _REL_RESIDUAL_WARN:
             warnings.append(
                 f"résidu relatif élevé ({rel_residual * 100:.0f} %) — "
@@ -218,4 +247,22 @@ class RandlesFullModel(BaseFitModel):
             converged=converged,
             reconstruction_error=rel_residual,
             warnings=warnings,
+            error_structure_source=(
+                error_structure.source if error_structure is not None else None
+            ),
+            error_structure_timestamp=(
+                error_structure.timestamp if error_structure is not None else None
+            ),
+            error_structure_coeffs=(
+                {
+                    "alpha": error_structure.alpha,
+                    "beta": error_structure.beta,
+                    "gamma": error_structure.gamma,
+                    "delta": error_structure.delta,
+                    "R_m": error_structure.R_m,
+                }
+                if error_structure is not None else None
+            ),
+            chi2_is_valid_test=chi2_is_valid_test,
+            chi2_reduced_ci=chi2_reduced_ci,
         )

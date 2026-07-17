@@ -373,24 +373,17 @@ def main() -> None:
             }
 
         st.markdown("**Pondération du fit**")
-        _WEIGHT_LABELS = {
-            "modulus": "Modulus — 1/(α·|Z|)² (défaut)",
-            "sigma":   "Variance inter-réplicats — 1/σ² (mesuré, ≥ 2 réplicats)",
-        }
-        weight_mode = st.radio(
-            "Mode de pondération",
-            options=list(_WEIGHT_LABELS.keys()),
-            format_func=lambda k: _WEIGHT_LABELS[k],
-            key="eis_weight_mode",
-            help="Modulus : bruit relatif supposé constant. Sigma (Measurement Model, "
-                 "Orazem) : pondère par la variance réellement mesurée entre réplicats — "
-                 "chi²_réduit≈1 devient alors un test d'adéquation. Nécessite ≥ 2 réplicats ; "
-                 "à défaut, retombe automatiquement sur Modulus.",
+        st.caption(
+            "⚖️ Méthode UNIQUE : structure d'erreur d'Orazem & Tribollet "
+            "(measurement model). σ = α·|Z_re| + β·|Z_im| + γ·|Z|²/R_m + δ, "
+            "poids = 1/σ². Les coefficients (α,β,γ,δ) sont **caractérisés sur "
+            "réplicats** (≥ 3) puis réutilisés pour les spectres sans réplicats. "
+            "χ²_réduit ≈ 1 est un vrai test d'adéquation. Sans caractérisation ni "
+            "réplicats, le fit est **refusé** (pas de repli arbitraire)."
         )
 
     cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
     cfg.setdefault("fit", {})
-    cfg["fit"]["weight_mode"] = weight_mode
 
     # I6 : un fit paramétrique sélectionné mais non chargé (import échoué) ou
     # non implémenté ne doit pas disparaître en silence — on le signale et on

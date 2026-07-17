@@ -7,6 +7,9 @@ __pycache__/
 logs/
 sessions/
 *.log
+# Caractérisation de structure d'erreur (Orazem) persistée à l'exécution :
+# état d'instrument spécifique à la campagne, régénéré/réutilisé par l'app.
+config/error_structure.json
 .env
 .DS_Store
 *.egg-info/

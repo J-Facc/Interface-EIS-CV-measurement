@@ -181,23 +181,72 @@ def _render_drt_tab(sessions: dict) -> None:
             )
 
 
+def _find_randles_result(sessions: dict):
+    """Retourne le premier FitResult 'randles_full' trouvé dans les sessions."""
+    for _e, session in sorted(sessions.items()):
+        candidates = [getattr(session, "bare", None), getattr(session, "probe", None)]
+        candidates += [g.spectrum for g in getattr(session, "groups", []) if getattr(g, "spectrum", None)]
+        for sp in candidates:
+            if sp is None:
+                continue
+            fr = (getattr(sp, "fit_results", {}) or {}).get("randles_full")
+            if fr is not None and getattr(fr, "error_structure_source", None):
+                return fr
+    return None
+
+
+def _render_error_structure_provenance(sessions: dict) -> None:
+    """Affiche la provenance de la structure d'erreur d'Orazem ayant pondéré les fits.
+
+    Rend visible si σ a été MESURÉ sur ce jeu (réplicats) ou RÉUTILISÉ depuis une
+    caractérisation persistée antérieure — cf. Measurement Model (Orazem & Tribollet).
+    """
+    fr = _find_randles_result(sessions)
+    if fr is None:
+        st.caption(
+            "⚖️ Pondération : **structure d'erreur d'Orazem** (measurement model), "
+            "poids = 1/σ². Aucune information de provenance disponible pour l'instant."
+        )
+        return
+
+    source = getattr(fr, "error_structure_source", None)
+    ts = getattr(fr, "error_structure_timestamp", None) or "?"
+    coeffs = getattr(fr, "error_structure_coeffs", None) or {}
+    coeff_txt = ""
+    if coeffs:
+        coeff_txt = (
+            f" — α={coeffs.get('alpha', 0):.3g}, β={coeffs.get('beta', 0):.3g}, "
+            f"γ={coeffs.get('gamma', 0):.3g}, δ={coeffs.get('delta', 0):.3g} Ω"
+        )
+
+    if source == "characterized_now":
+        st.success(
+            "⚖️ Structure d'erreur d'Orazem **caractérisée sur ce jeu** "
+            f"(réplicats, {ts}){coeff_txt}. Poids = 1/σ² → **χ²ᵣ ≈ 1 vaut test "
+            "d'adéquation** modèle + erreur."
+        )
+    elif source == "reused_persisted":
+        st.warning(
+            "⚖️ Structure d'erreur d'Orazem **réutilisée** d'une caractérisation "
+            f"antérieure (persistée le {ts}){coeff_txt}. σ n'a **pas** été mesuré "
+            "sur ce jeu-ci ; χ²ᵣ ≈ 1 reste un test d'adéquation sous l'hypothèse "
+            "que l'instrument n'a pas changé depuis."
+        )
+    else:
+        st.caption(
+            "⚖️ Pondération : **structure d'erreur d'Orazem** (measurement model), "
+            "poids = 1/σ²."
+        )
+
+
 def _render_reconstruction_tab(sessions: dict, config: dict | None = None) -> None:
     """Onglet 3 — Reconstructions Nyquist (Randles vs DRT)."""
     st.subheader("Reconstructions Nyquist — Randles vs DRT")
 
-    # Pondération active du fit (modulus / sigma) — exposée depuis la config.
-    weight_mode = (config or {}).get("fit", {}).get("weight_mode", "modulus")
-    if weight_mode == "sigma":
-        st.caption(
-            "⚖️ Pondération : **variance inter-réplicats (σ mesuré)** — les poids "
-            "sont de vraies 1/variance, donc **χ²ᵣ ≈ 1 vaut test d'adéquation** "
-            "modèle + erreur (retombe sur modulus s'il n'y a qu'un réplicat)."
-        )
-    else:
-        st.caption(
-            "⚖️ Pondération : **modulus** — 1/(α·|Z|)² avec α arbitraire. "
-            "χ²ᵣ est une métrique de misfit relative, **pas** un test d'adéquation."
-        )
+    # Pondération : méthode UNIQUE (structure d'erreur d'Orazem). On affiche la
+    # PROVENANCE réelle de la structure ayant pondéré les fits : caractérisée sur
+    # ce jeu (réplicats) ou réutilisée depuis une caractérisation persistée.
+    _render_error_structure_provenance(sessions)
 
     # (0) niveau paramètre : Rct_randles vs Rct_drt par étape et modèle
     st.markdown("**Comparaison des paramètres (Rct, χ²ᵣ)**")

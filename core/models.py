@@ -32,8 +32,10 @@ class EISSpectrum:
     fit_results: dict = field(default_factory=dict)
     # Validation KK — renseigné par core/validator.py
     validation: Optional[object] = None       # ValidationResult (évite import circulaire)
-    sigma_re: Optional[object] = None         # np.ndarray σ_re(f) inter-réplicats
-    sigma_im: Optional[object] = None         # np.ndarray σ_im(f) inter-réplicats
+    sigma_re: Optional[object] = None         # np.ndarray σ_re(f) inter-réplicats (BRUT, sans plancher)
+    sigma_im: Optional[object] = None         # np.ndarray σ_im(f) inter-réplicats (BRUT, sans plancher)
+    n_replicates: Optional[int] = None        # nb de réplicats moyennés (caractérisation structure d'erreur)
+    replicates: Optional[list] = None         # réplicats individuels (option voigt_based ; None si non conservés)
     f_min_valid: Optional[float] = None       # Hz — borne basse KK-valide
     f_max_valid: Optional[float] = None       # Hz — borne haute KK-valide
 
@@ -76,11 +78,10 @@ class FitResult:
     params_std: dict
     Zfit_re: np.ndarray
     Zfit_im: np.ndarray
-    # χ² réduit pondéré = Σ(w·Δ²)/(2N−P), avec les poids w effectivement utilisés
-    # par le fit (cf. fits/randles_full.py). ATTENTION : sous pondération modulus
-    # rééchelonnée (w = 1/(alpha_noise·|Z|)², alpha_noise arbitraire), chi2_reduced≈1
-    # n'est PAS un test d'adéquation statistique — juste une métrique de misfit
-    # relative comparable entre spectres (voir prompt C).
+    # χ² réduit pondéré = Σ(w·Δ²)/(2N−P), avec les poids w = 1/σ² issus de la
+    # structure d'erreur d'Orazem (fits/error_structure.py). Les poids étant de
+    # vraies 1/variance (absolute_sigma=True TOUJOURS), chi2_reduced≈1 EST un vrai
+    # test d'adéquation modèle+erreur (cf. chi2_is_valid_test / chi2_reduced_ci).
     chi2_reduced: float
     residuals_re: np.ndarray
     residuals_im: np.ndarray
@@ -104,6 +105,18 @@ class FitResult:
     # Diagnostics d'ajustement remontés à l'UI (I7) : fit non convergé, résidu
     # relatif élevé, paramètre en butée sur une borne. Liste de messages lisibles.
     warnings: list = field(default_factory=list)
+    # Provenance de la structure d'erreur ayant pondéré CE fit (Orazem) :
+    #   "characterized_now"  → coefficients estimés sur les réplicats de ce jeu ;
+    #   "reused_persisted"   → coefficients rechargés d'une caractérisation antérieure.
+    # L'UI DOIT afficher cette provenance (savoir si σ a été mesuré sur ce jeu).
+    error_structure_source: Optional[str] = None
+    error_structure_timestamp: Optional[str] = None   # horodatage de la caractérisation utilisée
+    error_structure_coeffs: Optional[dict] = None      # {alpha,beta,gamma,delta,R_m}
+    # chi2_reduced est-il un vrai test d'adéquation ? TOUJOURS True désormais
+    # (poids = 1/σ² de la structure d'erreur, absolute_sigma=True).
+    chi2_is_valid_test: bool = False
+    # Intervalle attendu du χ²_red sous H0 : ~[1 − 2√(2/dof), 1 + 2√(2/dof)].
+    chi2_reduced_ci: Optional[tuple] = None
 
 
 @dataclass

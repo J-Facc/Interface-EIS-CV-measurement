@@ -1,8 +1,10 @@
 """Load YAML configuration and validate with Pydantic."""
 
+from typing import Optional
+
 import yaml
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class PhysicsSettings(BaseModel):
@@ -50,10 +52,51 @@ class DRTSettings(BaseModel):
     lambda_auto: bool = True
 
 
+class ErrorStructureSettings(BaseModel):
+    """Configuration de la structure d'erreur d'Orazem — pondération UNIQUE.
+
+    Les COEFFICIENTS (α, β, γ, δ) ne figurent PAS ici : ils sont estimés sur
+    réplicats puis persistés dans `persistence_path`. Cette section ne porte que
+    les OPTIONS de la méthode.
+
+    - equal_re_im : impose α = β (hypothèse d'égalité des variances Re/Im du
+      measurement model — standard, recommandé).
+    - voigt_based : estime σ empirique par l'écart-type des résidus d'un circuit
+      de Voigt ajusté à chaque réplicat (plus fidèle à Orazem) ; sinon écart-type
+      inter-réplicats direct.
+    - R_m : résistance de mesure (Ω) ; None => terme γ·|Z|²/R_m absorbé/ignoré.
+    - min_replicates : nombre minimal de réplicats pour caractériser (≥ 3 recommandé).
+    - persistence_path : fichier JSON d'historique des coefficients caractérisés
+      (None => config/error_structure.json).
+    """
+
+    equal_re_im: bool = True
+    voigt_based: bool = False
+    R_m: Optional[float] = None
+    min_replicates: int = 3
+    persistence_path: Optional[str] = None
+
+    @field_validator("R_m")
+    @classmethod
+    def _rm_positive(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and v <= 0:
+            raise ValueError(f"error_structure.R_m doit être > 0 ou null (reçu {v})")
+        return v
+
+    @field_validator("min_replicates")
+    @classmethod
+    def _min_rep_valid(cls, v: int) -> int:
+        if v < 2:
+            raise ValueError(f"error_structure.min_replicates doit être ≥ 2 (reçu {v})")
+        return v
+
+
 class FitSettings(BaseModel):
-    # "modulus" (pondération 1/(alpha_noise·|Z|)²) ou "sigma" (1/σ² inter-réplicats).
-    weight_mode: str = "modulus"
-    alpha_noise: float = 0.001
+    # Pondération UNIQUE : structure d'erreur d'Orazem (fits/error_structure.py).
+    # Plus de weight_mode ni d'alpha_noise (supprimés).
+    error_structure: ErrorStructureSettings = Field(
+        default_factory=ErrorStructureSettings
+    )
     n_freqs_parasites: list = Field(default_factory=lambda: [50.0, 100.0])
     tol_parasites: float = 3.0
     max_iter: int = 10000
