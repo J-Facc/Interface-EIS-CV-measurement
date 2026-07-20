@@ -214,6 +214,70 @@ def test_load_cv_file_fr_returns_amperes(tmp_path):
     assert np.all(np.diff(scan.E) >= 0), "tri par potentiel croissant"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Nouveau format EC-Lab : Re(Z)/-Im(Z) SANS colonne fréquence
+# (virgule décimale, tabulation, -Im(Z) déjà positif → axe fréquence reconstruit)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _eclab_no_freq_two_columns(n: int = 30) -> bytes:
+    """Export EC-Lab à deux colonnes seulement : Re(Z)/Ohm, -Im(Z)/Ohm.
+
+    Virgule décimale (FR), tabulation, notation E+003. Aucune colonne fréquence :
+    la valeur -Im(Z) est DÉJÀ positive (signe inversé par EC-Lab)."""
+    lines = ["Re(Z)/Ohm\t-Im(Z)/Ohm"]
+    for i in range(n):
+        zre = 1682.0 + i * 30.0
+        zim = 236.0 + i * 20.0  # déjà positif
+        lines.append(f"{zre:.6E}\t{zim:.6E}".replace(".", ","))
+    return "\n".join(lines).encode("latin-1")
+
+
+def test_robust_two_column_no_freq_detected_as_eis(tmp_path):
+    """Le parseur reconnaît Re(Z)/-Im(Z) comme EIS même sans colonne fréquence."""
+    text = (
+        "Re(Z)/Ohm\t-Im(Z)/Ohm\n"
+        "1,682337036132813E+003\t2,361093292236328E+002\n"
+        "1,706418334960938E+003\t2,727314453125000E+002\n"
+        "1,736918823242188E+003\t3,351642456054688E+002\n"
+    )
+    pf = parse_eclab_file(_write(tmp_path, "eis_2col.txt", text))
+    assert pf.kind == "EIS"
+    assert pf.f is None, "aucune colonne fréquence dans ce format"
+    assert pf.Zre[0] == pytest.approx(1682.337, rel=1e-5)
+    # -Im(Z) déjà positif → conservé tel quel (pas de flip)
+    assert pf.Zim[0] == pytest.approx(236.1093, rel=1e-5)
+    assert np.all(pf.Zim > 0)
+
+
+def test_load_spectrum_new_format_reconstructs_frequency():
+    """load_spectrum reconstruit un axe fréquence log 1e6→0.1 Hz, Zim positif,
+    longueurs alignées, tri HF→BF."""
+    n = 30
+    sp = load_spectrum(
+        _eclab_no_freq_two_columns(n), "eis_2col.txt",
+        concentration=1e-9, step="hybridization",
+    )
+    assert isinstance(sp, EISSpectrum)
+    # Aucune fréquence 50/100 Hz ne tombe forcément dans le filtre ± 3 Hz ; on
+    # vérifie surtout l'alignement et les bornes.
+    assert sp.n_points == len(sp.f) == len(sp.Zre) == len(sp.Zim), "tableaux alignés"
+    assert np.all(sp.Zim >= 0), "Zim (-Im(Z)) doit rester positif"
+    assert sp.f[0] > sp.f[-1], "tri HF→BF"
+    assert sp.f[0] == pytest.approx(1e6, rel=1e-6), "f[0] = f_max = 1 MHz"
+    assert sp.f[-1] == pytest.approx(0.1, rel=1e-6), "f[-1] = f_min = 0.1 Hz"
+    assert np.all(np.diff(sp.f) < 0), "fréquence strictement décroissante"
+
+
+def test_load_spectrum_new_format_respects_config_bounds():
+    """Les bornes f_max/f_min sont lues depuis la config si fournie."""
+    config = {"acquisition": {"f_max_hz": 5.0e5, "f_min_hz": 1.0}}
+    sp = load_spectrum(
+        _eclab_no_freq_two_columns(20), "eis_2col.txt", config=config,
+    )
+    assert sp.f[0] == pytest.approx(5.0e5, rel=1e-6)
+    assert sp.f[-1] == pytest.approx(1.0, rel=1e-6)
+
+
 def test_load_cv_curve_returns_cvcurve(tmp_path):
     """load_cv_curve renvoie la dataclass légère CVCurve(Ewe, I, label)."""
     text = (

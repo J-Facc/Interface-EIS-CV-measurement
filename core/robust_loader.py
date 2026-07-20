@@ -186,8 +186,17 @@ def parse_eclab_file(path: str) -> ParsedFile:
     n_rows = len(next(iter(columns.values()))) if columns else 0
 
     # discrimination EIS vs CV
-    if {"freq", "Zre", "Zim"} <= set(columns):
+    # EIS reconnu dès que Re(Z) ET Im(Z) sont présents ; la colonne fréquence est
+    # facultative (certains exports EC-Lab ne fournissent que Re(Z)/-Im(Z), sans
+    # fréquence : l'appelant reconstruira l'axe fréquence à partir de la plage de
+    # balayage). Si la fréquence est absente, on le signale.
+    if {"Zre", "Zim"} <= set(columns):
         kind = "EIS"
+        if "freq" not in columns:
+            warnings.append(
+                "colonne frequence absente ; axe frequence a reconstruire "
+                "depuis la plage de balayage"
+            )
     elif {"Ewe", "I"} <= set(columns):
         kind = "CV"
     else:

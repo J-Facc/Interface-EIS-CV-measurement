@@ -16,6 +16,34 @@ log = get_logger("loader")
 _PARASITIC_FREQS_DEFAULT = [50.0, 100.0]
 _PARASITIC_TOL_DEFAULT = 3.0
 
+# Plage de balayage EIS par défaut (Hz) — sert à reconstruire l'axe fréquence
+# des exports EC-Lab qui n'exportent que Re(Z)/-Im(Z) sans colonne fréquence.
+# Surchargée par la section `acquisition` de la config si présente.
+_F_MAX_DEFAULT = 1.0e6
+_F_MIN_DEFAULT = 0.1
+
+
+def _acquisition_bounds(config: Optional[dict]) -> tuple[float, float]:
+    """Return (f_max_hz, f_min_hz) from config, falling back to module defaults."""
+    f_max, f_min = _F_MAX_DEFAULT, _F_MIN_DEFAULT
+    if config:
+        acq = config.get("acquisition", {}) or {}
+        f_max = float(acq.get("f_max_hz", f_max))
+        f_min = float(acq.get("f_min_hz", f_min))
+    return f_max, f_min
+
+
+def _reconstruct_frequency(n_points: int, f_max: float, f_min: float) -> np.ndarray:
+    """Rebuild a fixed logarithmic frequency sweep, HF→BF (f[0]=f_max).
+
+    Used when an EC-Lab export provides Re(Z)/-Im(Z) but NO frequency column.
+    The sweep is assumed fixed and logarithmic between f_max and f_min, matching
+    the loader's HF→BF ordering convention. Reconstruction MUST happen before any
+    row removal so that n_points (and therefore the frequency spacing) matches the
+    raw data, keeping (freq, Zre, Zim) aligned.
+    """
+    return np.logspace(np.log10(f_max), np.log10(f_min), n_points)
+
 
 def parse_robust(content: Union[str, bytes]) -> Optional[ParsedFile]:
     """Passe le contenu d'un fichier au parseur EC-Lab robuste (core.robust_loader).
@@ -213,12 +241,32 @@ def load_spectrum(
     if pf is not None and pf.kind == "EIS" and pf.n_rows > 0:
         if warnings_out is not None:
             warnings_out.extend(pf.warnings)
+        Zre_raw = np.asarray(pf.Zre, dtype=float)
+        Zim_raw = np.asarray(pf.Zim, dtype=float)
+        # Axe fréquence : on utilise la colonne du fichier si elle existe ; sinon
+        # (export EC-Lab sans fréquence) on la reconstruit AVANT tout filtrage,
+        # sur exactement pf.n_rows points, pour garder (f, Zre, Zim) alignés.
+        if pf.f is not None:
+            f_raw = np.asarray(pf.f, dtype=float)
+        else:
+            f_max, f_min = _acquisition_bounds(config)
+            f_raw = _reconstruct_frequency(len(Zre_raw), f_max, f_min)
+            log.info(
+                f"Fichier {label} : axe fréquence reconstruit "
+                f"({f_max:.3g}→{f_min:.3g} Hz, {len(f_raw)} points log)"
+            )
+            if warnings_out is not None:
+                warnings_out.append(
+                    f"Axe fréquence reconstruit ({f_max:.3g}→{f_min:.3g} Hz, "
+                    f"balayage log HF→BF) — aucune colonne fréquence dans le fichier."
+                )
         # pf.Zim est DÉJÀ en convention -Im(Z) > 0 → correct_sign=False pour
-        # ne PAS ré-inverser le signe (anti-double-signe).
+        # ne PAS ré-inverser le signe (anti-double-signe). Le filtrage 50/100 Hz,
+        # dropna et le tri opèrent sur (f, Zre, Zim) comme des tableaux alignés.
         f, Zre, Zim = _clean_spectrum(
-            np.asarray(pf.f, dtype=float),
-            np.asarray(pf.Zre, dtype=float),
-            np.asarray(pf.Zim, dtype=float),
+            f_raw,
+            Zre_raw,
+            Zim_raw,
             parasitic_freqs,
             tol,
             correct_sign=False,
