@@ -1,56 +1,75 @@
-"""Résolution de la pondération du fit EIS (CNLS complexe).
+"""Pondération UNIQUE du fit EIS (CNLS complexe) — structure d'erreur d'Orazem.
 
-Deux modes, sélectionnés par `config.fit.weight_mode` :
+Il n'existe plus qu'UNE seule méthode de pondération. Les anciens modes
+"modulus" (1/(alpha_noise·|Z|)²) et "sigma" (1/σ² inter-réplicats bruts) ont été
+supprimés, ainsi que tout sélecteur `weight_mode` et le paramètre `alpha_noise`.
 
-- "modulus" (défaut) : pondération modulus, w_re = w_im = 1/(alpha_noise·|Z|)².
-  alpha_noise est un niveau de bruit relatif ARBITRAIRE : les poids ne sont pas
-  de vraies inverses de variance, donc la covariance doit être rééchelonnée par
-  le χ² réduit (absolute_sigma=False) et chi2_reduced≈1 n'a pas de sens statistique.
+Les poids sont TOUJOURS de vraies inverses de variance construites à partir de la
+structure d'erreur stochastique de l'instrument (fits/error_structure.py) :
 
-- "sigma" (Measurement Model, Orazem) : si le spectre porte des écarts-types
-  inter-réplicats mesurés (sigma_re(f), sigma_im(f)), w_re = 1/σ_re², w_im = 1/σ_im².
-  Les poids SONT les vraies inverses de variance → covariance directe
-  (absolute_sigma=True) et chi2_reduced≈1 devient le test d'adéquation
-  modèle+erreur. Si σ indisponible (un seul réplicat), on retombe sur "modulus".
+    σ_i   = α·|Z_re,i| + β·|Z_im,i| + γ·(|Z_i|²/R_m) + δ
+    w_re,i = w_im,i = 1/σ_i²        (absolute_sigma = True, TOUJOURS)
 
-Module volontairement sans dépendance lourde (numpy seul) pour être importable
-aussi bien depuis core/pipeline.py que depuis les modèles de fits/ sans risque
-d'import circulaire.
+Par conséquent la covariance des paramètres n'est JAMAIS rééchelonnée par le χ²
+réduit (cf. fits/randles_full.py), et χ²_red est un vrai test d'adéquation.
+
+Les coefficients (α, β, γ, δ) proviennent de réplicats (caractérisation stricte
+d'Orazem) ou, à défaut, des derniers coefficients persistés ; sinon le fit est
+refusé (ErrorStructureUnavailable). Voir fits/error_structure.py.
+
+Références : Orazem & Tribollet, "Electrochemical Impedance Spectroscopy", Wiley
+(chap. Measurement Model / Error Structure) ; Agarwal, Orazem & García-Rubio,
+J. Electrochem. Soc. (1992-1995).
+
+Aucune dépendance Streamlit (importable depuis core/ et fits/).
 """
 
 import numpy as np
 
+from fits.error_structure import ErrorStructure, resolve_error_structure
+
+# Ré-export pour les appelants historiques qui attrapent l'exception.
+from fits.error_structure import ErrorStructureUnavailable  # noqa: F401
+
+# Garde-fou : σ ne doit jamais être nul/négatif (division par zéro des poids).
+# La structure d'erreur garantit σ ≥ δ ≥ 0 ; ce plancher ABSOLU (et non relatif)
+# ne s'active qu'en cas de δ = 0 combiné à |Z| = 0, situation pathologique.
+_SIGMA_ABS_FLOOR = 1e-12
+
 
 def resolve_weights(spectrum, config):
-    """Retourne (w_re, w_im, absolute_sigma) pour un spectre et une config donnés.
+    """Retourne (w_re, w_im, error_structure) pour un spectre et une config.
 
     Args:
-        spectrum: EISSpectrum (attributs Zre, Zim et éventuellement sigma_re/sigma_im).
+        spectrum: EISSpectrum (Zre, Zim ; éventuellement sigma_re/sigma_im,
+            n_replicates, replicates pour la caractérisation).
         config: dict de config app (clé "fit").
 
     Returns:
-        w_re: np.ndarray — poids par point sur la partie réelle.
-        w_im: np.ndarray — poids par point sur la partie imaginaire.
-        absolute_sigma: bool — True si les poids sont de vraies 1/variance
-            (mode "sigma" effectif), False en pondération modulus rééchelonnée.
+        w_re: np.ndarray — poids par point sur la partie réelle (= 1/σ_i²).
+        w_im: np.ndarray — poids par point sur la partie imaginaire (= 1/σ_i²).
+        error_structure: ErrorStructure — coefficients + provenance
+            (source ∈ {"characterized_now", "reused_persisted"}, horodatage…).
+
+    Raises:
+        ErrorStructureUnavailable: si aucune structure d'erreur n'est disponible
+            (ni réplicats, ni coefficients persistés) — le fit doit être refusé.
     """
-    fit_cfg = config.get("fit", {}) if isinstance(config, dict) else {}
-    mode = fit_cfg.get("weight_mode", "modulus")
+    es: ErrorStructure = resolve_error_structure(spectrum, config)
 
-    sigma_re = getattr(spectrum, "sigma_re", None)
-    sigma_im = getattr(spectrum, "sigma_im", None)
-    has_sigma = sigma_re is not None and sigma_im is not None
+    # σ_struct décrit le bruit d'UNE mesure unique (l'écart-type inter-réplicats,
+    # ddof=1, estime le bruit d'un réplicat individuel). L'écart-type du DATUM
+    # réellement ajusté dépend de sa nature :
+    #   - spectre = moyenne de N réplicats  → Var = σ_struct²/N  → σ_i = σ_struct/√N ;
+    #   - spectre = mesure unique (N = 1)    → σ_i = σ_struct.
+    # Pondérer par 1/σ_i² (et non 1/σ_struct²) est indispensable pour que χ²_red
+    # soit un VRAI test d'adéquation sur le datum ajusté (moyenne ou réplicat).
+    # C'est bien la forme w = 1/σ_i² : seul σ_i est correctement identifié par datum.
+    n_eff = getattr(spectrum, "n_replicates", None) or 1
+    n_eff = max(int(n_eff), 1)
 
-    if mode == "sigma" and has_sigma:
-        sre = np.asarray(sigma_re, dtype=float)
-        sim = np.asarray(sigma_im, dtype=float)
-        w_re = 1.0 / sre ** 2
-        w_im = 1.0 / sim ** 2
-        return w_re, w_im, True
-
-    # Pondération modulus (par défaut, ou fallback si σ indisponible en mode sigma).
-    alpha = float(fit_cfg.get("alpha_noise", 0.001))
-    Zmod = np.sqrt(np.asarray(spectrum.Zre, dtype=float) ** 2
-                   + np.asarray(spectrum.Zim, dtype=float) ** 2)
-    w = 1.0 / (alpha * Zmod) ** 2
-    return w, w, False
+    sigma_struct = es.sigma(spectrum.Zre, spectrum.Zim)
+    sigma_i = np.maximum(np.asarray(sigma_struct, dtype=float), _SIGMA_ABS_FLOOR) / np.sqrt(n_eff)
+    w = 1.0 / sigma_i ** 2
+    # equal_re_im : σ (donc w) identique sur réel et imaginaire.
+    return w, w, es

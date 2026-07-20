@@ -12,7 +12,10 @@ from fits.randles_full import RandlesFullModel
 from fits import registry
 from core.models import EISSpectrum
 
-_CFG = {"fit": {"alpha_noise": 0.001, "max_iter": 10000}}
+# Pondération = structure d'erreur d'Orazem. Ces spectres synthétiques n'ont pas
+# de réplicats : le fit réutilise la structure de référence persistée par la
+# fixture conftest.isolate_error_structure (source="reused_persisted").
+_CFG = {"fit": {"max_iter": 10000}}
 
 
 def _spectrum(Rct: float) -> EISSpectrum:
@@ -27,8 +30,20 @@ def _spectrum(Rct: float) -> EISSpectrum:
 
 
 def test_clean_fit_has_no_warnings():
-    fr = RandlesFullModel().fit(_spectrum(5000.0), _CFG)
+    # χ²ᵣ étant désormais un test d'adéquation (poids = 1/σ² de la structure
+    # d'erreur), un « bon » fit doit porter un bruit COHÉRENT avec la structure
+    # réutilisée (fixture : σ = 0.01·|Z_re| + 0.01·|Z_im| + 1 Ω). On injecte ce
+    # bruit exact → χ²ᵣ ≈ 1 et aucune alerte (ni convergence, ni résidu, ni borne,
+    # ni adéquation).
+    sp = _spectrum(5000.0)
+    Z = sp.Zre + 1j * sp.Zim
+    sigma = 0.01 * np.abs(sp.Zre) + 0.01 * np.abs(sp.Zim) + 1.0
+    rng = np.random.default_rng(0)
+    sp.Zre = sp.Zre + rng.normal(0.0, sigma)
+    sp.Zim = sp.Zim + rng.normal(0.0, sigma)
+    fr = RandlesFullModel().fit(sp, _CFG)
     assert fr.warnings == [], fr.warnings
+    assert fr.chi2_is_valid_test
     assert fr.reconstruction_error is not None and fr.reconstruction_error < 0.05
 
 

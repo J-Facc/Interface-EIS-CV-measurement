@@ -330,18 +330,16 @@ def average_replicates(spectra: list) -> EISSpectrum:
     Zre_stack = np.asarray(Zre_stack)
     Zim_stack = np.asarray(Zim_stack)
 
-    # σ(f) empirique inter-réplicats (approche Measurement Model, Orazem) — calculé
-    # AVANT le fit pour pouvoir pondérer par 1/σ² (cf. fits/weighting.py). ddof=1
-    # (estimateur non biaisé) ; plancher à 0,1 % du module moyen pour éviter des
-    # poids infinis là où les réplicats coïncident exactement.
+    # σ(f) empirique inter-réplicats (structure d'erreur d'Orazem) — calculé AVANT
+    # le fit pour caractériser la structure d'erreur (fits/error_structure.py).
+    # ddof=1 (estimateur non biaisé). σ est stocké BRUT, SANS plancher : le
+    # plancher relatif arbitraire (0.001·|Z̄|) fausserait l'estimation du bruit de
+    # fond additif δ. La borne inférieure de σ vient désormais de δ (régression),
+    # pas d'un plancher codé en dur.
     Zre_mean = np.mean(Zre_stack, axis=0)
     Zim_mean = np.mean(Zim_stack, axis=0)
     sigma_re = np.std(Zre_stack, axis=0, ddof=1)
     sigma_im = np.std(Zim_stack, axis=0, ddof=1)
-    Zmod_mean = np.sqrt(Zre_mean ** 2 + Zim_mean ** 2)
-    floor = 0.001 * Zmod_mean
-    sigma_re = np.maximum(sigma_re, floor)
-    sigma_im = np.maximum(sigma_im, floor)
 
     ref = spectra[0]
     return EISSpectrum(
@@ -355,4 +353,8 @@ def average_replicates(spectra: list) -> EISSpectrum:
         source_files=[s.label for s in spectra],
         sigma_re=sigma_re,
         sigma_im=sigma_im,
+        n_replicates=len(spectra),
+        # Réplicats conservés pour l'option voigt_based (structure d'erreur via
+        # résidus de Voigt). Légers (mêmes objets déjà en mémoire).
+        replicates=list(spectra),
     )
