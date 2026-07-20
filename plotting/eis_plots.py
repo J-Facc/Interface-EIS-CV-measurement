@@ -369,8 +369,15 @@ def _hex_to_rgba(color: str, alpha: float) -> str:
     return color
 
 
-def drt_figure(results, title: str = "Distribution des temps de relaxation (DRT)") -> go.Figure:
-    """Trace γ(τ) vs log₁₀(τ) pour un ou plusieurs DRTResult (point 7).
+def drt_figure(
+    results,
+    title: str = "Distribution des temps de relaxation (DRT)",
+    theme_mode: str = "light",
+) -> go.Figure:
+    """Trace ln(γ(τ)) vs ln(τ) pour un ou plusieurs DRTResult (point 7).
+
+    Les deux axes sont en logarithme NATUREL (base e, ``np.log``) : abscisse
+    ln(τ), ordonnée ln(γ(τ)). τ est exprimé en secondes.
 
     Si un résultat expose des intervalles de crédibilité (γ_lo/γ_hi non-None,
     issu du HMC), une bande d'incertitude est tracée autour de la médiane ;
@@ -380,11 +387,12 @@ def drt_figure(results, title: str = "Distribution des temps de relaxation (DRT)
         results: itérable de tuples ``(label, DRTResult)``. Un DRTResult seul ou
             un unique tuple sont aussi acceptés par commodité.
         title: titre de la figure.
+        theme_mode: 'light' ou 'dark' (thème jour/nuit, cf. plotting/theme.py).
     """
     # Normalisation de l'entrée en liste de (label, result).
     items = _coerce_drt_items(results)
 
-    theme = get_theme("light")
+    theme = get_theme(theme_mode)
     colors = theme["colors"]
     fig = go.Figure()
 
@@ -398,20 +406,37 @@ def drt_figure(results, title: str = "Distribution des temps de relaxation (DRT)
             continue
 
         color = colors[idx % len(colors)]
-        x = np.log10(np.asarray(tau, dtype=float))
-        y = np.asarray(gamma, dtype=float)
+        tau_arr = np.asarray(tau, dtype=float)
+        gamma_arr = np.asarray(gamma, dtype=float)
+
+        # ln(0) et ln(<0) sont indéfinis. NNLS garantit γ >= 0 mais des zéros
+        # restent possibles ; on masque donc les points où γ <= 0 (et τ <= 0)
+        # AVANT de prendre le ln naturel, plutôt que de laisser des -inf/NaN
+        # casser le tracé ou l'autoscale.
+        valid = (gamma_arr > 0) & (tau_arr > 0)
+        if not np.any(valid):
+            continue
+        x = np.log(tau_arr[valid])       # ln(τ) — logarithme naturel (base e)
+        y = np.log(gamma_arr[valid])     # ln(γ(τ)) — logarithme naturel (base e)
 
         # Bande d'incertitude (HMC) : lo→hi en zone remplie sous la courbe.
+        # Même filtrage : on ne garde que les points où γ, γ_lo et γ_hi sont
+        # strictement positifs, seules valeurs admissibles pour le ln.
         if getattr(res, "gamma_lo", None) is not None and getattr(res, "gamma_hi", None) is not None:
             lo = np.asarray(res.gamma_lo, dtype=float)
             hi = np.asarray(res.gamma_hi, dtype=float)
-            fig.add_trace(go.Scatter(
-                x=np.concatenate([x, x[::-1]]),
-                y=np.concatenate([hi, lo[::-1]]),
-                fill="toself", fillcolor=_hex_to_rgba(color, 0.18),
-                line=dict(width=0), hoverinfo="skip",
-                name=f"{lbl} — IC 95 %", showlegend=False,
-            ))
+            band = valid & (lo > 0) & (hi > 0)
+            if np.any(band):
+                xb = np.log(tau_arr[band])
+                lo_b = np.log(lo[band])
+                hi_b = np.log(hi[band])
+                fig.add_trace(go.Scatter(
+                    x=np.concatenate([xb, xb[::-1]]),
+                    y=np.concatenate([hi_b, lo_b[::-1]]),
+                    fill="toself", fillcolor=_hex_to_rgba(color, 0.18),
+                    line=dict(width=0), hoverinfo="skip",
+                    name=f"{lbl} — IC 95 %", showlegend=False,
+                ))
 
         engine = getattr(res, "engine", "")
         suffix = " (HMC)" if engine == "bayes" else (" (ridge)" if engine == "ridge" else "")
@@ -420,8 +445,8 @@ def drt_figure(results, title: str = "Distribution des temps de relaxation (DRT)
             line=dict(color=color, width=2),
             hovertemplate=(
                 f"<b>{lbl}</b><br>"
-                "log₁₀(τ) = %{x:.3f}<br>"
-                "γ(τ) = %{y:.4g} Ω<extra></extra>"
+                "ln(τ) = %{x:.3f}<br>"
+                "ln(γ(τ)) = %{y:.4g}<extra></extra>"
             ),
         ))
         plotted += 1
@@ -432,17 +457,23 @@ def drt_figure(results, title: str = "Distribution des temps de relaxation (DRT)
             xref="paper", yref="paper", x=0.5, y=0.5,
             showarrow=False, font=dict(size=13),
         )
-        apply_theme_to_figure(fig, "light")
+        apply_theme_to_figure(fig, theme_mode)
         return fig
 
     fig.update_layout(
         title=title,
-        xaxis_title=r"$\log_{10}(\tau/\mathrm{s})$",
-        yaxis_title=r"$\gamma(\tau)\ (\Omega)$",
-        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+        xaxis_title=r"$\ln(\tau/\mathrm{s})$",
+        yaxis_title=r"$\ln(\gamma(\tau))$",
+        showlegend=True,
+        legend=dict(
+            orientation="v", x=1.02, xanchor="left", y=1.0,
+            font=dict(color=theme["text"]),
+            bgcolor=_hex_to_rgba(theme["paper_bg"], 0.6),
+            bordercolor=theme["grid"], borderwidth=1,
+        ),
         hovermode="closest",
     )
-    apply_theme_to_figure(fig, "light")
+    apply_theme_to_figure(fig, theme_mode)
     return fig
 
 

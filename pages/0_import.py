@@ -524,12 +524,12 @@ def main() -> None:
     n_conc = len(concentrations)
     st.divider()
 
-    # ── 3. Probe ────────────────────────────────────────────────────────
-    probe = _section_probe_uploads(n_elec, mode_label)
+    # ── 3. Électrode nue (Bare) — référence d'affichage, hors calcul ──────
+    bare = _section_bare_uploads(n_elec, mode_label)
     st.divider()
 
-    # ── 3bis. Électrode nue (Bare) — référence d'affichage, hors calcul ──
-    bare = _section_bare_uploads(n_elec, mode_label)
+    # ── 3bis. Probe ─────────────────────────────────────────────────────
+    probe = _section_probe_uploads(n_elec, mode_label)
     st.divider()
 
     # ── 4. Calibration ──────────────────────────────────────────────────
