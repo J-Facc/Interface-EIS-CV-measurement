@@ -19,6 +19,13 @@ geometry:
 conditions:
   Fv: 5.0e-10       # m^3/s (= 0.5 µL/s)
 
+# Acquisition EIS — plage de balayage fréquentiel (fixe).
+# Sert à reconstruire l'axe fréquence des exports EC-Lab qui ne contiennent
+# que Re(Z)/-Im(Z) sans colonne fréquence (balayage log HF→BF).
+acquisition:
+  f_max_hz: 1.0e+6  # Hz — fréquence haute (début de balayage)
+  f_min_hz: 0.1     # Hz — fréquence basse (fin de balayage)
+
 # Paramètres de fit
 fit:
   # Pondération UNIQUE du CNLS : structure d'erreur d'Orazem & Tribollet

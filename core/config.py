@@ -114,10 +114,19 @@ class ExportSettings(BaseModel):
     fig_height: int = 800
 
 
+class AcquisitionSettings(BaseModel):
+    # Bornes de la plage de balayage EIS, utilisées pour reconstruire l'axe
+    # fréquence des fichiers EC-Lab qui n'exportent QUE Re(Z)/-Im(Z) (pas de
+    # colonne fréquence). Balayage logarithmique fixe f_max → f_min (HF→BF).
+    f_max_hz: float = 1.0e6
+    f_min_hz: float = 0.1
+
+
 class AppSettings(BaseModel):
     physics: PhysicsSettings = Field(default_factory=PhysicsSettings)
     geometry: GeometrySettings = Field(default_factory=GeometrySettings)
     conditions: ConditionsSettings = Field(default_factory=ConditionsSettings)
+    acquisition: AcquisitionSettings = Field(default_factory=AcquisitionSettings)
     fit: FitSettings = Field(default_factory=FitSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
 
