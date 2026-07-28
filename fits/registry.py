@@ -11,16 +11,22 @@ log = get_logger("registry")
 _registry: dict = {}
 # I6 : modèle non chargé → raison, au lieu de disparaître en silence.
 # ex. {"randles_full": "No module named 'scipy'"}. Exposé via discovery_errors().
-# NB : la DRT n'est plus un plugin BaseFitModel — c'est un moteur dédié
-# (fits/drt_fit.py, wrapper bayes-drt2) appelé directement par l'UI, pas via
-# le registre. Le registre ne découvre donc plus que les fits paramétriques.
+# La DRT (drt_bayes, fits/drt_fit.py, wrapper bayes_drt2) est un plugin du registre
+# au même titre que les fits paramétriques : découverte auto, lancée par le pipeline.
 _errors: dict = {}
 
 def _discover() -> None:
-    """Import all submodules in fits/ and register BaseFitModel subclasses."""
+    """Import all submodules in fits/ and register BaseFitModel subclasses.
+
+    La DRT (fits/drt_fit.py → DRTBayesModel, wrapper bayes_drt2) est de nouveau un
+    plugin du registre : elle est découverte et lancée par core/pipeline.py comme
+    les autres fits (mode 'optimize' par défaut). Si l'extra DRT (cvxopt/cmdstanpy)
+    est absent, son import échoue proprement et la raison est exposée via
+    discovery_errors() (I6), sans masquer les autres modèles.
+    """
     if _registry or _errors:
         return
-    skip = {"base", "physics", "registry", "kk_validation", "drt_fit", "weighting"}
+    skip = {"base", "physics", "registry", "kk_validation", "weighting"}
     for _finder, mod_name, _ispkg in pkgutil.iter_modules(fits.__path__):
         if mod_name in skip or mod_name.startswith("_"):
             continue

@@ -46,10 +46,11 @@ class BoundsRandlesFull(BaseModel):
 
 
 class DRTSettings(BaseModel):
-    n_tau: int = 50
-    tau_min: float = 1e-5
-    tau_max: float = 100.0
-    lambda_auto: bool = True
+    # Mode DRT du plugin bayes_drt2 (fits/drt_fit.py) : 'optimize' (MAP Stan, défaut
+    # lancé par le pipeline) ou 'sample' (HMC, à la demande via recompute_drt).
+    # La grille τ n'est PAS configurée ici : bayes_drt2 la construit lui-même à
+    # partir des fréquences mesurées (une décade au-delà de chaque borne, 10 pts/déc).
+    mode: str = "optimize"
 
 
 class ErrorStructureSettings(BaseModel):

@@ -369,27 +369,52 @@ def _hex_to_rgba(color: str, alpha: float) -> str:
     return color
 
 
+# Normalisation dimensionnelle du tracé DRT (convention impérative) : on trace
+# ln(γ/γ₀) en fonction de ln(τ/τ₀). γ₀ et τ₀ valent 1 (ils ne changent donc pas la
+# valeur numérique) mais restent EXPLICITES pour adimensionnaliser l'argument du
+# logarithme et rendre la normalisation lisible dans le code et sur les axes.
+DRT_GAMMA0_OHM = 1.0   # γ₀ = 1 Ω
+DRT_TAU0_S = 1.0       # τ₀ = 1 s
+
+# Libellés lisibles des deux modes DRT (badge + légende).
+_DRT_MODE_LABEL = {
+    "optimize": "DRT MAP (optimize)",
+    "sample": "DRT bayésienne (sample)",
+}
+
+
+def _drt_mode_of(res) -> str:
+    """Mode DRT d'un FitResult ('optimize'/'sample'), défaut 'optimize'."""
+    mode = getattr(res, "drt_mode", None)
+    return mode if mode in ("optimize", "sample") else "optimize"
+
+
 def drt_figure(
     results,
     title: str = "Distribution des temps de relaxation (DRT)",
     theme_mode: str = "light",
 ) -> go.Figure:
-    """Trace ln(γ(τ)) vs ln(τ) pour un ou plusieurs DRTResult (point 7).
+    """Trace ln(γ(τ)/γ₀) vs ln(τ/τ₀) pour un ou plusieurs FitResult DRT.
 
-    Les deux axes sont en logarithme NATUREL (base e, ``np.log``) : abscisse
-    ln(τ), ordonnée ln(γ(τ)). τ est exprimé en secondes.
+    Convention de tracé (impérative) :
 
-    Si un résultat expose des intervalles de crédibilité (γ_lo/γ_hi non-None,
-    issu du HMC), une bande d'incertitude est tracée autour de la médiane ;
-    sinon (ridge) seule la courbe est tracée.
+    * Logarithme **népérien** (base e, ``np.log``) — jamais ``log10``.
+    * Abscisse ``ln(τ/τ₀)`` avec ``τ₀ = 1 s`` ; ordonnée ``ln(γ/γ₀)`` avec
+      ``γ₀ = 1 Ω``. γ₀/τ₀ sont explicites (adimensionnalisation de l'argument du
+      log) même s'ils valent 1.
+    * En mode 'sample', la bande d'incertitude (γ_lo/γ_hi, 2.5/97.5 %) est
+      transformée de la même façon et **identifiée explicitement** dans la légende.
+
+    Un **badge de mode** (« DRT MAP (optimize) » vs « DRT bayésienne (sample) »)
+    est affiché pour que l'utilisateur ne compare jamais sans le savoir des DRT
+    calculées par deux modes différents.
 
     Args:
-        results: itérable de tuples ``(label, DRTResult)``. Un DRTResult seul ou
-            un unique tuple sont aussi acceptés par commodité.
+        results: itérable de tuples ``(label, FitResult)``. Un FitResult seul ou un
+            unique tuple sont aussi acceptés par commodité.
         title: titre de la figure.
         theme_mode: 'light' ou 'dark' (thème jour/nuit, cf. plotting/theme.py).
     """
-    # Normalisation de l'entrée en liste de (label, result).
     items = _coerce_drt_items(results)
 
     theme = get_theme(theme_mode)
@@ -397,56 +422,56 @@ def drt_figure(
     fig = go.Figure()
 
     plotted = 0
+    modes_seen = set()
     for idx, (lbl, res) in enumerate(items):
         if res is None:
             continue
-        tau = getattr(res, "tau", None)
-        gamma = getattr(res, "gamma", None)
+        tau = getattr(res, "drt_tau", None)
+        gamma = getattr(res, "drt_gamma", None)
         if tau is None or gamma is None or len(tau) == 0:
             continue
 
         color = colors[idx % len(colors)]
         tau_arr = np.asarray(tau, dtype=float)
         gamma_arr = np.asarray(gamma, dtype=float)
+        mode = _drt_mode_of(res)
+        modes_seen.add(mode)
 
-        # ln(0) et ln(<0) sont indéfinis. NNLS garantit γ >= 0 mais des zéros
-        # restent possibles ; on masque donc les points où γ <= 0 (et τ <= 0)
-        # AVANT de prendre le ln naturel, plutôt que de laisser des -inf/NaN
-        # casser le tracé ou l'autoscale.
+        # ln(0) et ln(<0) sont indéfinis ; on masque γ <= 0 / τ <= 0 avant le ln.
         valid = (gamma_arr > 0) & (tau_arr > 0)
         if not np.any(valid):
             continue
-        x = np.log(tau_arr[valid])       # ln(τ) — logarithme naturel (base e)
-        y = np.log(gamma_arr[valid])     # ln(γ(τ)) — logarithme naturel (base e)
+        x = np.log(tau_arr[valid] / DRT_TAU0_S)        # ln(τ/τ₀), τ₀ = 1 s
+        y = np.log(gamma_arr[valid] / DRT_GAMMA0_OHM)  # ln(γ/γ₀), γ₀ = 1 Ω
 
-        # Bande d'incertitude (HMC) : lo→hi en zone remplie sous la courbe.
-        # Même filtrage : on ne garde que les points où γ, γ_lo et γ_hi sont
-        # strictement positifs, seules valeurs admissibles pour le ln.
-        if getattr(res, "gamma_lo", None) is not None and getattr(res, "gamma_hi", None) is not None:
-            lo = np.asarray(res.gamma_lo, dtype=float)
-            hi = np.asarray(res.gamma_hi, dtype=float)
+        # Bande d'incertitude bayésienne (mode 'sample' uniquement), transformée
+        # de la même façon (bornes ln(γ_lo/γ₀), ln(γ_hi/γ₀)).
+        gamma_lo = getattr(res, "drt_gamma_lo", None)
+        gamma_hi = getattr(res, "drt_gamma_hi", None)
+        if gamma_lo is not None and gamma_hi is not None:
+            lo = np.asarray(gamma_lo, dtype=float)
+            hi = np.asarray(gamma_hi, dtype=float)
             band = valid & (lo > 0) & (hi > 0)
             if np.any(band):
-                xb = np.log(tau_arr[band])
-                lo_b = np.log(lo[band])
-                hi_b = np.log(hi[band])
+                xb = np.log(tau_arr[band] / DRT_TAU0_S)
+                lo_b = np.log(lo[band] / DRT_GAMMA0_OHM)
+                hi_b = np.log(hi[band] / DRT_GAMMA0_OHM)
                 fig.add_trace(go.Scatter(
                     x=np.concatenate([xb, xb[::-1]]),
                     y=np.concatenate([hi_b, lo_b[::-1]]),
                     fill="toself", fillcolor=_hex_to_rgba(color, 0.18),
                     line=dict(width=0), hoverinfo="skip",
-                    name=f"{lbl} — IC 95 %", showlegend=False,
+                    name=f"{lbl} — IC 95 % (sample, bayésien)", showlegend=True,
                 ))
 
-        engine = getattr(res, "engine", "")
-        suffix = " (HMC)" if engine == "bayes" else (" (ridge)" if engine == "ridge" else "")
+        suffix = " — MAP (optimize)" if mode == "optimize" else " — sample (bayésien)"
         fig.add_trace(go.Scatter(
             x=x, y=y, mode="lines", name=f"{lbl}{suffix}",
             line=dict(color=color, width=2),
             hovertemplate=(
-                f"<b>{lbl}</b><br>"
-                "ln(τ) = %{x:.3f}<br>"
-                "ln(γ(τ)) = %{y:.4g}<extra></extra>"
+                f"<b>{lbl}</b> [{mode}]<br>"
+                "ln(τ/τ₀) = %{x:.3f}<br>"
+                "ln(γ/γ₀) = %{y:.4g}<extra></extra>"
             ),
         ))
         plotted += 1
@@ -460,10 +485,23 @@ def drt_figure(
         apply_theme_to_figure(fig, theme_mode)
         return fig
 
+    # Badge de mode : un seul mode → libellé plein ; modes mixtes → avertissement.
+    if len(modes_seen) == 1:
+        badge = _DRT_MODE_LABEL[next(iter(modes_seen))]
+    else:
+        badge = "⚠ Modes DRT mixtes (voir légende)"
+    fig.add_annotation(
+        text=badge, xref="paper", yref="paper", x=0.0, y=1.08,
+        xanchor="left", showarrow=False,
+        font=dict(size=12, color=theme["text"]),
+        bgcolor=_hex_to_rgba(theme["paper_bg"], 0.7),
+        bordercolor=theme["grid"], borderwidth=1,
+    )
+
     fig.update_layout(
         title=title,
-        xaxis_title=r"$\ln(\tau/\mathrm{s})$",
-        yaxis_title=r"$\ln(\gamma(\tau))$",
+        xaxis_title=r"$\ln(\tau/\tau_0)\;\;[\tau_0 = 1\,\mathrm{s}]$",
+        yaxis_title=r"$\ln(\gamma/\gamma_0)\;\;[\gamma_0 = 1\,\Omega]$",
         showlegend=True,
         legend=dict(
             orientation="v", x=1.02, xanchor="left", y=1.0,
@@ -478,11 +516,11 @@ def drt_figure(
 
 
 def _coerce_drt_items(results):
-    """Normalise l'entrée de drt_figure en liste de (label, DRTResult)."""
+    """Normalise l'entrée de drt_figure en liste de (label, FitResult)."""
     if results is None:
         return []
-    # DRTResult seul (a un attribut tau mais pas d'itération de tuples).
-    if hasattr(results, "tau") and hasattr(results, "gamma"):
+    # FitResult seul (porte drt_tau/drt_gamma, pas une itération de tuples).
+    if hasattr(results, "drt_tau") and hasattr(results, "drt_gamma"):
         return [("DRT", results)]
     # dict {label: result}
     if isinstance(results, dict):
@@ -492,74 +530,6 @@ def _coerce_drt_items(results):
         return [results]
     # itérable de (label, result)
     return list(results)
-
-
-def drt_lambda_diag_figure(fit_result, label: str = "") -> go.Figure:
-    """Panneau de diagnostic λ : L-curve (gauche) + GCV (droite).
-
-    Appeler depuis ui/tabs.py dans l'onglet DRT.
-    """
-    params   = fit_result.params
-    lc_lams  = np.array(params.get("_lc_lambdas",  []))
-    lc_rho   = np.array(params.get("_lc_rho",       []))
-    lc_eta   = np.array(params.get("_lc_eta",       []))
-    gcv_lams = np.array(params.get("_gcv_lambdas",  []))
-    gcv_sc   = np.array(params.get("_gcv_scores",   []))
-    lam_lc   = params.get("lambda_lcurve", params.get("lambda"))
-    lam_gcv  = params.get("lambda_gcv",    params.get("lambda"))
-
-    if len(lc_lams) == 0 and len(gcv_lams) == 0:
-        fig = go.Figure()
-        fig.add_annotation(
-            text="Diagnostic λ non disponible (mode fixe).",
-            xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=12),
-        )
-        apply_theme_to_figure(fig, "light")
-        return fig
-
-    fig = make_subplots(rows=1, cols=2,
-                        subplot_titles=["L-curve", "Score GCV vs λ"],
-                        horizontal_spacing=0.12)
-
-    if len(lc_lams) > 0:
-        fig.add_trace(go.Scatter(
-            x=lc_rho, y=lc_eta, mode="lines+markers", name="L-curve",
-            line=dict(color="#c2410c", width=2), marker=dict(size=4),
-            customdata=lc_lams,
-            hovertemplate="λ=%{customdata:.2e}<br>‖r‖=%{x:.3e}<br>‖s‖=%{y:.3e}<extra></extra>",
-        ), row=1, col=1)
-        if lam_lc is not None:
-            r_lc = float(np.interp(lam_lc, lc_lams, lc_rho))
-            e_lc = float(np.interp(lam_lc, lc_lams, lc_eta))
-            fig.add_trace(go.Scatter(
-                x=[r_lc], y=[e_lc], mode="markers",
-                name=f"λ={lam_lc:.2e}",
-                marker=dict(symbol="star", size=14, color="#dc2626"),
-            ), row=1, col=1)
-        fig.update_xaxes(title_text="‖Aγ−b‖", type="log", row=1, col=1)
-        fig.update_yaxes(title_text="‖Lγ‖",    type="log", row=1, col=1)
-
-    if len(gcv_lams) > 0:
-        fig.add_trace(go.Scatter(
-            x=gcv_lams, y=gcv_sc, mode="lines", name="GCV",
-            line=dict(color="#1a56db", width=2),
-            hovertemplate="λ=%{x:.2e}<br>GCV=%{y:.3e}<extra></extra>",
-        ), row=1, col=2)
-        if lam_gcv is not None:
-            g_best = float(np.interp(lam_gcv, gcv_lams, gcv_sc))
-            fig.add_trace(go.Scatter(
-                x=[lam_gcv], y=[g_best], mode="markers",
-                name=f"λ_GCV={lam_gcv:.2e}",
-                marker=dict(symbol="star", size=14, color="#7c3aed"),
-            ), row=1, col=2)
-        fig.update_xaxes(title_text="λ", type="log", row=1, col=2)
-        fig.update_yaxes(title_text="Score GCV", type="log", row=1, col=2)
-
-    title = f"Diagnostic λ — {label}" if label else "Diagnostic sélection λ"
-    fig.update_layout(title=title, legend=dict(orientation="h", y=-0.2))
-    apply_theme_to_figure(fig, "light")
-    return fig
 
 
 # ── Parameters table ──────────────────────────────────────────────────────────
@@ -600,11 +570,11 @@ def params_table_figure(session: EISSession) -> go.Figure:
             return "—"
         return f"{fr.chi2_reduced:.2f}"
 
-    has_comparison = "randles_full" in model_names and "drt_tikhonov" in model_names
+    has_comparison = "randles_full" in model_names and "drt_bayes" in model_names
 
     def _delta_str(fit_results: dict) -> str:
         r_randles = _rct_val(fit_results, "randles_full")
-        r_drt = _rct_val(fit_results, "drt_tikhonov")
+        r_drt = _rct_val(fit_results, "drt_bayes")
         if r_randles is None or r_drt is None:
             return "—"
         rel_err = abs(r_randles - r_drt) / abs(r_randles)
@@ -836,48 +806,6 @@ def kk_figure(spectrum: EISSpectrum, kk_result: dict, label: str = "") -> go.Fig
     return fig
 
 
-# ── DRT Tikhonov / FFT — figures dédiées ───────────────────────────────────
-
-def _single_drt_figure(fit_result, label: str, title: str) -> go.Figure:
-    """ln(Γ) vs ln(τ/τ0) pour un seul FitResult DRT (Tikhonov ou FFT)."""
-    fig = go.Figure()
-    S = getattr(fit_result, "drt_S", None)
-    lnGamma = getattr(fit_result, "drt_lnGamma", None)
-
-    if S is None or lnGamma is None or len(S) == 0:
-        fig.add_annotation(
-            text="DRT non disponible.", xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False, font=dict(size=13),
-        )
-        apply_theme_to_figure(fig, "light")
-        return fig
-
-    fig.add_trace(go.Scatter(
-        x=np.asarray(S), y=np.asarray(lnGamma), mode="lines", name=label,
-        line=dict(color="#1a56db", width=2),
-    ))
-    err = fit_result.reconstruction_error
-    err_str = f" — ε={err*100:.2f}%" if err is not None else ""
-    fig.update_layout(
-        title=f"{title} — {label}{err_str}",
-        xaxis_title=r"$\ln(\tau/\tau_0)$",
-        yaxis_title=r"$\ln(\Gamma(\tau)/\Gamma_0)$",
-    )
-    apply_theme_to_figure(fig, "light")
-    return fig
-
-
-def drt_tikhonov_figure(fit_result, label: str = "") -> go.Figure:
-    """ln(Γ) vs ln(τ) pour le modèle DRT Tikhonov (QP sous contrainte de positivité)."""
-    return _single_drt_figure(fit_result, label, "DRT Tikhonov (QP)")
-
-
-def drt_fft_ideal_figure(fit_result, label: str = "") -> go.Figure:
-    """ln(Γ) vs ln(τ) pour le modèle DRT FFT Wiener (spectre idéal Randles,
-    étude des lois MAD — pas une DRT indépendante du fit Randles)."""
-    return _single_drt_figure(fit_result, label, "DRT FFT Wiener (spectre idéal)")
-
-
 def drt_reconstruction_figure(spectrum: EISSpectrum, fit_result, label: str = "") -> go.Figure:
     """Nyquist mesuré vs reconstruit par le modèle DRT, avec ε affiché."""
     fig = go.Figure()
@@ -902,7 +830,7 @@ def drt_reconstruction_figure(spectrum: EISSpectrum, fit_result, label: str = ""
     return fig
 
 
-def calibration_drt_figure(session: EISSession, model_name: str = "drt_tikhonov") -> go.Figure:
+def calibration_drt_figure(session: EISSession, model_name: str = "drt_bayes") -> go.Figure:
     """Calibration log(Rct) vs log([c]) pour un modèle DRT, avec barres d'erreur et régression.
 
     Côte à côte : nuage de points + droite de régression (gauche), résidus (droite).
@@ -960,225 +888,6 @@ def calibration_drt_figure(session: EISSession, model_name: str = "drt_tikhonov"
     return fig
 
 
-# ── DRT multi-électrodes (réorganisation onglets EIS) ─────────────────────────
-
-def _drt_collect_items(session: EISSession, elec_prefix: str = "") -> list:
-    """Retourne [(label, FitResult, color_idx)] pour bare/probe/groups d'une session."""
-    items = []
-    ci = 0
-    for sp in (session.bare, session.probe):
-        if sp is not None:
-            fr = sp.fit_results.get("drt_tikhonov")
-            if fr is not None:
-                items.append((f"{elec_prefix}{_spectrum_label(sp)}", fr, ci))
-            ci += 1
-    for grp in session.groups:
-        fr = grp.fit_results.get("drt_tikhonov")
-        if fr is not None:
-            items.append((f"{elec_prefix}{_spectrum_label(grp.spectrum)}", fr, ci))
-        ci += 1
-    return items
-
-
-def drt_figure_multi(sessions: dict, log_y: bool = True) -> go.Figure:
-    """DRT moyenne (probe + concentrations), toutes électrodes confondues sur un même graphe.
-
-    sessions: {electrode_index: EISSession}. Préfixe "E{e} — " si plusieurs
-    électrodes sont présentes ; pas de préfixe sinon.
-    """
-    theme = get_theme("light")
-    colors = theme["colors"]
-    fig = go.Figure()
-
-    multi_elec = len(sessions) > 1
-    all_items = []
-    for e, session in sorted(sessions.items()):
-        prefix = f"E{e} — " if multi_elec else ""
-        all_items.extend(_drt_collect_items(session, elec_prefix=prefix))
-
-    if not all_items:
-        fig.add_annotation(
-            text="Aucune DRT disponible — lancez l'analyse.",
-            xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=13),
-        )
-        apply_theme_to_figure(fig, "light")
-        return fig
-
-    for idx, (lbl, fr, _) in enumerate(all_items):
-        color = colors[idx % len(colors)]
-        tau = getattr(fr, "drt_tau", None)
-        gamma = getattr(fr, "drt_gamma", None)
-        if tau is None or gamma is None or len(tau) == 0 or len(gamma) == 0:
-            continue
-        S = np.log(np.asarray(tau) + 1e-300)
-        lnGam = np.log(np.asarray(gamma) + 1e-300)
-        fig.add_trace(go.Scatter(
-            x=S, y=lnGam, mode="lines", name=lbl,
-            line=dict(color=color, width=2),
-            hovertemplate=(
-                f"<b>{lbl}</b><br>ln(τ) = %{{x:.3f}}<br>ln(Γ) = %{{y:.4f}}<extra></extra>"
-            ),
-        ))
-
-    fig.update_layout(
-        title="Distribution des temps de relaxation (DRT) — toutes électrodes",
-        xaxis_title=r"$\ln(\tau/\tau_0)$,  $\tau_0 = 1\,\mathrm{s}$",
-        yaxis_title=r"$\ln(\Gamma(\tau)/\Gamma_0)$,  $\Gamma_0 = 1\,\Omega$",
-        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
-        hovermode="closest",
-    )
-    apply_theme_to_figure(fig, "light")
-    return fig
-
-
-def drt_replicates_figure(replicate_fit_results: list, excluded: list, label: str = "") -> go.Figure:
-    """Trace les DRT (ln Γ vs ln τ) de chaque réplicat d'un spectre.
-
-    Args:
-        replicate_fit_results: liste de FitResult (un par réplicat, modèle drt_tikhonov).
-        excluded: liste de bool, même longueur, True = réplicat exclu (tracé en
-                  pointillés gris) de la moyenne DRT.
-        label: nom du spectre (probe / concentration) pour le titre.
-    """
-    fig = go.Figure()
-    theme = get_theme("light")
-    colors = theme["colors"]
-
-    if not replicate_fit_results:
-        fig.add_annotation(
-            text="Aucun réplicat DRT disponible pour ce spectre.",
-            xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=13),
-        )
-        apply_theme_to_figure(fig, "light")
-        return fig
-
-    for i, fr in enumerate(replicate_fit_results):
-        is_excluded = bool(excluded[i]) if i < len(excluded) else False
-        tau = getattr(fr, "drt_tau", None)
-        gamma = getattr(fr, "drt_gamma", None)
-        if tau is None or gamma is None or len(tau) == 0:
-            continue
-        S = np.log(np.asarray(tau) + 1e-300)
-        lnGam = np.log(np.asarray(gamma) + 1e-300)
-        name = f"Réplicat {i+1}" + (" (exclu)" if is_excluded else "")
-        fig.add_trace(go.Scatter(
-            x=S, y=lnGam, mode="lines", name=name,
-            line=dict(
-                color="lightgray" if is_excluded else colors[i % len(colors)],
-                dash="dash" if is_excluded else "solid",
-                width=1.5 if is_excluded else 2,
-            ),
-        ))
-
-    fig.update_layout(
-        title=f"DRT par réplicat — {label}" if label else "DRT par réplicat",
-        xaxis_title=r"$\ln(\tau/\tau_0)$",
-        yaxis_title=r"$\ln(\Gamma(\tau)/\Gamma_0)$",
-        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
-        hovermode="closest",
-    )
-    apply_theme_to_figure(fig, "light")
-    return fig
-
-
-def open_drt_matplotlib_window(sessions: dict, drt_exclusions: dict = None) -> None:
-    """Ouvre une fenêtre matplotlib (bloquante) empilant les graphes DRT de l'onglet 2.
-
-    Empile verticalement : (a) DRT moyenne toutes électrodes, (b) DRT moyenne
-    par électrode (1 ou 2 sous-graphes), (c) DRT des réplicats par spectre
-    sélectionné et par électrode (selon drt_exclusions).
-    """
-    import matplotlib.pyplot as plt
-
-    drt_exclusions = drt_exclusions or {}
-
-    n_graphs = 1 + len(sessions) + len(sessions)  # (a) + per-elec average + per-elec replicates placeholder
-    n_graphs = max(n_graphs, 1)
-    fig, axes = plt.subplots(nrows=n_graphs, ncols=1, figsize=(9, 4.2 * n_graphs))
-    if n_graphs == 1:
-        axes = [axes]
-
-    row = 0
-
-    # (a) DRT moyenne — toutes électrodes
-    ax = axes[row]
-    multi_elec = len(sessions) > 1
-    for e, session in sorted(sessions.items()):
-        prefix = f"E{e} — " if multi_elec else ""
-        for lbl, fr, _ in _drt_collect_items(session, elec_prefix=prefix):
-            tau = getattr(fr, "drt_tau", None)
-            gamma = getattr(fr, "drt_gamma", None)
-            if tau is None or gamma is None or len(tau) == 0:
-                continue
-            S = np.log(np.asarray(tau) + 1e-300)
-            lnGam = np.log(np.asarray(gamma) + 1e-300)
-            ax.plot(S, lnGam, label=lbl)
-    ax.set_title("DRT moyenne — toutes électrodes")
-    ax.set_xlabel("ln(τ/τ0)")
-    ax.set_ylabel("ln(Γ/Γ0)")
-    ax.legend(fontsize=7)
-    row += 1
-
-    # (b) DRT moyenne par électrode
-    for e, session in sorted(sessions.items()):
-        ax = axes[row]
-        for lbl, fr, _ in _drt_collect_items(session):
-            tau = getattr(fr, "drt_tau", None)
-            gamma = getattr(fr, "drt_gamma", None)
-            if tau is None or gamma is None or len(tau) == 0:
-                continue
-            S = np.log(np.asarray(tau) + 1e-300)
-            lnGam = np.log(np.asarray(gamma) + 1e-300)
-            ax.plot(S, lnGam, label=lbl)
-        ax.set_title(f"DRT moyenne — Électrode {e}")
-        ax.set_xlabel("ln(τ/τ0)")
-        ax.set_ylabel("ln(Γ/Γ0)")
-        ax.legend(fontsize=7)
-        row += 1
-
-    # (c) DRT des réplicats — un sous-graphe par électrode, pour le spectre/exclusions actuels
-    for e, session in sorted(sessions.items()):
-        ax = axes[row]
-        excl_for_e = drt_exclusions.get(e, {})
-        spectra_by_label = {}
-        if session.bare is not None:
-            spectra_by_label["bare"] = session.bare_replicate_spectra
-        if session.probe is not None:
-            spectra_by_label["probe"] = session.probe_replicate_spectra
-        for grp in session.groups:
-            spectra_by_label[f"{grp.concentration:.2e}"] = grp.replicate_spectra
-
-        plotted = False
-        for sel_label, reps in spectra_by_label.items():
-            excluded = excl_for_e.get(sel_label, [False] * len(reps))
-            for i, sp in enumerate(reps):
-                fr = sp.fit_results.get("drt_tikhonov")
-                if fr is None:
-                    continue
-                tau = getattr(fr, "drt_tau", None)
-                gamma = getattr(fr, "drt_gamma", None)
-                if tau is None or gamma is None or len(tau) == 0:
-                    continue
-                is_excl = bool(excluded[i]) if i < len(excluded) else False
-                S = np.log(np.asarray(tau) + 1e-300)
-                lnGam = np.log(np.asarray(gamma) + 1e-300)
-                style = "--" if is_excl else "-"
-                color = "lightgray" if is_excl else None
-                ax.plot(S, lnGam, style, color=color, label=f"{sel_label} — rép.{i+1}")
-                plotted = True
-        ax.set_title(f"DRT par réplicat — Électrode {e}")
-        ax.set_xlabel("ln(τ/τ0)")
-        ax.set_ylabel("ln(Γ/Γ0)")
-        if plotted:
-            ax.legend(fontsize=6)
-        row += 1
-
-    fig.tight_layout()
-    plt.show()
-
-
 # ── Reconstructions Nyquist (Randles vs DRT) ──────────────────────────────────
 
 def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
@@ -1189,7 +898,7 @@ def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
     """
     fig = go.Figure()
     line_dashes = ["solid", "dash", "dot", "dashdot"]
-    method_colors = {"randles_full": "#dc2626", "drt_tikhonov": "#1a56db"}
+    method_colors = {"randles_full": "#dc2626", "drt_bayes": "#1a56db"}
 
     any_data = False
     for idx, (e, session) in enumerate(sorted(sessions.items())):
@@ -1213,12 +922,12 @@ def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
                 line=dict(color=method_colors["randles_full"], dash=dash, width=2),
             ))
 
-        fr_d = probe.fit_results.get("drt_tikhonov")
+        fr_d = probe.fit_results.get("drt_bayes")
         if fr_d is not None:
             fig.add_trace(go.Scatter(
                 x=fr_d.Zfit_re, y=fr_d.Zfit_im, mode="lines",
                 name=f"E{e} — DRT",
-                line=dict(color=method_colors["drt_tikhonov"], dash=dash, width=2),
+                line=dict(color=method_colors["drt_bayes"], dash=dash, width=2),
             ))
 
     if not any_data:
@@ -1297,7 +1006,7 @@ def open_reconstruction_matplotlib_window(sessions: dict) -> None:
     # (a) comparaison globale
     ax = axes[0]
     line_dashes = ["-", "--", ":", "-."]
-    method_colors = {"randles_full": "#dc2626", "drt_tikhonov": "#1a56db"}
+    method_colors = {"randles_full": "#dc2626", "drt_bayes": "#1a56db"}
     for idx, (e, session) in enumerate(sorted(sessions.items())):
         probe = session.probe
         if probe is None:
@@ -1308,9 +1017,9 @@ def open_reconstruction_matplotlib_window(sessions: dict) -> None:
         if fr_r is not None:
             ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, dash, color=method_colors["randles_full"],
                      label=f"E{e} — Randles")
-        fr_d = probe.fit_results.get("drt_tikhonov")
+        fr_d = probe.fit_results.get("drt_bayes")
         if fr_d is not None:
-            ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, dash, color=method_colors["drt_tikhonov"],
+            ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, dash, color=method_colors["drt_bayes"],
                      label=f"E{e} — DRT")
     ax.set_title("Reconstructions Nyquist — comparaison toutes électrodes (probe)")
     ax.set_xlabel("Re(Z) (Ω)")
@@ -1328,7 +1037,7 @@ def open_reconstruction_matplotlib_window(sessions: dict) -> None:
         fr_r = probe.fit_results.get("randles_full")
         if fr_r is not None:
             ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, "-", color="#dc2626", label="Randles")
-        fr_d = probe.fit_results.get("drt_tikhonov")
+        fr_d = probe.fit_results.get("drt_bayes")
         if fr_d is not None:
             ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, "--", color="#1a56db", label="DRT")
         ax.set_title(f"Reconstruction probe — Électrode {e}")
@@ -1344,7 +1053,7 @@ def open_calibration_matplotlib_window(sessions: dict) -> None:
     """Ouvre une fenêtre matplotlib (bloquante) empilant les courbes de calibration EIS.
 
     Une sous-figure par électrode présente, une courbe par méthode (randles_full,
-    drt_tikhonov), reproduisant la logique de calibration_figure() en matplotlib.
+    drt_bayes), reproduisant la logique de calibration_figure() en matplotlib.
     """
     import matplotlib.pyplot as plt
 
