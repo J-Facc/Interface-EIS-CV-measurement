@@ -51,13 +51,16 @@ streamlit run app.py
 | Fit circulaire | Lecture géométrique — aucun paramètre physique |
 | Randles contraint | Re fixé, ZD0 ∝ Fv^(−1/3), 3 paramètres libres |
 | Randles complet | 8 paramètres libres, pondération Modulus |
-| DRT Tikhonov + NNLS (`drt_tikhonov`) | **DRT principale**, model-free : appliquée directement sur les données expérimentales déposées via l'import, via le cœur de calcul de [pyDRTtools](https://github.com/ciuccislab/pyDRTtools) (RBF gaussienne + Tikhonov ordre 1, vendoré dans `fits/_pydrttools/`, MIT — voir `THIRD_PARTY_LICENSES.md`), λ sélectionné automatiquement par rGCV, γ(τ) ≥ 0 par QP sous contrainte de positivité (cvxopt) |
-| DRT FFT/Wiener spectre idéal (`drt_fft_ideal`) | Outil d'étude théorique des lois d'échelle MAD — recalcule la DRT exacte du modèle Randles déjà fitté, n'analyse pas les données brutes de façon indépendante |
+| DRT (`drt_bayes`) | **DRT principale**, model-free : distribution des temps de relaxation γ(τ) par inversion hiérarchique bayésienne via la bibliothèque [bayes-drt2](https://github.com/jdhuang-csm/bayes-drt2) de Huang (classe `Inverter`, vendorée dans `vendor/bayes_drt2/`, voir `THIRD_PARTY_LICENSES.md`). Deux modes : **`optimize`** (MAP Stan, défaut, calculé par le pipeline pour tous les spectres) et **`sample`** (HMC bayésien, à la demande, avec intervalles de crédibilité). Rct extrait de l'arc de transfert de charge (pic pénultième, convention Bissessur). |
 
-DRT Tikhonov et DRT FFT/Wiener implémentent les deux méthodes distinctes
-décrites dans Bissessur, Man, Gamby, *Use of an approach with a distribution
-of relaxation times for impedance analysis of a channel electrode in
-microfluidics*, Phys. Rev. E **113**, 025502 (2026), DOI: 10.1103/fn2s-z364
+Le calcul DRT compile des modèles Stan via CmdStan : la toolchain C++ est
+installée automatiquement au premier lancement (`install_cmdstan(compiler=True)`,
+sans exiger RTools), puis mise en cache. La figure DRT trace `ln(γ/γ₀)` en fonction
+de `ln(τ/τ₀)` (logarithme népérien, γ₀ = 1 Ω, τ₀ = 1 s), avec un badge indiquant le
+mode (`optimize`/`sample`). Référence DRT : Bissessur, Man, Gamby, *Use of an
+approach with a distribution of relaxation times for impedance analysis of a
+channel electrode in microfluidics*, Phys. Rev. E **113**, 025502 (2026), DOI:
+10.1103/fn2s-z364
 (sections III.B et III.C respectivement). L'onglet "Reconstructions Nyquist"
 compare Rct_randles et Rct_drt (paramètre et reconstruction), l'onglet
 "Calibration" trace une régression log(Rct) vs log([c]) séparée pour chaque

@@ -55,7 +55,7 @@ Interface-EIS-CV-measurement/          ← racine du repo GitHub
 │   ├── physics.py                     ← fonctions physiques partagées (Z_D, Z_randles_full, θ_EIS…)
 │   ├── registry.py                    ← découverte auto + discovery_errors() (modèles non chargés)
 │   ├── randles_full.py                ← Randles complet (8 paramètres, least_squares) + diagnostics
-│   ├── drt_fit.py                     ← moteur DRT (wrapper bayes-drt2) : ridge (aperçu) + HMC (référence, incertitudes)
+│   ├── drt_fit.py                     ← plugin DRT (drt_bayes, wrapper bayes_drt2) : MAP « optimize » (défaut) / HMC « sample »
 │   └── kk_validation.py               ← validation Kramers-Kronig (Lin-KK, circuits de Voigt)
 │
 │   (le paquet de calcul DRT lui-même est vendoré dans vendor/bayes_drt2/)
@@ -192,10 +192,11 @@ plotting/eis_plots.py → figures Plotly  ·  core/calibration.py → régressio
         ↓
 ui/tabs.py::render_eis_tabs → onglets Streamlit (appelé par pages/A_eis.py)
 
-DRT (hors pipeline) — moteur dédié fits/drt_fit.py (wrapper bayes-drt2) :
-  drt_preview(spectrum) → DRTResult (ridge, aperçu live, pas d'intervalles)
-  run_drt_bayes_batch(session) → HMC parallèle → DRTResult { γ, γ_lo, γ_hi,
-     Rp, Rp_lo, Rp_hi, Z_fit } mis en cache + persisté dans sessions/
+DRT (plugin du pipeline) — fits/drt_fit.py::DRTBayesModel (wrapper bayes_drt2) :
+  pipeline → DRTBayesModel().fit(sp) mode 'optimize' (MAP) → FitResult(drt_tau,
+     drt_gamma, drt_mode='optimize', Rct par pic Bissessur)
+  recompute_drt(session, spectrum_id, mode='sample') → HMC → FitResult avec
+     intervalles (drt_gamma_lo/hi), à la demande depuis l'onglet DRT
 ```
 
 ---
@@ -205,52 +206,62 @@ DRT (hors pipeline) — moteur dédié fits/drt_fit.py (wrapper bayes-drt2) :
 | Modèle | Fichier | Paramètres libres | Méthode |
 |--------|---------|-------------------|---------|
 | Randles complet (`name="randles_full"`) | `randles_full.py` | 8 (Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d) | `scipy.optimize.least_squares` (pondération Modulus) + diagnostics (résidu/butée) |
+| DRT (`name="drt_bayes"`) | `drt_fit.py` | 0 — γ(τ) model-free | `bayes_drt2` / `Inverter` — MAP « optimize » (défaut) / HMC « sample » (voir §5bis) |
 
-> Les fits paramétriques sont découverts automatiquement par `fits/registry.py`
+> Les modèles sont découverts automatiquement par `fits/registry.py`
 > (sous-classes de `BaseFitModel`). Un modèle dont l'import échoue est signalé
 > par `registry.discovery_errors()` et affiché dans l'UI, pas masqué.
-> **La DRT n'est plus un plugin du registre** : c'est un moteur dédié
-> (`fits/drt_fit.py`, voir §5bis) appelé directement par l'onglet DRT.
+> **La DRT est de nouveau un plugin du registre** (`drt_bayes`) : elle est lancée
+> par le pipeline en mode « optimize » comme les autres fits (voir §5bis).
 
 **Circuit physique (Randles modifié) :**
 ```
 Re — [ R'e // Cb ] — [ Rct // CPE(Qdl, α) ] — ZD(ω)
 ```
 
-## 5bis. Le moteur DRT (`fits/drt_fit.py`, wrapper `vendor/bayes_drt2/`)
+## 5bis. Le plugin DRT (`fits/drt_fit.py::DRTBayesModel`, wrapper `vendor/bayes_drt2/`)
 
-DRT unique, bâtie sur le paquet **bayes-drt2** vendoré (inversion hiérarchique
-bayésienne, Jake Huang — voir `vendor/README.md`, `THIRD_PARTY_LICENSES.md`).
-Deux méthodes, un seul paquet de calcul :
+DRT unique, bâtie **exclusivement** sur le paquet **bayes_drt2** vendoré (classe
+`Inverter`, inversion hiérarchique bayésienne, Jake Huang — voir `vendor/README.md`,
+`THIRD_PARTY_LICENSES.md`). Plugin `BaseFitModel` (`name="drt_bayes"`) découvert par
+le registre et lancé par le pipeline. Deux modes, un seul paquet de calcul :
 
-- **`drt_preview(spectrum)` — aperçu instantané (ridge).**
-  `Inverter.ridge_fit(freq, Z, hyper_lambda=True)` : ridge hyperparamétrique,
-  rapide, sans cmdstan. Affiché en direct pour tous les spectres, et sert
-  d'**initialiseur** du HMC. Pas d'intervalles (`gamma_lo/hi = None`).
+- **`mode='optimize'` — MAP Stan (défaut).**
+  `Inverter.fit(freq, Z, mode='optimize')` : estimation du maximum a posteriori
+  (L-BFGS-B). **Lancée par le pipeline sur chaque spectre**, comme les autres fits.
+  Pas d'intervalles (`drt_gamma_lo/hi = None`).
 
-- **`drt_bayes(spectrum)` / `run_drt_bayes_batch(session)` — référence (HMC).**
-  `Inverter.fit(freq, Z, mode='sample', init_from_ridge=True)` : échantillonnage
-  HMC qui produit en plus les **intervalles de crédibilité** (γ_lo/γ_hi à
-  2.5/97.5 %, Rp_lo/Rp_hi). Le batch parallélise (`ProcessPoolExecutor`,
-  `max_workers` = nombre de cœurs) sur tous les spectres non encore en cache.
+- **`mode='sample'` — HMC bayésien (à la demande).**
+  `Inverter.fit(freq, Z, mode='sample')` : échantillonnage HMC produisant en plus
+  les **intervalles de crédibilité** (`drt_gamma_lo/hi` à 2.5/97.5 %). Jamais
+  automatique : uniquement via `core.pipeline.recompute_drt(session, spectrum_id,
+  config, mode='sample')` (seul point d'entrée), déclenché par le bouton de l'onglet
+  DRT. Le résultat remplace le `FitResult` DRT du spectre dans la session.
 
-**Convention d'impédance** : le loader stocke `Zim = -Im(Z) > 0` ; bayes-drt2
-attend `Z'' < 0`, d'où `Z = spectrum.Zre - 1j·spectrum.Zim`.
+**Récupération** : `gamma = inv.predict_distribution('DRT')`,
+`tau = inv.distributions['DRT']['tau']` (garde-fou `KeyError`). Les deux modes
+compilent des modèles Stan → CmdStan requis (aucun chemin sans compilation).
 
-**Cache + persistance** : clé = hash de `(freq, Z)` arrondis. Le DRTResult HMC est
-mis en cache mémoire et persisté en YAML dans `sessions/drt_cache/`. Au
-rechargement d'une session, un HMC déjà en cache **n'est jamais recalculé**.
+**Convention d'impédance** : le loader stocke `Zim = -Im(Z) > 0` ; bayes_drt2 attend
+`Z'' < 0`, d'où `Z = spectrum.Zre - 1j·spectrum.Zim`. Tri HF→BF sur les **vraies
+fréquences** lues (jamais reconstruites par `logspace`).
+
+**Rct (grandeur de calibration)** : extrait de l'**arc de transfert de charge** par
+la convention Bissessur (pic pénultième de γ(τ), ∫γ dlnτ sur ±3 en ln τ). Repli sur
+`Rp` (aire totale) seulement si aucun pic n'est exploitable, **toujours signalé**
+(`params['rct_source']` + `warnings`) pour ne pas confondre les deux grandeurs.
 
 **Garde-fous** :
 - L'import de `vendor.bayes_drt2` est protégé (`try/except`) : extra DRT non
-  installé (`cvxopt`/`cmdstanpy` absents) → DRT désactivée proprement, pas de
-  crash (`drt_fit.bayes_available()` renvoie `False`).
-- `drt_bayes` teste `cmdstanpy.cmdstan_path()` **sans compiler à la volée** :
-  cmdstan absent → repli sur le ridge + statut « lancez setup_drt_bayesien.bat ».
-  L'app reste fonctionnelle en aperçu ; seul le HMC est bloqué.
+  installé (`cvxopt`/`cmdstanpy`) → DRT désactivée proprement (`bayes_available()`
+  renvoie `False`). Le fit DRT du pipeline échoue alors sans casser les autres.
+- Toolchain : `app.py` appelle `setup_drt_bayesien.ensure_drt_ready()` **au premier
+  lancement** (idempotent) → `install_cmdstan(compiler=True)` (installe mingw-w64,
+  n'exige pas RTools) + compilation de `Series.stan`, mis en cache. Aucune étape
+  manuelle ; la compilation n'a pas lieu au clic de l'utilisateur.
 
 Dépendances : `requirements-drt.txt` (`cvxopt` + `cmdstanpy`). `requirements.txt`
-de base reste léger.
+de base reste léger (DRT désactivée proprement sans l'extra).
 
 Référence DRT (contexte capteur) : Bissessur, Man, Gamby, Phys. Rev. E **113**,
 025502 (2026), DOI: 10.1103/fn2s-z364.
@@ -266,7 +277,7 @@ remonte les avertissements de fit (non convergé, résidu élevé, paramètre en
 | Onglet | Contenu |
 |--------|---------|
 | **Validation KK** | Diagnostic Kramers-Kronig (Lin-KK) par réplicat |
-| **Courbes DRT** | γ(τ) vs log₁₀(τ) — ridge en direct pour tous les spectres ; bouton « Calculer DRT bayésienne » → HMC + bande d'incertitude γ_lo–γ_hi (`fits/drt_fit.py`) |
+| **Courbes DRT** | ln(γ/γ₀) vs ln(τ/τ₀) (ln népérien, γ₀=1 Ω, τ₀=1 s) — MAP « optimize » pour tous les spectres, badge de mode ; bouton « Recalculer en bayésien (sample) » → HMC + bande d'incertitude labellisée (`core.pipeline.recompute_drt`) |
 | **Reconstructions Nyquist** | Table Rct_randles + reconstruction Nyquist mesuré/Randles |
 | **Calibration** | Signal normalisé vs log([c]) + régression + R² (via `core/calibration.py`), une courbe par modèle |
 | **Export** (page dédiée `E_export.py`) | CSV params, PNG, HTML, YAML, ZIP session |
