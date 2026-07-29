@@ -5,7 +5,7 @@ from typing import Optional
 
 import numpy as np
 
-from core.models import EISSession, EISSpectrum, ConcentrationGroup
+from core.models import EISSession, EISSpectrum, ConcentrationGroup, FitResult
 from core.loader import load_spectrum, average_replicates
 from core.logger import get_logger
 from core.validator import validate_replicate_group
@@ -186,9 +186,18 @@ def run_pipeline(
     _characterize_error_structure_upfront(session, hybridization, config)
 
     def _fit_replicates(reps: list) -> list:
-        """Applique tous les modèles actifs à chaque réplicat individuel."""
+        """Applique les modèles paramétriques à chaque réplicat individuel.
+
+        La DRT ('drt_bayes') est **volontairement exclue** des réplicats : chaque
+        fit DRT compile/optimise un modèle Stan (~secondes), ce qui multiplierait le
+        temps d'analyse (×n_réplicats) pour des DRT par réplicat rarement exploitées.
+        La DRT n'est calculée que sur les spectres MOYENNÉS ; un réplicat peut être
+        recalculé à la demande via core.pipeline.recompute_drt.
+        """
         for sp in reps:
             for model in models:
+                if model.name == DRT_MODEL_NAME:
+                    continue
                 try:
                     # Pas de poids explicites : le modèle résout lui-même la
                     # structure d'erreur d'Orazem (caractérisée ou réutilisée).
@@ -260,3 +269,82 @@ def run_pipeline(
         validation_results = {}
 
     return session, validation_results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Recalcul DRT ciblé (mode 'sample') — seul point d'entrée du recalcul bayésien
+# ─────────────────────────────────────────────────────────────────────────────
+DRT_MODEL_NAME = "drt_bayes"
+
+
+def _iter_session_spectra(session: EISSession):
+    """Itère (label, spectrum) sur tous les spectres d'une session (moyennes + réplicats)."""
+    if session.bare is not None:
+        yield "bare", session.bare
+    for i, sp in enumerate(session.bare_replicate_spectra or []):
+        yield f"bare#{i}", sp
+    if session.probe is not None:
+        yield "probe", session.probe
+    for i, sp in enumerate(session.probe_replicate_spectra or []):
+        yield f"probe#{i}", sp
+    for grp in session.groups or []:
+        yield f"{grp.concentration:.2e}", grp.spectrum
+        for i, sp in enumerate(grp.replicate_spectra or []):
+            yield f"{grp.concentration:.2e}#{i}", sp
+
+
+def _resolve_spectrum(session: EISSession, spectrum_id) -> Optional[EISSpectrum]:
+    """Résout un spectre par identité (objet EISSpectrum) ou par label de session."""
+    if isinstance(spectrum_id, EISSpectrum):
+        return spectrum_id
+    for label, sp in _iter_session_spectra(session):
+        if sp is spectrum_id or label == spectrum_id:
+            return sp
+    return None
+
+
+def recompute_drt(
+    session: EISSession, spectrum_id, config: dict, mode: str = "sample"
+) -> FitResult:
+    """Relance UNIQUEMENT le fit DRT du spectre ciblé et remplace son FitResult.
+
+    Seul point d'entrée du recalcul DRT à la demande (typiquement mode 'sample',
+    HMC bayésien) : ``ui/`` appelle cette fonction et ne touche jamais directement à
+    :class:`Inverter`. Le résultat remplace ``spectrum.fit_results['drt_bayes']``
+    dans l'``EISSession`` (persistance via st.session_state côté UI).
+
+    Args:
+        session: session EIS courante.
+        spectrum_id: le spectre visé, soit l'objet ``EISSpectrum``, soit son label
+            de session ('bare', 'probe', '1.00e-06', …).
+        config: config de l'app (le mode DRT est forcé à ``mode`` pour cet appel).
+        mode: 'sample' (défaut) ou 'optimize'.
+
+    Returns:
+        Le nouveau ``FitResult`` DRT (également stocké dans ``spectrum.fit_results``).
+
+    Raises:
+        ValueError: si le spectre est introuvable dans la session.
+    """
+    from fits.registry import get_model  # import local : évite un cycle au chargement
+
+    spectrum = _resolve_spectrum(session, spectrum_id)
+    if spectrum is None:
+        raise ValueError(f"Spectre introuvable dans la session : {spectrum_id!r}.")
+
+    # Config dérivée : on force le mode DRT sans muter la config partagée.
+    cfg = dict(config or {})
+    fit_cfg = dict(cfg.get("fit", {}) or {})
+    drt_cfg = dict(fit_cfg.get("drt", {}) or {})
+    drt_cfg["mode"] = mode
+    fit_cfg["drt"] = drt_cfg
+    cfg["fit"] = fit_cfg
+
+    model = get_model(DRT_MODEL_NAME)
+    fr = model.fit(spectrum, cfg)
+    spectrum.fit_results[DRT_MODEL_NAME] = fr
+    log.info(
+        f"recompute_drt [{getattr(spectrum, 'label', spectrum_id)}] mode={mode} "
+        f"Rct={fr.Rct:.1f} Ω source={fr.params.get('rct_source')}"
+    )
+    return fr

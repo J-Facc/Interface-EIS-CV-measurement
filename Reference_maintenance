@@ -494,7 +494,7 @@
 │   ├── <span class="file">registry.py</span>            <span class="note">← FitRegistry</span>
 │   ├── <span class="file">randles_classique.py</span>   <span class="note">← 7-8 params, Differential Evolution</span>
 │   ├── <span class="file">randles_contraint.py</span>   <span class="note">← 3 params effectifs</span>
-│   ├── <span class="file">drt_fit.py</span>             <span class="note">← DRT Tikhonov + NNLS</span>
+│   ├── <span class="file">drt_fit.py</span>             <span class="note">← DRT model-free (bayes_drt2 / Inverter)</span>
 │   └── <span class="file">circulaire_fit.py</span>      <span class="note">← géométrique Kasa</span>
 │
 ├── <span class="dir">plotting/</span>
@@ -539,7 +539,7 @@
       </div>
       <div class="pipe-row">
         <div class="pipe-connector"><div class="pipe-dot"></div><div class="pipe-line"></div></div>
-        <div class="pipe-card"><div class="pipe-label">core/pipeline.py → 4 fits en parallèle</div><div class="pipe-detail">randles_classique · randles_contraint · drt_fit · circulaire_fit</div></div>
+        <div class="pipe-card"><div class="pipe-label">core/pipeline.py → 4 fits en parallèle</div><div class="pipe-detail">randles_full · drt_bayes (bayes_drt2, MAP « optimize » par défaut)</div></div>
       </div>
       <div class="pipe-row">
         <div class="pipe-connector"><div class="pipe-dot"></div><div class="pipe-line"></div></div>
@@ -587,7 +587,7 @@
       <tbody>
         <tr><td>randles_classique.py</td><td>7–8 (Re, R'e, Cb, Rct, Qdl, α, ZD0)</td><td>Differential Evolution</td></tr>
         <tr><td>randles_contraint.py</td><td>3 (Rct, Qdl, α) — Re et ZD0 fixés</td><td>scipy curve_fit</td></tr>
-        <tr><td>drt_fit.py</td><td>λ (régularisation)</td><td>NNLS + L-curve</td></tr>
+        <tr><td>drt_fit.py (drt_bayes)</td><td>0 — γ(τ) model-free</td><td>bayes_drt2 / Inverter — MAP « optimize » (défaut) / HMC « sample »</td></tr>
         <tr><td>circulaire_fit.py</td><td>0 — lecture géométrique</td><td>Kasa algebraic fit</td></tr>
       </tbody>
     </table>
@@ -613,7 +613,7 @@
       <tbody>
         <tr><td>nyquist_figure()</td><td>Points exp + courbes fit + légende complète</td><td>Nyquist</td></tr>
         <tr><td>bode_figure()</td><td>|Z|(f) et φ(f)</td><td>Bode</td></tr>
-        <tr><td>drt_figure()</td><td>γ(τ) vs log(τ)</td><td>DRT</td></tr>
+        <tr><td>drt_figure()</td><td>ln(γ/γ₀) vs ln(τ/τ₀) — ln népérien, γ₀=1 Ω, τ₀=1 s ; badge de mode (optimize/sample) ; bande d'incertitude sample</td><td>DRT</td></tr>
         <tr><td>params_table_figure()</td><td>Tableau Re, Rct, α, χ² par méthode</td><td>Paramètres</td></tr>
         <tr><td>calibration_figure()</td><td>log(Rct_norm) vs log([c]) + R²</td><td>Calibration</td></tr>
       </tbody>
@@ -709,7 +709,7 @@ set VERSION_FILE=%~dp0.version</pre>
         <tr><td>physics.S</td><td>9×10⁻⁹</td><td>m²</td><td>Surface active</td></tr>
         <tr><td>physics.C0</td><td>20</td><td>mM</td><td>Concentration Fe(CN)₆</td></tr>
         <tr><td>fit.alpha_noise</td><td>0.001</td><td>—</td><td>Pondération Modulus (0.1%)</td></tr>
-        <tr><td>fit.lambda_drt</td><td>0.001</td><td>—</td><td>Régularisation DRT</td></tr>
+        <tr><td>fit.drt.mode</td><td>optimize</td><td>—</td><td>Mode DRT bayes_drt2 : « optimize » (MAP) ou « sample » (HMC)</td></tr>
       </tbody>
     </table>
   </div>
@@ -726,6 +726,9 @@ set VERSION_FILE=%~dp0.version</pre>
         <tr><td>ModuleNotFoundError: exports</td><td>exports/__init__.py absent</td><td>Créer ce fichier vide dans le repo</td></tr>
         <tr><td>ModuleNotFoundError: core / fits</td><td>__init__.py manquant dans un dossier</td><td>Créer __init__.py vide dans le dossier concerné</td></tr>
         <tr><td>ImportError: render_tabs</td><td>Streamlit lancé hors de eis_app/</td><td>cd /d "%APP_DIR%" avant streamlit dans le .bat</td></tr>
+        <tr><td>[WinError 2] / mingw32-make introuvable</td><td>CmdStan compile un modèle Stan mais la toolchain C++ est absente</td><td>La toolchain (mingw-w64) est installée automatiquement au 1er lancement par <code>install_cmdstan(compiler=True)</code> (via <code>ensure_drt_ready()</code> dans app.py) ; sinon lancer <code>setup_drt_bayesien.bat</code></td></tr>
+        <tr><td>ImportError: DRTBase / cannot import Inverter</td><td>Extra DRT (cvxopt / cmdstanpy) non installé</td><td><code>pip install -r requirements-drt.txt</code> — l'onglet DRT se désactive proprement en attendant</td></tr>
+        <tr><td>KeyError: 'DRT'</td><td>La distribution « DRT » est absente de l'Inverter (fit échoué / spectre trop court)</td><td>Inspecter <code>inv.distributions.keys()</code> ; vérifier la plage de fréquences et la convention de signe (Z = Zre − j·Zim)</td></tr>
         <tr><td>OSError: No such file (streamlit)</td><td>Chemin trop long (MS Store Python)</td><td>venv local dans le dossier du .bat</td></tr>
         <tr><td>SSL: CERTIFICATE_VERIFY_FAILED</td><td>Proxy d'entreprise</td><td>ssl.CERT_NONE dans les requêtes urllib du .bat</td></tr>
         <tr><td>Variable !VAR! vide après cd</td><td>setlocal sans enabledelayedexpansion</td><td>setlocal enabledelayedexpansion + !VAR! au lieu de %VAR%</td></tr>

@@ -91,13 +91,22 @@ class FitResult:
 # Incertitude sur Rct propagée depuis σ(f)
     # Renseigné dans un second temps (sprint 2)
     Rct_sigma: Optional[float] = None
-    # Champs DRT hérités (Optional, laissés None) : la DRT est désormais un
-    # moteur dédié (fits/drt_fit.py → DRTResult), plus un fit du pipeline.
-    # Conservés pour compat des lectures getattr(..., None) existantes.
+    # Champs DRT : renseignés par le plugin fits/drt_fit.py (DRTBayesModel), qui
+    # produit un FitResult standard comme les autres modèles du pipeline.
+    #   drt_tau/drt_gamma      : distribution γ(τ) (τ en s, γ en Ω).
+    #   drt_S/drt_lnGamma      : ln(τ) et ln(γ) précalculés (tracé ln/ln).
+    #   drt_mode               : 'optimize' (MAP) ou 'sample' (HMC) — mode réellement
+    #                            exécuté, affiché par l'UI pour ne pas comparer sans
+    #                            le savoir des DRT de modes différents.
+    #   drt_gamma_lo/drt_gamma_hi : bornes de crédibilité 2.5 / 97.5 % (mode 'sample'
+    #                            uniquement ; None en 'optimize').
     drt_tau: Optional[np.ndarray] = None
     drt_gamma: Optional[np.ndarray] = None
     drt_S: Optional[np.ndarray] = None
     drt_lnGamma: Optional[np.ndarray] = None
+    drt_mode: Optional[str] = None
+    drt_gamma_lo: Optional[np.ndarray] = None
+    drt_gamma_hi: Optional[np.ndarray] = None
     reconstruction_error: Optional[float] = None
     # Validation Kramers-Kronig (fits/kk_validation.py)
     kk_passed: Optional[bool] = None

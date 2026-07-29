@@ -16,11 +16,11 @@ from ui.tabs import render_eis_tabs
 
 _DEFAULT_CONFIG = config_to_dict(load_config())
 
-# Méthodes de fit paramétrique affichées dans les graphes et tableaux EIS.
-# Le pipeline peut en calculer d'autres en arrière-plan. La DRT n'est plus un
-# fit du pipeline : c'est un moteur dédié (fits/drt_fit.py, wrapper bayes-drt2)
-# rendu dans l'onglet DRT.
-METHODS_TO_DISPLAY = ["randles_full"]
+# Méthodes de fit affichées dans les graphes et tableaux EIS. La DRT (drt_bayes,
+# fits/drt_fit.py, wrapper bayes_drt2) est de nouveau un plugin du pipeline : elle
+# est calculée en 'optimize' par défaut et doit donc figurer ici pour que ses
+# FitResult survivent au filtrage de la session d'affichage (deepcopy).
+METHODS_TO_DISPLAY = ["randles_full", "drt_bayes"]
 
 
 def _filter_session_display(session):
@@ -354,8 +354,9 @@ def main() -> None:
             }
             _displayed = {"randles_full"}
             st.caption(
-                "La DRT (aperçu ridge + bayésienne HMC) est calculée dans "
-                "l'onglet **Courbes DRT**, pas ici."
+                "La DRT (bayes_drt2 : MAP 'optimize' par défaut, recalcul "
+                "bayésien 'sample' à la demande) est présentée dans l'onglet "
+                "**Courbes DRT**."
             )
             active_models = [
                 m for m, label in model_choices.items()

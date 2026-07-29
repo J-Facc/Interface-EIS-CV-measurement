@@ -6,15 +6,15 @@
 #
 # Installer avec :  pip install -r requirements-drt.txt
 #
-# cvxopt    : optimisation quadratique sous contrainte de positivité, requise
-#             par ridge_fit (aperçu instantané + initialiseur du HMC).
-# cmdstanpy : interface Python de CmdStan, requise par le HMC (fit mode='sample',
-#             méthode de référence avec intervalles de crédibilité).
+# cvxopt    : dépendance de vendor.bayes_drt2.inversion (importée au niveau module).
+# cmdstanpy : interface Python de CmdStan, requise par les DEUX modes DRT
+#             (fit mode='optimize' MAP et mode='sample' HMC — tous deux compilent
+#             un modèle Stan).
 #
 # cmdstanpy fournit le binding Python mais PAS la toolchain CmdStan (compilateur
-# C++ + modèles Stan compilés). Celle-ci s'installe séparément via
-# setup_drt_bayesien.bat (Windows) / cmdstanpy.install_cmdstan(). Sans elle,
-# l'aperçu ridge fonctionne mais le HMC est bloqué (garde-fou, pas de
-# compilation à la volée) — voir fits/drt_fit.py.
+# C++ + modèles Stan compilés). Elle est installée AUTOMATIQUEMENT au premier
+# lancement par setup_drt_bayesien.ensure_drt_ready() → install_cmdstan(compiler=True)
+# (installe mingw-w64, n'exige pas RTools). Sans toolchain, la DRT est désactivée
+# proprement — voir fits/drt_fit.py et app.py.
 cvxopt>=1.3.0
 cmdstanpy>=1.2.0

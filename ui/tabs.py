@@ -14,10 +14,12 @@ from plotting.eis_plots import (
     drt_reconstruction_figure_dual,
     open_reconstruction_matplotlib_window,
     calibration_figure,
+    calibration_drt_figure,
     open_calibration_matplotlib_window,
     params_table_figure,
 )
 from fits import drt_fit
+from core.pipeline import recompute_drt
 from core.cv_peaks import detect_redox_peaks
 from plotting.cv_plots import (
     cv_current_figure,
@@ -105,19 +107,47 @@ def _drt_labeled_spectra(session: EISSession) -> list:
 
 
 def _drt_result_for(spectrum):
-    """Meilleur résultat DRT disponible pour un spectre : HMC en cache sinon ridge live."""
-    cached = drt_fit.get_cached(spectrum, engine="bayes")
-    if cached is not None:
-        return cached
-    return drt_fit.drt_preview(spectrum)
+    """FitResult DRT du spectre : calculé par le pipeline en 'optimize', ou 'sample'
+    après un recalcul bayésien (core.pipeline.recompute_drt). None si indisponible."""
+    return (getattr(spectrum, "fit_results", {}) or {}).get("drt_bayes")
+
+
+def _drt_spectrum_status(label: str, fr) -> None:
+    """Indication par spectre : mode DRT (optimize/sample) + provenance du Rct.
+
+    Rend visible qu'un Rct issu d'un repli (Rp, aire totale) n'est PAS l'arc de
+    transfert de charge, pour que la calibration ne soit jamais lue en silence sur
+    une grandeur différente.
+    """
+    mode = getattr(fr, "drt_mode", None) or "optimize"
+    mode_txt = "bayésienne (sample)" if mode == "sample" else "MAP (optimize)"
+    src = (getattr(fr, "params", {}) or {}).get("rct_source")
+    if src == "rp_fallback":
+        st.warning(
+            f"**{label}** — DRT {mode_txt} · ⚠ Rct par REPLI sur Rp (aire totale = "
+            "diffusion + transfert). Grandeur ≠ arc de transfert : calibration θ_EIS "
+            "à interpréter avec prudence."
+        )
+    elif src == "peak_single":
+        st.info(
+            f"**{label}** — DRT {mode_txt} · Rct extrait d'un pic unique "
+            "(pas de pénultième disponible)."
+        )
+    else:
+        st.caption(
+            f"**{label}** — DRT {mode_txt} · Rct = arc de transfert (pic pénultième, Bissessur)."
+        )
 
 
 def _render_drt_tab(sessions: dict) -> None:
     """Onglet 2 — Distribution des temps de relaxation (DRT).
 
-    Affiche le ridge en direct (aperçu instantané) pour tous les spectres. Un
-    bouton déclenche le calcul de la DRT bayésienne (HMC) en parallèle, qui
-    ajoute les intervalles de crédibilité une fois disponibles (points 6/7).
+    La DRT MAP ('optimize') est calculée par le pipeline pour tous les spectres et
+    lue ici depuis ``fit_results['drt_bayes']``. Un bouton permet de recalculer un
+    spectre choisi en bayésien ('sample', HMC) via ``core.pipeline.recompute_drt``
+    (seul point d'entrée du recalcul) : le résultat, avec ses intervalles de
+    crédibilité, persiste dans la session et n'est pas écrasé par l''optimize' tant
+    que l'analyse complète n'est pas relancée.
     """
     st.subheader("Distribution des temps de relaxation (DRT)")
 
@@ -126,55 +156,79 @@ def _render_drt_tab(sessions: dict) -> None:
         st.error(
             "Moteur DRT indisponible : "
             f"{drt_fit.import_error()}. Installez l'extra DRT "
-            "(`pip install -r requirements-drt.txt`)."
+            "(`pip install -r requirements-drt.txt`) puis lancez "
+            "**setup_drt_bayesien** pour la toolchain CmdStan."
         )
         return
 
-    electrodes = sorted(sessions.keys())
-
-    # (a) Bouton DRT bayésienne (HMC) — batch parallèle sur tous les spectres.
-    st.markdown("#### DRT bayésienne (incertitudes)")
     cmdstan_ok = drt_fit.cmdstan_available()
     if not cmdstan_ok:
         st.warning(
-            "Intervalles de crédibilité indisponibles : cmdstan n'est pas "
-            "installé. Lancez **setup_drt_bayesien.bat** pour activer le HMC. "
-            "L'aperçu ridge ci-dessous reste disponible."
+            "Toolchain **CmdStan** absente : la DRT (modes 'optimize' ET 'sample') "
+            "nécessite CmdStan. Lancez **setup_drt_bayesien** pour l'installer "
+            "automatiquement (`install_cmdstan(compiler=True)`)."
         )
 
-    if st.button(
-        "🎲 Calculer DRT bayésienne (incertitudes)",
-        key="drt_bayes_btn",
-        disabled=not cmdstan_ok,
-        help="Lance l'échantillonnage HMC en parallèle sur tous les spectres "
-             "non encore calculés. Les résultats sont mis en cache et persistés.",
-    ):
-        progress = st.progress(0.0, text="Préparation…")
+    # Sessions réelles (source de vérité) : le recalcul 'sample' doit y écrire pour
+    # persister — la session reçue ici est une copie d'affichage (deepcopy filtré).
+    real_sessions = st.session_state.get("eis_sessions", sessions)
+    config = st.session_state.get("eis_config", {})
+    electrodes = sorted(sessions.keys())
 
-        def _cb(done: int, total: int, label: str) -> None:
-            frac = 1.0 if total == 0 else done / total
-            progress.progress(frac, text=f"HMC {done}/{total} — {label}")
+    # (a) Recalcul bayésien ('sample') à la demande sur un spectre choisi.
+    st.markdown("#### Recalcul bayésien (sample)")
+    st.caption(
+        "Défaut = **MAP (optimize)**, calculé pour tous les spectres. Le recalcul "
+        "**bayésien (sample)** (HMC, **plusieurs minutes**) ajoute des intervalles "
+        "de crédibilité sur le spectre choisi."
+    )
+    choices = {}
+    for e in electrodes:
+        for lbl, _sp in _drt_labeled_spectra(sessions[e]):
+            choices[f"Électrode {e} — {lbl}"] = (e, lbl)
+    if choices:
+        sel = st.selectbox(
+            "Spectre à recalculer en bayésien", list(choices.keys()), key="drt_sample_select",
+        )
+        e_sel, lbl_sel = choices[sel]
+        if st.button(
+            "🎲 Recalculer en bayésien (sample)",
+            key="drt_sample_btn",
+            disabled=not cmdstan_ok,
+            help="Échantillonnage HMC (plusieurs minutes) sur le spectre choisi. "
+                 "Ajoute une bande d'incertitude ; le résultat persiste.",
+        ):
+            with st.spinner(
+                f"Échantillonnage HMC de « {lbl_sel} »… (plusieurs minutes, "
+                "ne quittez pas la page)"
+            ):
+                try:
+                    recompute_drt(real_sessions[e_sel], lbl_sel, config, mode="sample")
+                except Exception as exc:  # pragma: no cover - dépend de CmdStan
+                    st.error(f"Échec du recalcul bayésien : {exc}")
+                else:
+                    st.success(
+                        f"DRT bayésienne (sample) calculée pour « {lbl_sel} ». "
+                        "Bande d'incertitude ajoutée."
+                    )
+                    st.rerun()
 
-        try:
-            for e in electrodes:
-                drt_fit.run_drt_bayes_batch(sessions[e], progress_callback=_cb)
-            progress.progress(1.0, text="Terminé.")
-            st.success("DRT bayésienne calculée. Bandes d'incertitude ajoutées.")
-        except Exception as exc:  # pragma: no cover - dépend de cmdstan
-            st.error(f"Échec du calcul HMC : {exc}")
-
-    # (b) Une figure DRT par électrode (ridge live, ou HMC + bande si calculé).
+    # (b) Une figure DRT par électrode + indication du mode / provenance Rct par spectre.
     st.markdown("#### γ(τ) par électrode")
     cols = st.columns(len(electrodes)) if electrodes else []
     for e, col in zip(electrodes, cols):
         with col:
-            labeled = _drt_labeled_spectra(sessions[e])
             items = []
-            for lbl, sp in labeled:
-                try:
-                    items.append((lbl, _drt_result_for(sp)))
-                except Exception as exc:
-                    st.warning(f"DRT '{lbl}' : {exc}")
+            for lbl, sp in _drt_labeled_spectra(sessions[e]):
+                fr = _drt_result_for(sp)
+                if fr is None:
+                    st.info(
+                        f"DRT « {lbl} » indisponible — relancez l'analyse "
+                        "(CmdStan requis)."
+                    )
+                    continue
+                items.append((lbl, fr))
+                _drt_spectrum_status(lbl, fr)
             st.plotly_chart(
                 drt_figure(items, title=f"Électrode {e}"),
                 width='stretch', key=f"drt_e{e}",
@@ -239,6 +293,26 @@ def _render_error_structure_provenance(sessions: dict) -> None:
         )
 
 
+def _render_drt_modes_caption(session: EISSession) -> None:
+    """Résume le mode DRT (optimize/sample) de chaque spectre d'une session.
+
+    S'appuie sur le champ ``drt_mode`` du FitResult 'drt_bayes'. Signale aussi les
+    Rct issus d'un repli (non-arc), pour ne pas les comparer en silence.
+    """
+    parts = []
+    for lbl, sp in _drt_labeled_spectra(session):
+        fr = (getattr(sp, "fit_results", {}) or {}).get("drt_bayes")
+        if fr is None:
+            continue
+        mode = getattr(fr, "drt_mode", None) or "optimize"
+        tag = "sample" if mode == "sample" else "optimize"
+        src = (getattr(fr, "params", {}) or {}).get("rct_source")
+        flag = " ⚠repli-Rp" if src == "rp_fallback" else (" ·pic-unique" if src == "peak_single" else "")
+        parts.append(f"{lbl}: DRT **{tag}**{flag}")
+    if parts:
+        st.caption("Mode DRT par spectre — " + " · ".join(parts))
+
+
 def _render_reconstruction_tab(sessions: dict, config: dict | None = None) -> None:
     """Onglet 3 — Reconstructions Nyquist (Randles vs DRT)."""
     st.subheader("Reconstructions Nyquist — Randles vs DRT")
@@ -253,6 +327,9 @@ def _render_reconstruction_tab(sessions: dict, config: dict | None = None) -> No
     for e, session in sorted(sessions.items()):
         st.caption(f"Électrode {e}")
         st.plotly_chart(params_table_figure(session), width='stretch', key=f"params_table_e{e}")
+        # Indication du mode DRT par spectre : le Rct_drt de deux spectres ne doit
+        # pas être comparé sans savoir s'ils sont en 'optimize' (MAP) ou 'sample'.
+        _render_drt_modes_caption(session)
 
     # (a) comparaison moyenne probe, toutes électrodes
     st.plotly_chart(reconstruction_comparison_figure(sessions), width='stretch', key="recon_multi")
@@ -265,7 +342,7 @@ def _render_reconstruction_tab(sessions: dict, config: dict | None = None) -> No
             session = sessions[e]
             if session.probe is not None:
                 fr_r = session.probe.fit_results.get("randles_full")
-                fr_d = session.probe.fit_results.get("drt_tikhonov")
+                fr_d = session.probe.fit_results.get("drt_bayes")
                 st.plotly_chart(
                     drt_reconstruction_figure_dual(
                         session.probe, fr_drt=fr_d, fr_randles=fr_r, label="Probe (moyenne)",
@@ -292,7 +369,7 @@ def _render_reconstruction_tab(sessions: dict, config: dict | None = None) -> No
                 )
                 rep_sp = reps[rep_idx - 1]
                 fr_r = rep_sp.fit_results.get("randles_full")
-                fr_d = rep_sp.fit_results.get("drt_tikhonov")
+                fr_d = rep_sp.fit_results.get("drt_bayes")
                 st.plotly_chart(
                     drt_reconstruction_figure_dual(
                         rep_sp, fr_drt=fr_d, fr_randles=fr_r,
@@ -327,6 +404,21 @@ def _render_calibration_tab(sessions: dict) -> None:
         with col:
             st.markdown(f"**Électrode {e}**")
             st.plotly_chart(calibration_figure(sessions[e]), width='stretch', key=f"calib_fig_e{e}")
+
+    # Calibration DRT : log(Rct) vs log([c]), Rct issu de l'arc de transfert de
+    # charge (extraction par pic Bissessur du modèle drt_bayes). Redevient utile
+    # dès que la DRT produit des FitResult (mode 'optimize' par défaut).
+    st.markdown("#### Calibration DRT — log(Rct) vs log([c])")
+    st.caption(
+        "Rct de la DRT = arc de transfert de charge (pic pénultième). Vérifiez "
+        "l'indication de mode/provenance Rct dans l'onglet **Courbes DRT**."
+    )
+    for e in electrodes:
+        st.markdown(f"**Électrode {e}**")
+        st.plotly_chart(
+            calibration_drt_figure(sessions[e], model_name="drt_bayes"),
+            width='stretch', key=f"calib_drt_fig_e{e}",
+        )
 
     btn_cols = st.columns(2)
     with btn_cols[0]:

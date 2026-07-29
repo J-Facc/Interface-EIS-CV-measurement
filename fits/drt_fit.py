@@ -1,122 +1,76 @@
 # -*- coding: utf-8 -*-
-"""
-fits/drt_fit.py — Moteur DRT unique, wrapper de ``vendor.bayes_drt2``.
+"""fits/drt_fit.py — Moteur DRT unique : plugin ``BaseFitModel`` autour de bayes_drt2.
 
-Deux méthodes, un seul paquet de calcul (bayes-drt2, Jake Huang, vendoré dans
-``vendor/bayes_drt2/`` — voir ``vendor/README.md`` et ``THIRD_PARTY_LICENSES.md``) :
+La distribution des temps de relaxation γ(τ) est calculée **exclusivement** par la
+bibliothèque ``bayes_drt2`` de Huang (classe :class:`Inverter`, vendorée dans
+``vendor/bayes_drt2/`` — voir ``vendor/README.md`` et ``THIRD_PARTY_LICENSES.md``).
+Aucune autre implémentation (Tikhonov, NNLS, L-curve, ridge…) ne subsiste.
 
-* :func:`drt_preview` — ``ridge_fit(freq, Z, hyper_lambda=True)`` : ridge
-  hyperparamétrique, rapide, sans cmdstan. Sert d'**aperçu instantané** (affichage
-  live de γ(τ) pour tous les spectres) et d'**initialiseur** du HMC.
+Deux modes, un seul moteur :
 
-* :func:`drt_bayes` — ``fit(freq, Z, mode='sample', init_from_ridge=True)`` : HMC,
-  méthode de **référence** qui produit en plus des **intervalles de crédibilité**
-  (γ_lo/γ_hi à 2.5/97.5 %, Rp_lo/Rp_hi). Nécessite ``cmdstanpy`` **et** une
-  installation cmdstan.
+* ``optimize`` — MAP Stan (L-BFGS-B). **Défaut** : lancé automatiquement par
+  ``core/pipeline.py`` sur chaque spectre, comme les autres fits.
+* ``sample`` — HMC bayésien (lent, intervalles de crédibilité). **Jamais**
+  automatique : uniquement à la demande via ``core.pipeline.recompute_drt`` (bouton
+  UI). ``ui/`` ne touche jamais directement à :class:`Inverter`.
 
-Conventions d'impédance
------------------------
-Le loader stocke ``Zim = -Im(Z) > 0`` (demi-cercle capacitif au-dessus de l'axe
-réel). bayes-drt2 attend la convention physique ``Z'' < 0`` :
+Les deux modes compilent des modèles Stan via CmdStan : la toolchain (installée par
+``setup_drt_bayesien.py`` → ``cmdstanpy.install_cmdstan(compiler=True)``) est un
+prérequis strict de toute DRT — il n'y a plus de chemin sans compilation.
 
-    Z = spectrum.Zre - 1j * spectrum.Zim
+Conventions (guide bayes_drt2 + code vendoré, qui fait foi) :
 
-Garde-fous (point 5 du cahier des charges)
-------------------------------------------
-* L'import de ``vendor.bayes_drt2`` est protégé par ``try/except ImportError`` :
-  si l'extra DRT n'est pas installé (``cvxopt`` / ``cmdstanpy`` absents), la DRT
-  est **désactivée proprement** (:func:`bayes_available` renvoie ``False``) au
-  lieu de faire planter l'app.
-* :func:`drt_bayes` teste ``cmdstanpy.cmdstan_path()`` **sans jamais compiler à la
-  volée** : si cmdstan est absent, elle renvoie le résultat *ridge* assorti d'un
-  statut « intervalles indisponibles : lancez setup_drt_bayesien.bat ». L'app
-  reste fonctionnelle en aperçu ridge ; seul le HMC est bloqué.
+* **Signe.** Le loader stocke ``Zim = -Im(Z) > 0`` (demi-cercle capacitif
+  au-dessus de l'axe réel). bayes_drt2 attend la convention physique ``Z'' < 0`` :
+  ``Z = spectrum.Zre - 1j * spectrum.Zim``.
+* **Tri HF→BF** sur les **vraies fréquences lues** dans le fichier (jamais
+  reconstruites par ``np.logspace`` : la position des pics en τ en dépend).
+* ``inv.fit(freq, Z, mode=...)`` — fréquences et Z complexe en positionnels.
+* Récupération : ``gamma = inv.predict_distribution('DRT')`` et
+  ``tau = inv.distributions['DRT']['tau']`` (garde-fou ``KeyError``).
+
+Rct (grandeur de calibration θ_EIS) : **extraction par pic (convention
+Bissessur)** — pic pénultième, intégrale trapèze de γ sur ±3 en ln(τ) autour du
+pic. Le pic pénultième saute délibérément la queue de diffusion BF pour n'intégrer
+que l'arc de transfert de charge, ce qui garde ``Rct_drt`` cohérent avec le
+``Rct`` du Randles. Le repli sur ``Rp`` (aire totale = diffusion + transfert) n'est
+utilisé qu'en dernier recours et **toujours signalé** (``FitResult.warnings`` +
+``params['rct_source']``) pour que la calibration ne soit jamais calculée en
+silence sur une grandeur différente.
 """
 
 from __future__ import annotations
 
-import hashlib
-import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Optional, Tuple
 
 import numpy as np
-import yaml
 
 from core.logger import get_logger
+from core.models import EISSpectrum, FitResult
+from fits.base import BaseFitModel
 
 log = get_logger("drt_fit")
 
-# ── Import protégé du paquet vendoré (point 5) ──────────────────────────────
+DIST_NAME = "DRT"
+
+# ── Import protégé du paquet vendoré ────────────────────────────────────────
 # vendor/bayes_drt2/inversion.py importe cvxopt ET cmdstanpy au niveau module :
-# si l'un manque (extra DRT non installé), l'ImportError est capturée et la DRT
-# est désactivée proprement, sans casser l'import de l'app.
+# si l'extra DRT n'est pas installé, l'ImportError est capturée et la DRT est
+# désactivée proprement (bayes_available() → False) au lieu de casser l'app.
 try:
     from vendor.bayes_drt2.inversion import Inverter  # type: ignore
     _IMPORT_ERROR: Optional[str] = None
-except Exception as exc:  # ImportError (cvxopt/cmdstanpy) ou autre
+except Exception as exc:  # ImportError (cvxopt/cmdstanpy/matplotlib) ou autre
     Inverter = None  # type: ignore
     _IMPORT_ERROR = str(exc)
-    log.warning(f"Moteur DRT bayes-drt2 indisponible : {exc}")
-
-
-DIST_NAME = "DRT"
-_SETUP_HINT = "intervalles indisponibles : lancez setup_drt_bayesien.bat"
-
-# Répertoire de persistance du cache HMC. `sessions/` est déjà .gitignore.
-_CACHE_DIR = os.path.join("sessions", "drt_cache")
-
-# Cache mémoire : {(key, engine): DRTResult}. Évite de relancer le ridge à
-# chaque rerun Streamlit et sert d'index en amont du cache disque.
-_MEM_CACHE: dict = {}
+    log.warning(f"Moteur DRT bayes_drt2 indisponible : {exc}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Résultat
-# ─────────────────────────────────────────────────────────────────────────────
-@dataclass
-class DRTResult:
-    """Distribution des temps de relaxation γ(τ) et grandeurs dérivées.
-
-    Attributes:
-        tau: Grille des temps de relaxation τ (s).
-        gamma: DRT γ(τ) — médiane a posteriori pour le HMC, solution ridge sinon.
-        gamma_lo: Percentile 2.5 % de γ(τ) (HMC uniquement, sinon None).
-        gamma_hi: Percentile 97.5 % de γ(τ) (HMC uniquement, sinon None).
-        Rp: Résistance de polarisation (Ω) — ∫γ dlnτ.
-        Rp_lo: Percentile 2.5 % de Rp (HMC uniquement, sinon None).
-        Rp_hi: Percentile 97.5 % de Rp (HMC uniquement, sinon None).
-        Z_fit: Impédance reconstruite (complexe, convention physique Z'' < 0),
-            évaluée aux fréquences du spectre.
-        score: R² de la reconstruction Z (stack Re/Im) vs mesure.
-        engine: 'ridge' (aperçu) ou 'bayes' (HMC, avec intervalles).
-        status: Message d'état (ex. garde-fou cmdstan). Vide si tout est nominal.
-    """
-
-    tau: np.ndarray
-    gamma: np.ndarray
-    gamma_lo: Optional[np.ndarray]
-    gamma_hi: Optional[np.ndarray]
-    Rp: float
-    Rp_lo: Optional[float]
-    Rp_hi: Optional[float]
-    Z_fit: np.ndarray
-    score: float
-    engine: str
-    status: str = ""
-
-    @property
-    def has_intervals(self) -> bool:
-        """True si des intervalles de crédibilité sont disponibles (HMC)."""
-        return self.gamma_lo is not None and self.gamma_hi is not None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Disponibilité du moteur / de cmdstan
+# Disponibilité du moteur / de la toolchain
 # ─────────────────────────────────────────────────────────────────────────────
 def bayes_available() -> bool:
-    """True si le paquet vendoré bayes-drt2 (et ses deps) est importable."""
+    """True si le paquet vendoré bayes_drt2 (et ses deps) est importable."""
     return Inverter is not None
 
 
@@ -126,10 +80,10 @@ def import_error() -> Optional[str]:
 
 
 def cmdstan_available() -> bool:
-    """True si une installation cmdstan est présente (requise pour le HMC).
+    """True si une installation CmdStan est présente (requise pour tout fit DRT).
 
     N'installe ni ne compile rien : teste seulement ``cmdstanpy.cmdstan_path()``,
-    qui lève si cmdstan est absent (point 5 — garde-fou).
+    qui lève si CmdStan est absent.
     """
     try:
         import cmdstanpy
@@ -141,390 +95,265 @@ def cmdstan_available() -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Utilitaires impédance / cache
+# Extraction de Rct par pic (convention Bissessur) — grandeur de calibration
 # ─────────────────────────────────────────────────────────────────────────────
-def _impedance(spectrum) -> np.ndarray:
-    """Z complexe en convention physique (Z'' < 0) depuis le spectre.
-
-    Le loader stocke ``Zim = -Im(Z) > 0`` → ``Z = Zre - 1j·Zim``.
-    """
-    return np.asarray(spectrum.Zre, dtype=float) - 1j * np.asarray(spectrum.Zim, dtype=float)
-
-
-def cache_key(spectrum) -> str:
-    """Clé de cache = hash SHA-1 de (freq, Z) arrondis (point 3).
-
-    L'arrondi (6 chiffres significatifs) rend la clé stable aux micro-variations
-    de sérialisation/relecture d'une même mesure.
-    """
-    f = np.asarray(spectrum.f, dtype=float)
-    Z = _impedance(spectrum)
-
-    def _round(a: np.ndarray, sig: int = 6) -> np.ndarray:
-        # Arrondi à `sig` chiffres significatifs, vectorisé (np.round n'accepte
-        # pas un tableau de décimales).
-        a = np.asarray(a, dtype=float)
-        out = np.zeros_like(a)
-        nz = a != 0
-        mags = np.floor(np.log10(np.abs(a[nz])))
-        factor = 10.0 ** (sig - 1 - mags)
-        out[nz] = np.round(a[nz] * factor) / factor
-        return out
-
-    payload = np.concatenate([_round(f), _round(Z.real), _round(Z.imag)])
-    return hashlib.sha1(payload.tobytes()).hexdigest()
+def _local_maxima(gamma: np.ndarray, l: int = 3, threshold: float = 0.0) -> list:
+    """Indices des maxima locaux de γ dans une fenêtre glissante de demi-largeur ``l``."""
+    n = len(gamma)
+    maxima = []
+    for i in range(n):
+        if gamma[i] <= threshold:
+            continue
+        lo = max(0, i - l)
+        hi = min(n, i + l + 1)
+        if gamma[i] >= gamma[lo:hi].max():
+            maxima.append(i)
+    return maxima
 
 
-def _cache_path(key: str) -> str:
-    return os.path.join(_CACHE_DIR, f"{key}.yaml")
+def _extract_rct_peak(
+    tau: np.ndarray, gamma: np.ndarray
+) -> Tuple[Optional[float], float, str, str]:
+    """Rct de l'arc de transfert de charge (convention Bissessur).
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# (Dé)sérialisation YAML — réutilise l'export YAML de session (point 3)
-# ─────────────────────────────────────────────────────────────────────────────
-def _to_list(a) -> Optional[list]:
-    if a is None:
-        return None
-    return [float(x) for x in np.asarray(a, dtype=float)]
-
-
-def result_to_dict(result: DRTResult) -> dict:
-    """DRTResult -> dict YAML-sérialisable (numpy → listes de floats)."""
-    return {
-        "tau": _to_list(result.tau),
-        "gamma": _to_list(result.gamma),
-        "gamma_lo": _to_list(result.gamma_lo),
-        "gamma_hi": _to_list(result.gamma_hi),
-        "Rp": None if result.Rp is None else float(result.Rp),
-        "Rp_lo": None if result.Rp_lo is None else float(result.Rp_lo),
-        "Rp_hi": None if result.Rp_hi is None else float(result.Rp_hi),
-        "Z_fit_re": _to_list(np.real(result.Z_fit)) if result.Z_fit is not None else None,
-        "Z_fit_im": _to_list(np.imag(result.Z_fit)) if result.Z_fit is not None else None,
-        "score": float(result.score),
-        "engine": result.engine,
-        "status": result.status,
-    }
-
-
-def result_from_dict(d: dict) -> DRTResult:
-    """dict YAML -> DRTResult (listes → np.ndarray)."""
-    def _arr(key):
-        v = d.get(key)
-        return None if v is None else np.asarray(v, dtype=float)
-
-    zre = d.get("Z_fit_re")
-    zim = d.get("Z_fit_im")
-    z_fit = (
-        None if zre is None or zim is None
-        else np.asarray(zre, dtype=float) + 1j * np.asarray(zim, dtype=float)
-    )
-    return DRTResult(
-        tau=_arr("tau"),
-        gamma=_arr("gamma"),
-        gamma_lo=_arr("gamma_lo"),
-        gamma_hi=_arr("gamma_hi"),
-        Rp=d.get("Rp"),
-        Rp_lo=d.get("Rp_lo"),
-        Rp_hi=d.get("Rp_hi"),
-        Z_fit=z_fit,
-        score=float(d.get("score", 0.0)),
-        engine=d.get("engine", "bayes"),
-        status=d.get("status", ""),
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Accès cache (mémoire + disque)
-# ─────────────────────────────────────────────────────────────────────────────
-def get_cached(spectrum, engine: str = "bayes") -> Optional[DRTResult]:
-    """Résultat en cache pour ce spectre, ou None.
-
-    Cherche d'abord en mémoire, puis (pour le HMC) sur disque dans ``sessions/``.
-    Au rechargement d'une session, un HMC déjà persisté est ainsi resservi sans
-    jamais être recalculé (point 3).
-    """
-    key = cache_key(spectrum)
-    hit = _MEM_CACHE.get((key, engine))
-    if hit is not None:
-        return hit
-    if engine == "bayes":
-        path = _cache_path(key)
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as fh:
-                    d = yaml.safe_load(fh)
-                result = result_from_dict(d)
-                _MEM_CACHE[(key, engine)] = result
-                return result
-            except Exception as exc:
-                log.warning(f"Cache DRT illisible ({path}) : {exc}")
-    return None
-
-
-def store_cached(spectrum, result: DRTResult) -> None:
-    """Mémorise un résultat (mémoire toujours ; disque pour le HMC — point 3)."""
-    key = cache_key(spectrum)
-    _MEM_CACHE[(key, result.engine)] = result
-    if result.engine == "bayes":
-        try:
-            os.makedirs(_CACHE_DIR, exist_ok=True)
-            with open(_cache_path(key), "w", encoding="utf-8") as fh:
-                yaml.safe_dump(result_to_dict(result), fh, allow_unicode=True, sort_keys=False)
-        except Exception as exc:
-            log.warning(f"Persistance cache DRT échouée : {exc}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Cœur du calcul
-# ─────────────────────────────────────────────────────────────────────────────
-def _score(inv, freq: np.ndarray, Z: np.ndarray) -> float:
-    """R² de la reconstruction Z (Re et Im empilés) vs mesure."""
-    try:
-        Z_fit = inv.predict_Z(freq)
-    except Exception:
-        return float("nan")
-    y = np.concatenate([Z.real, Z.imag])
-    yhat = np.concatenate([Z_fit.real, Z_fit.imag])
-    ss_res = float(np.sum((y - yhat) ** 2))
-    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
-    if ss_tot == 0:
-        return float("nan")
-    return 1.0 - ss_res / ss_tot
-
-
-def _ridge_inverter(freq: np.ndarray, Z: np.ndarray):
-    """Inverter ajusté par ridge hyperparamétrique (aperçu + init HMC)."""
-    inv = Inverter()
-    inv.ridge_fit(freq, Z, hyper_lambda=True)
-    return inv
-
-
-def _result_from_ridge(inv, freq: np.ndarray, Z: np.ndarray, status: str = "") -> DRTResult:
-    tau = np.asarray(inv.distributions[DIST_NAME]["tau"], dtype=float)
-    gamma = np.asarray(inv.predict_distribution(DIST_NAME, tau=tau), dtype=float)
-    return DRTResult(
-        tau=tau,
-        gamma=gamma,
-        gamma_lo=None,
-        gamma_hi=None,
-        Rp=float(inv.predict_Rp()),
-        Rp_lo=None,
-        Rp_hi=None,
-        Z_fit=np.asarray(inv.predict_Z(freq)),
-        score=_score(inv, freq, Z),
-        engine="ridge",
-        status=status,
-    )
-
-
-def drt_preview(spectrum) -> DRTResult:
-    """Aperçu DRT instantané par ridge hyperparamétrique (point 2).
-
-    ``ridge_fit(freq, Z, hyper_lambda=True)`` — rapide, sans cmdstan. Résultat
-    mis en cache mémoire (resservi tel quel aux reruns Streamlit).
-    """
-    if not bayes_available():
-        raise RuntimeError(f"Moteur DRT indisponible : {_IMPORT_ERROR}")
-
-    cached = _MEM_CACHE.get((cache_key(spectrum), "ridge"))
-    if cached is not None:
-        return cached
-
-    freq = np.asarray(spectrum.f, dtype=float)
-    Z = _impedance(spectrum)
-    inv = _ridge_inverter(freq, Z)
-    result = _result_from_ridge(inv, freq, Z)
-    store_cached(spectrum, result)
-    return result
-
-
-def drt_bayes(spectrum, use_cache: bool = True) -> DRTResult:
-    """DRT bayésienne (HMC) avec intervalles de crédibilité (points 2, 3, 5).
-
-    * Un résultat HMC déjà en cache (mémoire ou ``sessions/``) est renvoyé tel
-      quel — **jamais recalculé** (point 3).
-    * Garde-fou cmdstan (point 5) : si cmdstan est absent, renvoie le résultat
-      *ridge* + un statut explicite, **sans compiler à la volée**.
-    * Sinon : ``fit(freq, Z, mode='sample', init_from_ridge=True)`` puis
-      extraction de γ (médiane), γ_lo/γ_hi (2.5/97.5 %), Rp/Rp_lo/Rp_hi, Z_fit.
-    """
-    if not bayes_available():
-        raise RuntimeError(f"Moteur DRT indisponible : {_IMPORT_ERROR}")
-
-    if use_cache:
-        cached = get_cached(spectrum, engine="bayes")
-        if cached is not None:
-            return cached
-
-    freq = np.asarray(spectrum.f, dtype=float)
-    Z = _impedance(spectrum)
-
-    # Garde-fou cmdstan : pas de compilation à la volée.
-    if not cmdstan_available():
-        inv = _ridge_inverter(freq, Z)
-        result = _result_from_ridge(inv, freq, Z, status=_SETUP_HINT)
-        # On ne persiste PAS ce repli sous la clé bayes (sinon le vrai HMC
-        # ultérieur serait masqué). Cache mémoire ridge uniquement.
-        _MEM_CACHE[(cache_key(spectrum), "ridge")] = result
-        return result
-
-    result = _run_bayes(freq, Z)
-    store_cached(spectrum, result)
-    return result
-
-
-def _run_bayes(freq: np.ndarray, Z: np.ndarray) -> DRTResult:
-    """Exécute le HMC sur (freq, Z) et assemble le DRTResult (avec intervalles).
-
-    Fonction au niveau module (picklable) : réutilisée par le worker du batch
-    parallèle (point 4).
-    """
-    inv = Inverter()
-    inv.fit(freq, Z, mode="sample", init_from_ridge=True)
-
-    tau = np.asarray(inv.distributions[DIST_NAME]["tau"], dtype=float)
-    gamma = np.asarray(inv.predict_distribution(DIST_NAME, tau=tau), dtype=float)
-    gamma_lo = np.asarray(
-        inv.predict_distribution(DIST_NAME, tau=tau, percentile=2.5), dtype=float
-    )
-    gamma_hi = np.asarray(
-        inv.predict_distribution(DIST_NAME, tau=tau, percentile=97.5), dtype=float
-    )
-
-    return DRTResult(
-        tau=tau,
-        gamma=gamma,
-        gamma_lo=gamma_lo,
-        gamma_hi=gamma_hi,
-        Rp=float(inv.predict_Rp()),
-        Rp_lo=float(inv.predict_Rp(percentile=2.5)),
-        Rp_hi=float(inv.predict_Rp(percentile=97.5)),
-        Z_fit=np.asarray(inv.predict_Z(freq)),
-        score=_score(inv, freq, Z),
-        engine="bayes",
-        status="",
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Batch parallèle (point 4)
-# ─────────────────────────────────────────────────────────────────────────────
-def iter_session_spectra(session) -> List:
-    """Tous les spectres d'une session (moyennes + réplicats), sans doublon.
-
-    Ordre : bare, probe, puis chaque groupe (moyenne + réplicats).
-    """
-    seen = set()
-    out: List = []
-
-    def _add(sp):
-        if sp is None:
-            return
-        oid = id(sp)
-        if oid in seen:
-            return
-        seen.add(oid)
-        out.append(sp)
-
-    _add(getattr(session, "bare", None))
-    _add(getattr(session, "probe", None))
-    for sp in getattr(session, "bare_replicate_spectra", []) or []:
-        _add(sp)
-    for sp in getattr(session, "probe_replicate_spectra", []) or []:
-        _add(sp)
-    for grp in getattr(session, "groups", []) or []:
-        _add(getattr(grp, "spectrum", None))
-        for sp in getattr(grp, "replicate_spectra", []) or []:
-            _add(sp)
-    return out
-
-
-def _bayes_worker(args):
-    """Worker picklable pour ProcessPoolExecutor : (key, f, Zre, Zim) -> dict.
-
-    Renvoie un dict sérialisable (pas le DRTResult ni l'Inverter, non nécessaires
-    de l'autre côté de la frontière de processus).
-    """
-    key, f, zre, zim = args
-    freq = np.asarray(f, dtype=float)
-    Z = np.asarray(zre, dtype=float) - 1j * np.asarray(zim, dtype=float)
-    result = _run_bayes(freq, Z)
-    return key, result_to_dict(result)
-
-
-def run_drt_bayes_batch(
-    session,
-    progress_callback: Optional[Callable[[int, int, str], None]] = None,
-    max_workers: Optional[int] = None,
-) -> dict:
-    """Lance le HMC en parallèle sur tous les spectres non encore en cache (point 4).
-
-    cmdstanpy exécute cmdstan en sous-processus : un ``ProcessPoolExecutor``
-    (``max_workers`` = nombre de cœurs par défaut) parallélise efficacement.
-    Les spectres déjà en cache (mémoire ou ``sessions/``) sont ignorés — un HMC
-    n'est jamais recalculé (point 3).
-
-    Args:
-        session: EISSession.
-        progress_callback: appelé après chaque spectre terminé avec
-            ``(n_faits, n_total, label)`` — l'UI y branche une barre de
-            progression Streamlit.
-        max_workers: nombre de processus (défaut : ``os.cpu_count()``).
+    Sélectionne le pic **pénultième** de γ(τ) (avant-dernier maximum local) si au
+    moins deux pics sont détectés — ce pic correspond à l'arc de transfert de
+    charge, la queue de diffusion BF étant écartée. Rct = ∫ γ dlnτ par trapèze sur
+    ±3 en ln(τ) autour du pic.
 
     Returns:
-        dict {cache_key: DRTResult} des spectres calculés dans ce batch.
+        (Rct, tau_Rct, source, warning) où ``Rct`` vaut ``None`` si aucun pic n'est
+        exploitable (le repli Rp est alors géré par l'appelant). ``source`` ∈
+        {'peak_penultimate', 'peak_single', 'none'} ; ``warning`` non vide dès
+        qu'un repli/une ambiguïté doit être signalé à l'utilisateur.
+    """
+    tau = np.asarray(tau, dtype=float)
+    gamma = np.asarray(gamma, dtype=float)
+    n = len(gamma)
+    if n == 0:
+        return None, float("nan"), "none", "DRT vide : Rct indisponible."
+
+    ln_tau = np.log(np.maximum(tau, 1e-300))
+
+    # Fenêtre « cœur » : on écarte les bords (artefacts de grille) pour la
+    # détection des maxima, mais l'intégrale reste sur toute la grille.
+    margin = max(1, n // 20)
+    has_core = n > 2 * margin
+    core = slice(margin, n - margin) if has_core else slice(0, n)
+    gamma_core = gamma[core]
+    max_global = float(gamma_core.max()) if gamma_core.size else 0.0
+    threshold = max_global * 1e-3
+    l_window = max(1, n // 15)
+    offset = margin if has_core else 0
+    maxima = [i + offset for i in _local_maxima(gamma_core, l=l_window, threshold=threshold)]
+
+    warning = ""
+    if len(maxima) >= 2:
+        peak_idx = maxima[-2]  # pénultième : arc de transfert de charge
+        source = "peak_penultimate"
+    elif len(maxima) == 1:
+        peak_idx = maxima[0]
+        source = "peak_single"
+        warning = (
+            "DRT à un seul pic : Rct extrait de ce pic unique (pas de pénultième "
+            "disponible). Vérifier qu'il s'agit bien de l'arc de transfert de charge."
+        )
+    else:
+        return None, float("nan"), "none", (
+            "Aucun pic DRT détecté : extraction par pic impossible."
+        )
+
+    center = ln_tau[peak_idx]
+    mask = np.abs(ln_tau - center) <= 3.0
+    if mask.sum() >= 2:
+        x_win = ln_tau[mask]
+        y_win = gamma[mask]
+        order = np.argsort(x_win)
+        Rct = float(np.trapezoid(y_win[order], x_win[order]))
+    else:
+        Rct = float(gamma[peak_idx])
+    return Rct, float(ln_tau[peak_idx]), source, warning
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cœur du fit
+# ─────────────────────────────────────────────────────────────────────────────
+def _mode_from_config(config) -> str:
+    """Mode DRT depuis la config (``fit.drt.mode``), défaut ``'optimize'``."""
+    try:
+        fit_cfg = config.get("fit", {}) if isinstance(config, dict) else {}
+        drt_cfg = fit_cfg.get("drt", {}) if isinstance(fit_cfg, dict) else {}
+        mode = drt_cfg.get("mode")
+    except AttributeError:
+        mode = None
+    return mode if mode in ("optimize", "sample") else "optimize"
+
+
+def _reconstruction_metrics(
+    spectrum: EISSpectrum, Zfit_re: np.ndarray, Zfit_im: np.ndarray
+) -> Tuple[float, float, np.ndarray, np.ndarray]:
+    """Résidus + misfit normalisé par le module (modèle-libre : pas de χ²ᵣ classique)."""
+    Zre = np.asarray(spectrum.Zre, dtype=float)
+    Zim = np.asarray(spectrum.Zim, dtype=float)
+    residuals_re = Zre - Zfit_re
+    residuals_im = Zim - Zfit_im
+    Zmod2 = Zre ** 2 + Zim ** 2 + 1e-30
+    chi2_reduced = float(np.mean((residuals_re ** 2 + residuals_im ** 2) / Zmod2))
+    reconstruction_error = float(
+        np.mean(np.sqrt(residuals_re ** 2 + residuals_im ** 2) / np.sqrt(Zmod2))
+    )
+    return chi2_reduced, reconstruction_error, residuals_re, residuals_im
+
+
+def fit_drt(spectrum: EISSpectrum, mode: str = "optimize", model_name: str = "drt_bayes") -> FitResult:
+    """Calcule la DRT d'un spectre avec :class:`Inverter` et assemble un ``FitResult``.
+
+    Point d'entrée unique du calcul DRT (utilisé par :class:`DRTBayesModel.fit` et,
+    indirectement, par ``core.pipeline.recompute_drt``). Aucune UI ici.
     """
     if not bayes_available():
         raise RuntimeError(f"Moteur DRT indisponible : {_IMPORT_ERROR}")
-    if not cmdstan_available():
-        raise RuntimeError(_SETUP_HINT)
+    if mode not in ("optimize", "sample"):
+        raise ValueError(f"Mode DRT inconnu : {mode!r} (attendu 'optimize' ou 'sample').")
 
-    spectra = iter_session_spectra(session)
+    freq = np.asarray(spectrum.f, dtype=float)
+    Zre = np.asarray(spectrum.Zre, dtype=float)
+    Zim = np.asarray(spectrum.Zim, dtype=float)
+    # Convention de signe : loader stocke Zim = -Im(Z) > 0 → Z physique = Zre - j·Zim.
+    Z = Zre - 1j * Zim
 
-    # Ne garder que les spectres SANS cache HMC, dédupliqués par clé.
-    pending = {}
-    for sp in spectra:
-        key = cache_key(sp)
-        if key in pending:
-            continue
-        if get_cached(sp, engine="bayes") is not None:
-            continue
-        pending[key] = sp
+    # Tri par fréquence décroissante (HF→BF) sur les vraies fréquences.
+    order = np.argsort(freq)[::-1]
+    freq_sorted = freq[order]
+    Z_sorted = Z[order]
 
-    total = len(pending)
-    computed: dict = {}
-    if total == 0:
-        if progress_callback is not None:
-            progress_callback(0, 0, "")
-        return computed
+    inv = Inverter()
+    inv.fit(freq_sorted, Z_sorted, mode=mode)
 
-    if max_workers is None:
-        max_workers = os.cpu_count() or 1
-    max_workers = max(1, min(max_workers, total))
+    # Récupération γ(τ) avec garde-fou KeyError (inspection des clés dispo).
+    try:
+        tau = np.asarray(inv.distributions[DIST_NAME]["tau"], dtype=float)
+    except KeyError as exc:
+        raise KeyError(
+            f"Distribution '{DIST_NAME}' absente de l'Inverter. "
+            f"Clés disponibles : {list(inv.distributions.keys())}."
+        ) from exc
+    gamma = np.asarray(inv.predict_distribution(DIST_NAME, tau=tau), dtype=float)
 
-    tasks = [
-        (key, np.asarray(sp.f, dtype=float), np.asarray(sp.Zre, dtype=float),
-         np.asarray(sp.Zim, dtype=float))
-        for key, sp in pending.items()
-    ]
-    key_to_spectrum = dict(pending)
+    # Intervalles de crédibilité : mode 'sample' uniquement.
+    gamma_lo: Optional[np.ndarray] = None
+    gamma_hi: Optional[np.ndarray] = None
+    if mode == "sample":
+        try:
+            gamma_lo = np.asarray(
+                inv.predict_distribution(DIST_NAME, tau=tau, percentile=2.5), dtype=float
+            )
+            gamma_hi = np.asarray(
+                inv.predict_distribution(DIST_NAME, tau=tau, percentile=97.5), dtype=float
+            )
+        except Exception as exc:  # pragma: no cover - dépend du backend Stan
+            log.warning(f"Intervalles de crédibilité indisponibles : {exc}")
 
-    done = 0
-    with ProcessPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_bayes_worker, t): t[0] for t in tasks}
-        for fut in as_completed(futures):
-            key = futures[fut]
-            sp = key_to_spectrum[key]
-            try:
-                _key, payload = fut.result()
-                result = result_from_dict(payload)
-                store_cached(sp, result)
-                computed[key] = result
-            except Exception as exc:
-                log.error(f"HMC échoué pour '{getattr(sp, 'label', key)}' : {exc}")
-            finally:
-                done += 1
-                if progress_callback is not None:
-                    progress_callback(done, total, getattr(sp, "label", ""))
+    # Rct par pic (Bissessur) ; repli Rp signalé si aucun pic exploitable.
+    warnings_list: list = []
+    Rct, tau_Rct, rct_source, rct_warning = _extract_rct_peak(tau, gamma)
+    Rp = float(inv.predict_Rp())
+    if Rct is None:
+        Rct = Rp
+        rct_source = "rp_fallback"
+        warnings_list.append(
+            "Rct DRT calculé par REPLI sur Rp (aire totale sous γ : diffusion + "
+            "transfert de charge). Grandeur DIFFÉRENTE de l'arc de transfert — "
+            "calibration θ_EIS à interpréter avec prudence."
+        )
+    if rct_warning:
+        warnings_list.append(rct_warning)
 
-    return computed
+    # Reconstruction Z aux fréquences mesurées, remise dans l'ordre d'origine.
+    Zfit_sorted = np.asarray(inv.predict_Z(freq_sorted))
+    inv_order = np.argsort(order)
+    Zfit = Zfit_sorted[inv_order]
+    Zfit_re = np.real(Zfit)
+    Zfit_im = -np.imag(Zfit)  # retour convention EISSpectrum : Zim = -Im(Z) > 0.
+
+    chi2_reduced, reconstruction_error, residuals_re, residuals_im = _reconstruction_metrics(
+        spectrum, Zfit_re, Zfit_im
+    )
+
+    params = {
+        "Rct": float(Rct),
+        "Rp": Rp,
+        "tau_Rct": tau_Rct,
+        "n_tau": int(len(tau)),
+        # Provenance du Rct : lisible dans l'UI et les exports pour qu'un Rct issu
+        # d'un repli ne soit jamais confondu avec un Rct d'arc de transfert.
+        "rct_source": rct_source,
+        "drt_mode": mode,
+    }
+    params_std = {"Rct": 0.0, "Rp": 0.0, "tau_Rct": 0.0, "n_tau": 0.0}
+
+    return FitResult(
+        model_name=model_name,
+        params=params,
+        params_std=params_std,
+        Zfit_re=Zfit_re,
+        Zfit_im=Zfit_im,
+        chi2_reduced=chi2_reduced,
+        residuals_re=residuals_re,
+        residuals_im=residuals_im,
+        Rct=float(Rct),
+        Rct_std=0.0,
+        converged=True,
+        drt_tau=tau,
+        drt_gamma=gamma,
+        drt_S=np.log(np.maximum(tau, 1e-300)),
+        drt_lnGamma=np.log(np.maximum(gamma, 1e-300)),
+        drt_mode=mode,
+        drt_gamma_lo=gamma_lo,
+        drt_gamma_hi=gamma_hi,
+        reconstruction_error=reconstruction_error,
+        warnings=warnings_list,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plugin BaseFitModel — découvert par fits/registry.py, lancé par core/pipeline.py
+# ─────────────────────────────────────────────────────────────────────────────
+class DRTBayesModel(BaseFitModel):
+    """DRT model-free via ``bayes_drt2`` (:class:`Inverter`).
+
+    Inversion hiérarchique bayésienne (lignée Ciucci-Chen) : ``optimize`` (MAP,
+    défaut) ou ``sample`` (HMC, à la demande). Retourne un ``FitResult`` standard
+    (γ(τ) dans ``drt_tau``/``drt_gamma``, mode dans ``drt_mode``, Rct par pic).
+    """
+
+    name = "drt_bayes"
+    label = "DRT bayes_drt2"
+    method = "bayes_drt2 / Inverter"
+    display_name = "DRT bayes_drt2 (Inverter)"
+    description = (
+        "Distribution des temps de relaxation γ(τ) par inversion hiérarchique "
+        "bayésienne (bibliothèque bayes_drt2 de Huang, classe Inverter). Mode "
+        "'optimize' (MAP Stan) par défaut ; mode 'sample' (HMC, intervalles de "
+        "crédibilité) à la demande."
+    )
+
+    def initial_guess(self, spectrum: EISSpectrum, config: dict) -> dict:
+        # Méthode model-free : aucun paramètre de circuit à initialiser.
+        return {}
+
+    def bounds(self, config: dict) -> tuple:
+        # Aucun paramètre borné (γ(τ) ≥ 0 est géré par le modèle bayésien).
+        return ({}, {})
+
+    def fit(self, spectrum: EISSpectrum, config: dict, weights=None) -> FitResult:
+        """Fit DRT (mode lu dans ``config.fit.drt.mode``, défaut 'optimize').
+
+        ``weights`` est ignoré : bayes_drt2 estime lui-même la structure d'erreur.
+        """
+        return fit_drt(spectrum, mode=_mode_from_config(config), model_name=self.name)
+
+    def predict(self, spectrum: EISSpectrum, config: dict) -> Tuple[np.ndarray, np.ndarray]:
+        """Impédance reconstruite (Zfit_re, Zfit_im) — convention Zim = -Im(Z) > 0."""
+        fr = self.fit(spectrum, config)
+        return fr.Zfit_re, fr.Zfit_im
