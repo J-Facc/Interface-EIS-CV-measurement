@@ -186,9 +186,18 @@ def run_pipeline(
     _characterize_error_structure_upfront(session, hybridization, config)
 
     def _fit_replicates(reps: list) -> list:
-        """Applique tous les modèles actifs à chaque réplicat individuel."""
+        """Applique les modèles paramétriques à chaque réplicat individuel.
+
+        La DRT ('drt_bayes') est **volontairement exclue** des réplicats : chaque
+        fit DRT compile/optimise un modèle Stan (~secondes), ce qui multiplierait le
+        temps d'analyse (×n_réplicats) pour des DRT par réplicat rarement exploitées.
+        La DRT n'est calculée que sur les spectres MOYENNÉS ; un réplicat peut être
+        recalculé à la demande via core.pipeline.recompute_drt.
+        """
         for sp in reps:
             for model in models:
+                if model.name == DRT_MODEL_NAME:
+                    continue
                 try:
                     # Pas de poids explicites : le modèle résout lui-même la
                     # structure d'erreur d'Orazem (caractérisée ou réutilisée).

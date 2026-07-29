@@ -242,36 +242,58 @@ def export_cv_calibration_csv_multi(cv_sessions: dict) -> bytes:
 # ── DRT — export multi-électrode, multi-spectre, multi-réplicat ──────────────
 
 def export_drt_csv(sessions: dict) -> bytes:
-    """Exporte les valeurs DRT (ln_tau, ln_gamma) du modèle 'drt_bayes'
-    (DRT model-free, principale de l'app), pour chaque électrode, chaque
-    spectre (bare/probe/groupes) et chaque réplicat retenu."""
+    """Exporte les valeurs DRT (ln_tau, ln_gamma) du modèle 'drt_bayes'.
+
+    La DRT est calculée par le pipeline sur les spectres MOYENNÉS (replicate_idx =
+    'avg', colonne du même nom). Les réplicats individuels n'ont pas de DRT par
+    défaut (voir core.pipeline) : seuls ceux recalculés à la demande
+    (recompute_drt) sont exportés, avec leur indice. L'absence de DRT est gérée
+    sans crash (spectre simplement omis). La colonne ``drt_mode`` distingue
+    'optimize' (MAP) et 'sample' (HMC).
+    """
     sessions = _as_sessions_dict(sessions)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["electrode", "label", "concentration", "replicate_idx", "ln_tau", "ln_gamma"])
+    writer.writerow([
+        "electrode", "label", "concentration", "replicate_idx", "drt_mode",
+        "ln_tau", "ln_gamma",
+    ])
+
+    def _write_spectrum(e, label, conc, replicate_idx, sp):
+        """Écrit les lignes DRT d'un spectre s'il porte un FitResult 'drt_bayes'."""
+        if sp is None:
+            return
+        fr = (getattr(sp, "fit_results", {}) or {}).get("drt_bayes")
+        if fr is None:
+            return
+        tau = getattr(fr, "drt_tau", None)
+        gamma = getattr(fr, "drt_gamma", None)
+        if tau is None or gamma is None:
+            return
+        mode = getattr(fr, "drt_mode", None) or "optimize"
+        ln_tau = np.log(np.asarray(tau, dtype=float) + 1e-300)
+        ln_gamma = np.log(np.asarray(gamma, dtype=float) + 1e-300)
+        for lt, lg in zip(ln_tau, ln_gamma):
+            writer.writerow([e, label, conc, replicate_idx, mode, lt, lg])
 
     for e, session in sorted(sessions.items()):
+        # (label, concentration, spectre moyenné, réplicats).
         spectra_by_label = []
         if session.bare is not None:
-            spectra_by_label.append(("bare", 0.0, session.bare_replicate_spectra))
+            spectra_by_label.append(("bare", 0.0, session.bare, session.bare_replicate_spectra))
         if session.probe is not None:
-            spectra_by_label.append(("probe", 0.0, session.probe_replicate_spectra))
+            spectra_by_label.append(("probe", 0.0, session.probe, session.probe_replicate_spectra))
         for grp in session.groups:
-            spectra_by_label.append((grp.spectrum.label, grp.concentration, grp.replicate_spectra))
+            spectra_by_label.append(
+                (grp.spectrum.label, grp.concentration, grp.spectrum, grp.replicate_spectra)
+            )
 
-        for label, conc, reps in spectra_by_label:
+        for label, conc, averaged, reps in spectra_by_label:
+            # Spectre moyenné : porteur de la DRT par défaut.
+            _write_spectrum(e, label, conc, "avg", averaged)
+            # Réplicats : uniquement ceux recalculés à la demande (sinon omis).
             for ri, sp in enumerate(reps or []):
-                fr = sp.fit_results.get("drt_bayes")
-                if fr is None:
-                    continue
-                tau = getattr(fr, "drt_tau", None)
-                gamma = getattr(fr, "drt_gamma", None)
-                if tau is None or gamma is None:
-                    continue
-                ln_tau = np.log(np.asarray(tau) + 1e-300)
-                ln_gamma = np.log(np.asarray(gamma) + 1e-300)
-                for lt, lg in zip(ln_tau, ln_gamma):
-                    writer.writerow([e, label, conc, ri, lt, lg])
+                _write_spectrum(e, label, conc, ri, sp)
 
     return buf.getvalue().encode()
 
