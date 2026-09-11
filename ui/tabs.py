@@ -184,13 +184,19 @@ def _render_drt_tab(sessions: dict) -> None:
     )
     choices = {}
     for e in electrodes:
-        for lbl, _sp in _drt_labeled_spectra(sessions[e]):
-            choices[f"Électrode {e} — {lbl}"] = (e, lbl)
+        # Construit les choix depuis la session RÉELLE (pas la copie d'affichage
+        # deepcopy-filtrée de pages/A_eis.py) : on passe l'objet spectre lui-même à
+        # recompute_drt, résolu par IDENTITÉ (core.pipeline._resolve_spectrum), pour
+        # ne plus dépendre d'un label texte qui doit rester synchronisé avec le
+        # format interne de core.pipeline._iter_session_spectra (source du bug
+        # « Spectre introuvable dans la session » — les deux formats avaient divergé).
+        for lbl, sp in _drt_labeled_spectra(real_sessions[e]):
+            choices[f"Électrode {e} — {lbl}"] = (e, lbl, sp)
     if choices:
         sel = st.selectbox(
             "Spectre à recalculer en bayésien", list(choices.keys()), key="drt_sample_select",
         )
-        e_sel, lbl_sel = choices[sel]
+        e_sel, lbl_sel, sp_sel = choices[sel]
         if st.button(
             "🎲 Recalculer en bayésien (sample)",
             key="drt_sample_btn",
@@ -203,7 +209,7 @@ def _render_drt_tab(sessions: dict) -> None:
                 "ne quittez pas la page)"
             ):
                 try:
-                    recompute_drt(real_sessions[e_sel], lbl_sel, config, mode="sample")
+                    recompute_drt(real_sessions[e_sel], sp_sel, config, mode="sample")
                 except Exception as exc:  # pragma: no cover - dépend de CmdStan
                     st.error(f"Échec du recalcul bayésien : {exc}")
                 else:
