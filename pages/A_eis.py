@@ -362,6 +362,11 @@ def main() -> None:
                 m for m, label in model_choices.items()
                 if st.checkbox(label, value=(m in _displayed), key=f"eis_model_{m}")
             ]
+            # La DRT (drt_bayes) n'a pas de case à cocher : elle est lancée par le
+            # pipeline en 'optimize' sur chaque spectre, comme les autres fits
+            # (ARCHITECTURE.md §5bis). Ajoutée inconditionnellement ; filtrée par
+            # le garde-fou I6 ci-dessous si l'extra DRT n'est pas installé.
+            active_models.append("drt_bayes")
         with col_phys:
             st.markdown("**Paramètres physiques**")
             phys_overrides = {
@@ -394,9 +399,10 @@ def main() -> None:
     _load_errors = _discovery_errors()
     _unavailable = [m for m in active_models if m not in _available]
     if _unavailable:
+        _model_labels = {**model_choices, "drt_bayes": "DRT (bayes_drt2)"}
         for m in _unavailable:
             reason = _load_errors.get(m) or "modèle non disponible dans cette installation"
-            st.warning(f"⚠️ Modèle « {model_choices.get(m, m)} » indisponible : {reason}")
+            st.warning(f"⚠️ Modèle « {_model_labels.get(m, m)} » indisponible : {reason}")
         active_models = [m for m in active_models if m in _available]
 
     if st.button("↺ Relancer l'analyse", key="eis_rerun_btn"):
