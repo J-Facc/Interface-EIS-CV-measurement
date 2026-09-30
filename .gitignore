@@ -17,3 +17,9 @@ dist/
 build/
 .idea/
 .vscode/
+# Exécutables Stan compilés par cmdstanpy À CÔTÉ des .stan (CmdStanModel(stan_file=...)) :
+# seuls les sources .stan sont versionnés.
+drt/bayes_drt2/stan_model_files/*
+!drt/bayes_drt2/stan_model_files/*.stan
+vendor/bayes_drt2/stan_model_files/*
+!vendor/bayes_drt2/stan_model_files/*.stan

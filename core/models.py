@@ -108,6 +108,13 @@ class FitResult:
     drt_gamma_lo: Optional[np.ndarray] = None
     drt_gamma_hi: Optional[np.ndarray] = None
     reconstruction_error: Optional[float] = None
+    # DRT (drt/engine.py) : erreur de reconstruction relative MAX, max_i |Z_fit − Z|/|Z|.
+    # Champ DISTINCT de chi2_reduced (AUDIT.md DRT-5) : ce n'est pas un χ² pondéré ;
+    # le moteur DRT met chi2_reduced = NaN.
+    reconstruction_error_relative: Optional[float] = None
+    # DRT (drt/engine.py) : réglages, diagnostics HMC (R-hat, ESS, divergences…),
+    # alertes et notes — voir drt/diagnostics.py.
+    drt_diagnostics: Optional[dict] = None
     # Validation Kramers-Kronig (fits/kk_validation.py)
     kk_passed: Optional[bool] = None
     kk_residuals: Optional[dict] = None
