@@ -26,7 +26,8 @@ jobs:
   drt:
     name: DRT réelle (cvxopt + CmdStan)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # HMC par défaut du moteur drt/ (4 chaînes × 2000 tirages) : ~2-5 min par spectre.
+    timeout-minutes: 150
     env:
       CMDSTAN_VERSION: "2.36.0"
     steps:
@@ -60,5 +61,8 @@ jobs:
       - name: Check the DRT stack is really available
         run: |
           python -c "import fits.drt_fit as d; assert d.bayes_available(), d.import_error(); assert d.cmdstan_available(), 'CmdStan introuvable'; print('Pile DRT OK')"
+          python -c "import drt.engine as e; ok, why = e.engine_available(); assert ok, why; print('Moteur drt/ OK')"
+      # tests/test_drt_engine.py : moteur durci drt/ (HMC par défaut, ~2-5 min par spectre sur
+      # 4 cœurs — les 7 cas DRT-1 + reproductibilité, marqués slow, sont exécutés ici).
       - name: Run DRT tests (MAP + HMC)
-        run: python -m pytest tests/test_drt.py tests/test_pipeline.py -v -rs
+        run: python -m pytest tests/test_drt.py tests/test_pipeline.py tests/test_drt_engine.py -v -rs
