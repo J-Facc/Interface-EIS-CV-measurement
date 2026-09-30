@@ -16,7 +16,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile all sources
-        run: python -m compileall app.py core fits plotting exports ui pages
+        run: python -m compileall app.py core fits circuit plotting exports ui pages
       - name: Run tests
         run: python -m pytest tests/ -v
 
