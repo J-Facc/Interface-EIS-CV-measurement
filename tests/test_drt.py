@@ -115,7 +115,7 @@ def test_optimize_two_peaks_at_correct_tau():
     assert fr.model_name == "drt_bayes"
     assert fr.drt_mode == "optimize"
     assert fr.drt_gamma_lo is None and fr.drt_gamma_hi is None  # pas d'IC en MAP
-    assert fr.Rct > 0
+    assert fr.target_value > 0
     assert fr.params.get("rct_source") in ("peak_penultimate", "peak_single", "rp_fallback")
     assert len(fr.Zfit_re) == sp.n_points
 

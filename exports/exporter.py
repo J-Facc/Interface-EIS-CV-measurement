@@ -40,8 +40,9 @@ def export_params_csv(sessions) -> bytes:
                     "electrode": e,
                     "concentration": grp.concentration,
                     "model": model_name,
-                    "Rct": fit.Rct,
-                    "Rct_std": fit.Rct_std,
+                    "target_param": fit.target_param,
+                    "target_value": fit.target_value,
+                    "target_std": fit.target_std,
                     "chi2_reduced": fit.chi2_reduced,
                     "converged": fit.converged,
                 }
@@ -114,8 +115,9 @@ def export_session_yaml(session: EISSession) -> str:
         }
         for model_name, fit in grp.fit_results.items():
             grp_data["fits"][model_name] = {
-                "Rct": float(fit.Rct),
-                "Rct_std": float(fit.Rct_std),
+                "target_param": str(fit.target_param),
+                "target_value": float(fit.target_value),
+                "target_std": float(fit.target_std),
                 "chi2_reduced": float(fit.chi2_reduced),
                 "converged": bool(fit.converged),
                 "params": {

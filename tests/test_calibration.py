@@ -28,7 +28,7 @@ def _fr(rct: float) -> FitResult:
     return FitResult(
         model_name=MODEL, params={}, params_std={},
         Zfit_re=z, Zfit_im=z, chi2_reduced=0.0, residuals_re=z, residuals_im=z,
-        Rct=rct, Rct_std=0.0, converged=True,
+        target_param="Rct", target_value=rct, target_std=0.0, converged=True,
     )
 
 

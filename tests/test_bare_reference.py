@@ -33,7 +33,7 @@ def _fr(rct: float) -> FitResult:
     return FitResult(
         model_name=MODEL, params={}, params_std={},
         Zfit_re=z, Zfit_im=z, chi2_reduced=0.0, residuals_re=z, residuals_im=z,
-        Rct=rct, Rct_std=0.0, converged=True,
+        target_param="Rct", target_value=rct, target_std=0.0, converged=True,
     )
 
 
@@ -65,7 +65,7 @@ def _aberrant_bare_spectrum() -> EISSpectrum:
 
 def _eis_calc_snapshot(session):
     """(Rct par groupe, calibration signal, calibration loglog, calib_all)."""
-    rcts = tuple(g.fit_results[MODEL].Rct for g in session.groups)
+    rcts = tuple(g.fit_results[MODEL].target_value for g in session.groups)
     cal = compute_calibration(session, MODEL)
     cal_ll = compute_calibration_loglog(session, MODEL)
     cal_all = compute_calibration_all(session)

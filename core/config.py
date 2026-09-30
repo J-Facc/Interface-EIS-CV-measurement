@@ -106,7 +106,6 @@ class FitSettings(BaseModel):
     drt: DRTSettings = Field(default_factory=DRTSettings)
     drt_wiener_W: float = 1.0e-8
     drt_n_z: int = 10000
-    drt_kk_tol: float = 0.05
 
 
 class ExportSettings(BaseModel):

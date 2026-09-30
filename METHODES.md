@@ -271,6 +271,9 @@ return 1.0 - Rct_bare / Rct_ap
 
 ## 5. Fit du circuit de Randles — `fits/randles_full.py`
 
+> ⚠ **Section périmée (étape 4 de la refonte)** : la méthode de référence est décrite dans `MEASUREMENT_MODEL.md` (measurement model, structure d'erreur, critère KK unique, fit Orazem sur circuit libre). Ce qui suit décrit l'ANCIEN code, encore utilisé par `core/pipeline.py` jusqu'à l'étape 5.
+
+
 ### 5.1 Paramètres, valeurs initiales, bornes
 
 **Paramètres libres (8)** (`randles_full.py:11`) :
@@ -400,6 +403,9 @@ Un paramètre est signalé « collé à la borne » si
 ---
 
 ## 6. Pondération du CNLS — `fits/weighting.py`
+
+> ⚠ **Section périmée (étape 4 de la refonte)** : la méthode de référence est décrite dans `MEASUREMENT_MODEL.md` (measurement model, structure d'erreur, critère KK unique, fit Orazem sur circuit libre). Ce qui suit décrit l'ANCIEN code, encore utilisé par `core/pipeline.py` jusqu'à l'étape 5.
+
 
 Deux modes sélectionnés par `config.fit.weight_mode` (`weighting.py:resolve_weights:24-56`).
 
@@ -555,6 +561,9 @@ le pipeline sur les spectres **moyennés** uniquement ; un réplicat peut être 
 à la demande via `recompute_drt`.
 
 ## 8. Validation Kramers-Kronig
+
+> ⚠ **Section périmée (étape 4 de la refonte)** : ce qui suit décrit l'ANCIEN code, REMPLACÉ (Lin-KK à M fixe et µ mal défini, seuils de 2 % et de `drt_kk_tol` sans source). Méthode actuelle : `MEASUREMENT_MODEL.md` §4-§6 (critère unique `kk_verdict`, test par measurement model, Lin-KK avec critère µ de Schönleber effectif).
+
 
 ### 8.1 Circuit de Voigt linéaire (Lin‑KK) — `fits/kk_validation.py:lin_kk:22-76`
 

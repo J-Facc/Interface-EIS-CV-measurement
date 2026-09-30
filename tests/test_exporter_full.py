@@ -39,10 +39,13 @@ from tests.synthetic_data import (
 _RANDLES = {"Re": 1, "Re_prime": 2, "Cb": 3, "Rct": 4, "Qdl": 5, "alpha": 6, "R_D": 7, "tau_d": 8}
 _DRT = {"Rct": 10.0, "Rp": 11.0, "tau_Rct": -5.2, "n_tau": 80,
         "rct_source": "peak_penultimate", "drt_mode": "optimize"}
-_RANDLES_HEADER = ["electrode", "concentration", "model", "Rct", "Rct_std", "chi2_reduced",
-                   "converged", "Re", "Re_prime", "Cb", "Qdl", "alpha", "R_D", "tau_d"]
-_DRT_HEADER = ["electrode", "concentration", "model", "Rct", "Rct_std", "chi2_reduced",
-               "converged", "Rp", "tau_Rct", "n_tau", "rct_source", "drt_mode"]
+# FitResult ne porte plus de champ « Rct » figé : les colonnes communes sont le
+# paramètre cible désigné (target_param/target_value/target_std) ; « Rct » n'est plus
+# qu'un paramètre parmi d'autres (colonne propre au jeu de paramètres).
+_BASE = ["electrode", "concentration", "model", "target_param", "target_value", "target_std",
+         "chi2_reduced", "converged"]
+_RANDLES_HEADER = _BASE + ["Re", "Re_prime", "Cb", "Rct", "Qdl", "alpha", "R_D", "tau_d"]
+_DRT_HEADER = _BASE + ["Rct", "Rp", "tau_Rct", "n_tau", "rct_source", "drt_mode"]
 
 
 def _randles_fit(rct=4, std=0.1):
@@ -81,9 +84,9 @@ def test_params_csv_with_a_single_model_is_well_formed():
 
     rows = _rows(out)
     assert rows[0] == _RANDLES_HEADER
-    assert rows[1] == ["1", "1e-09", "randles_full", "4", "0.1", "1.0", "True",
-                       "1", "2", "3", "5", "6", "7", "8"]
-    assert {len(r) for r in rows} == {14}
+    assert rows[1] == ["1", "1e-09", "randles_full", "Rct", "4", "0.1", "1.0", "True",
+                       "1", "2", "3", "4", "5", "6", "7", "8"]
+    assert {len(r) for r in rows} == {16}
 
 
 def test_bexp_params_csv_misaligns_a_second_model_under_the_first_models_header():
@@ -91,14 +94,18 @@ def test_bexp_params_csv_misaligns_a_second_model_under_the_first_models_header(
 
     Reproduit l'Annexe A.1. ``export_params_csv`` écrit l'en-tête UNE fois, d'après
     la première ligne (ici randles_full : Re, Re_prime, Cb, Qdl, alpha, R_D, tau_d), puis
-    y aligne la ligne de drt_bayes, dont les paramètres sont tout autres (Rp, tau_Rct,
-    n_tau, rct_source, drt_mode). Résultat sur la 2ᵉ ligne :
+    y aligne la ligne de drt_bayes, dont les paramètres sont tout autres (Rct, Rp,
+    tau_Rct, n_tau, rct_source, drt_mode). Résultat sur la 2ᵉ ligne :
 
-        Rp=11.0        se lit sous « Re »
-        tau_Rct=−5.2   (un LN τ, pas un τ) sous « Re_prime »
-        n_tau=80       sous « Cb »
+        Rct=10.0       se lit sous « Re »
+        Rp=11.0        sous « Re_prime »
+        tau_Rct=−5.2   (un LN τ, pas un τ) sous « Cb »
+        n_tau=80       sous « Rct »
         rct_source     sous « Qdl »,  drt_mode sous « alpha »
-        R_D, tau_d     absentes : 12 champs pour 14 colonnes.
+        R_D, tau_d     absentes : 14 champs pour 16 colonnes.
+
+    (Depuis le retrait du champ FitResult.Rct, la colonne « Rct » n'est plus partagée
+    par construction : la valeur cible commune est « target_value », alignée.)
 
     C'est ce que télécharge le bouton « Paramètres fit Randles (CSV) » de la page
     Export, qui passe les sessions NON filtrées (pages/E_export.py). Le jour où ce
@@ -108,15 +115,16 @@ def test_bexp_params_csv_misaligns_a_second_model_under_the_first_models_header(
 
     rows = _rows(out)
     assert rows[0] == _RANDLES_HEADER
-    assert [len(r) for r in rows] == [14, 14, 12]                     # ligne DRT tronquée
+    assert [len(r) for r in rows] == [16, 16, 14]                     # ligne DRT tronquée
 
     randles, drt = _dicts(out)
     assert randles["model"] == "randles_full" and randles["Re"] == "1" and randles["tau_d"] == "8"
     assert drt["model"] == "drt_bayes"
-    assert drt["Rct"] == "10.0"                                       # colonne partagée : correcte
-    assert drt["Re"] == "11.0"                                        # Rp sous « Re »
-    assert drt["Re_prime"] == "-5.2"                                  # ln τ sous « Re_prime »
-    assert drt["Cb"] == "80"                                          # n_tau sous « Cb »
+    assert drt["target_param"] == "Rct" and drt["target_value"] == "10.0"   # colonnes communes : correctes
+    assert drt["Re"] == "10.0"                                        # Rct sous « Re »
+    assert drt["Re_prime"] == "11.0"                                  # Rp sous « Re_prime »
+    assert drt["Cb"] == "-5.2"                                        # ln τ sous « Cb »
+    assert drt["Rct"] == "80"                                         # n_tau sous « Rct »
     assert drt["Qdl"] == "peak_penultimate"                           # rct_source sous « Qdl »
     assert drt["alpha"] == "optimize"                                 # drt_mode sous « alpha »
     assert drt["R_D"] is None and drt["tau_d"] is None                # colonnes manquantes
@@ -128,19 +136,20 @@ def test_bexp_the_misalignment_flips_when_the_drt_row_comes_first():
     L'ordre des modèles décide de quel jeu de paramètres fournit l'en-tête. Le registre
     découvre ``drt_bayes`` AVANT ``randles_full`` (ordre alphabétique des modules), donc un
     ``run_pipeline(active_models=None)`` produit ce cas : l'en-tête est celui de la DRT,
-    et la ligne Randles (14 champs) DÉBORDE de l'en-tête (12 colonnes).
+    et la ligne Randles (16 champs) DÉBORDE de l'en-tête (14 colonnes).
     """
     out = E.export_params_csv({1: _group_session(["drt_bayes", "randles_full"])})
 
     rows = _rows(out)
     assert rows[0] == _DRT_HEADER
-    assert [len(r) for r in rows] == [12, 12, 14]
+    assert [len(r) for r in rows] == [14, 14, 16]
 
     drt, randles = _dicts(out)
     assert drt["Rp"] == "11.0" and drt["drt_mode"] == "optimize"      # DRT : alignée
-    assert randles["Rp"] == "1"                                       # Re sous « Rp »
-    assert randles["tau_Rct"] == "2"                                  # Re_prime sous « tau_Rct »
-    assert randles["n_tau"] == "3"                                    # Cb sous « n_tau »
+    assert randles["Rct"] == "1"                                      # Re sous « Rct »
+    assert randles["Rp"] == "2"                                       # Re_prime sous « Rp »
+    assert randles["tau_Rct"] == "3"                                  # Cb sous « tau_Rct »
+    assert randles["n_tau"] == "4"                                    # Rct sous « n_tau »
     assert randles["rct_source"] == "5" and randles["drt_mode"] == "6"
     assert randles[None] == ["7", "8"]                                # R_D, tau_d sans colonne
 
@@ -156,7 +165,7 @@ def test_bexp_the_zip_export_filters_randles_only_and_is_therefore_aligned():
     rows = _rows(out)
     assert rows[0] == _RANDLES_HEADER
     assert [r[2] for r in rows[1:]] == ["randles_full"]
-    assert {len(r) for r in rows} == {14}
+    assert {len(r) for r in rows} == {16}
 
 
 def test_params_csv_is_empty_without_any_fit_and_accepts_a_single_session():

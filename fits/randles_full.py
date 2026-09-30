@@ -194,8 +194,6 @@ class RandlesFullModel(BaseFitModel):
         dof = max(2 * len(spectrum.f) - len(_PARAM_NAMES), 1)
         chi2_reduced = float(np.sum(w_re * res_re ** 2 + w_im * res_im ** 2) / dof)
 
-        # χ²_red est TOUJOURS un test d'adéquation valide (absolute_sigma=True).
-        chi2_is_valid_test = True
         # Sous H0 (modèle + structure d'erreur corrects), χ²_red ~ χ²(dof)/dof,
         # d'espérance 1 et d'écart-type √(2/dof) ; intervalle indicatif ~2σ.
         half = 2.0 * np.sqrt(2.0 / dof)
@@ -242,8 +240,9 @@ class RandlesFullModel(BaseFitModel):
             chi2_reduced=chi2_reduced,
             residuals_re=res_re,
             residuals_im=res_im,
-            Rct=float(Rct),
-            Rct_std=float(params_std.get("Rct", 0.0)),
+            target_param="Rct",
+            target_value=float(Rct),
+            target_std=float(params_std.get("Rct", 0.0)),
             converged=converged,
             reconstruction_error=rel_residual,
             warnings=warnings,
@@ -263,6 +262,5 @@ class RandlesFullModel(BaseFitModel):
                 }
                 if error_structure is not None else None
             ),
-            chi2_is_valid_test=chi2_is_valid_test,
             chi2_reduced_ci=chi2_reduced_ci,
         )

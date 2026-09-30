@@ -554,15 +554,15 @@ def params_table_figure(session: EISSession) -> go.Figure:
 
     def _rct_str(fit_results: dict, model: str) -> str:
         fr = fit_results.get(model)
-        if fr is None or fr.Rct <= 0:
+        if fr is None or fr.target_value <= 0:
             return "—"
-        return f"{fr.Rct:.1f} Ω"
+        return f"{fr.target_value:.1f} Ω"
 
     def _rct_val(fit_results: dict, model: str):
         fr = fit_results.get(model)
-        if fr is None or fr.Rct <= 0:
+        if fr is None or fr.target_value <= 0:
             return None
-        return float(fr.Rct)
+        return float(fr.target_value)
 
     def _chi2_str(fit_results: dict, model: str) -> str:
         fr = fit_results.get(model)

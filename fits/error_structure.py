@@ -169,9 +169,9 @@ def _sigma_empirical_voigt(spectra: list) -> tuple:
         Zim_stack.append(Zim)
         # convention lin_kk : Im(Z) < 0 (dissipatif). Zim est en -Im(Z) > 0.
         Z = Zre[order] - 1j * np.abs(Zim[order])
-        _M, _mu, _Zfit, rre, rim = lin_kk(f_ref[order], Z)
-        resR.append(rre[inv])
-        resI.append(rim[inv])
+        lk = lin_kk(f_ref[order], Z)
+        resR.append(lk.res_re[inv])
+        resI.append(lk.res_im[inv])
     Zre_stack = np.asarray(Zre_stack)
     Zim_stack = np.asarray(Zim_stack)
     resR = np.asarray(resR)
