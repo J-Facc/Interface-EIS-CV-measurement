@@ -58,7 +58,7 @@ MODEL_NAME = "drt_bayes"
 DEFAULT_MODE: str = "sample"
 #: DRT contrainte ≥ 0 (modèle Stan ``Series_pos``). VALIDATION_REGLAGES.md §2-3 : sans
 #: elle, HMC ne mélange pas sur des arcs RC nets (profondeur d'arbre saturée, R-hat jusqu'à
-#: 2,6) et le MAP tombe dans des optima à Rp < 0. Coût : biais positif de la moyenne a
+#: 2,3) et le MAP tombe dans des optima à Rp < 0. Coût : biais positif de la moyenne a
 #: posteriori de Rp (+0,6 à +1,5 %, §4).
 DEFAULT_NONNEG: bool = True
 #: Initialisation par la solution ridge hyperparamétrique. VALIDATION_REGLAGES.md §2 et

@@ -64,7 +64,7 @@ EBFMI_MIN: float = 0.3
 # Development Team, « Runtime warnings and convergence problems », § Maximum treedepth),
 # et ses conséquences — trajectoires tronquées, exploration lente — sont précisément ce que
 # mesurent R-hat et l'ESS, qui sont gardés. Mesuré (VALIDATION_REGLAGES.md §3) : chacun
-# des 45 essais saturés des §3.1-3.2 portait AUSSI une alerte R-hat ou ESS ; inversement,
+# des 32 essais saturés des §3.1-3.2 portait AUSSI une alerte R-hat ou ESS ; inversement,
 # un ajustement saturé à 3996/4000 itérations peut n'avoir aucune alerte (R-hat 1,015,
 # ESS 482/406, 0 divergence — §3.3) : la saturation seule ne dit rien de la validité.
 
