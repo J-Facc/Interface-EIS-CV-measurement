@@ -29,7 +29,7 @@
 7. [DRT — `fits/drt_fit.py` (+ `vendor/bayes_drt2`)](#7-drt--fitsdrt_fitpy--vendorbayes_drt2)
 8. [Validation Kramers-Kronig — `fits/kk_validation.py`, `core/validator.py`](#8-validation-kramers-kronig)
 9. [Calibration — `core/calibration.py`](#9-calibration--corecalibrationpy)
-10. [Traitement CV — `core/cv_pipeline.py`, `core/cv_peaks.py`](#10-traitement-cv)
+10. [Traitement CV — `core/cv_pipeline.py`, `core/cv_loader.py`](#10-traitement-cv)
 11. [Chaîne de calcul de bout en bout](#11-chaîne-de-calcul-de-bout-en-bout)
 12. [Tableau récapitulatif](#12-tableau-récapitulatif)
 13. [Points à vérifier](#13-points-à-vérifier)
@@ -749,33 +749,26 @@ $$\Delta(E) = \frac{\big|\,I_{\text{probe}}^{\text{interp}}(E) - I_c(E)\,\big|}{
   \qquad \Delta = \text{NaN si } I_{\text{probe}}^{\text{interp}} = 0$$
 
 ```python
-I_probe_interp = np.interp(avg_scan.E, probe_scan.E, probe_scan.I)
+I_probe_interp = interp_on_reference(avg_scan.E, probe_scan.E, probe_scan.I)
 with np.errstate(invalid="ignore", divide="ignore"):
     delta = np.abs(I_probe_interp - avg_scan.I) / np.abs(I_probe_interp)
     delta = np.where(I_probe_interp == 0, np.nan, delta)
 ```
 
-- Le courant probe est interpolé sur la grille `E` de la concentration (`np.interp`).
+- Le courant probe est interpolé sur la grille `E` de la concentration (`interp_on_reference`, branche par branche pour une boucle).
 - Alimente la calibration CV (§9.3).
 
-### 10.2 Détection des pics redox — `core/cv_peaks.py:detect_redox_peaks:18-61`
+### 10.2 Ordre des points et branches — `core/cv_loader.py:split_branches`
 
-**Lissage** Savitzky‑Golay puis extrema globaux :
+Un voltammogramme cyclique est une boucle (aller puis retour). Le loader détecte
+les points de rebroussement sur l'ordre de mesure (zigzag avec hystérésis de 5 %
+de l'étendue de E, branches d'au moins 5 points). Cycle complet : ordre de mesure
+conservé, aucun tri. Balayage simple : tri par E croissant. L'interpolation
+(`interp_on_reference`, utilisée par le moyennage et par §10.1) apparie les
+branches de même rang (aller sur aller, retour sur retour).
 
-```python
-I_smooth = savgol_filter(I, window_length=wl, polyorder=min(polyorder, wl-1))
-idx_a = int(np.argmax(I_smooth))     # pic anodique
-idx_c = int(np.argmin(I_smooth))     # pic cathodique
-```
-
-$$I_{pa} = I[\arg\max \tilde{I}],\quad I_{pc} = I[\arg\min \tilde{I}],\quad
-  \Delta E_p = E_{pa} - E_{pc}$$
-
-- **Méthode** : filtre Savitzky‑Golay (`window_length=9`, `polyorder=3` par défaut,
-  fenêtre réduite si scan court, `cv_peaks.py:40-49`). Extremums lus sur le courant
-  **lissé**, valeurs `I`/`E` reportées sur le courant **brut**.
-- **Convention** : approche « un seul couple redox » (max global / min global), pas de
-  détection multi‑pics.
+La détection de pics redox (Ipa, Ipc, ΔEp) a été retirée : le CV se limite à la
+visualisation et à la calibration.
 
 ---
 
@@ -877,7 +870,6 @@ validate_replicate_group      resolve_weights                  (DRT, branche //)
 | Calib. log‑log | `log10(Rct)` vs `log10[c]` | calibration.py:105-107 | linregress | — |
 | Calib. CV | `nanmean(Δ)` vs log₁₀[c] | calibration.py:148-155 | linregress | — |
 | Δ signal CV | `|I_probe−I_c|/|I_probe|` | cv_pipeline.py:49 | interp + ratio | — |
-| Pics CV | argmax/argmin de `savgol(I)`, `ΔE_p=Epa−Epc` | cv_peaks.py:47-60 | Savitzky‑Golay | — |
 
 ---
 
@@ -972,12 +964,6 @@ validate_replicate_group      resolve_weights                  (DRT, branche //)
     valeur absolue des poids n'a donc pas de sens statistique et `χ²_red≈1` n'est **pas**
     un test d'adéquation (commenté explicitement, `randles_full.py:181-184`). À garder à
     l'esprit lors de l'interprétation de `chi2_reduced`.
-
-12. **Détection de pics CV mono‑couple.**
-    `detect_redox_peaks` prend le max **global** et le min **global** du courant lissé
-    (§10.2). Pour un voltammogramme à plusieurs couples redox, cela ne détecte qu'un
-    seul pic anodique/cathodique. À vérifier : hypothèse « un seul couple » (Fe(CN)₆)
-    conforme au cas d'usage.
 
 13. **Convention de tri et interpolation dans le moyennage.**
     `average_replicates` interpole les réplicats sur la grille du **premier** spectre

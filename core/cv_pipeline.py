@@ -3,7 +3,7 @@
 from collections import defaultdict
 import numpy as np
 
-from core.cv_loader import load_cv_file, average_cv_replicates
+from core.cv_loader import load_cv_file, average_cv_replicates, interp_on_reference
 from core.cv_models import CVConcentrationGroup, CVSession
 
 
@@ -44,7 +44,7 @@ def run_cv_pipeline(cv_assignments: list) -> CVSession:
 
         # Compute delta_signal = |I_probe_interp - I_conc| / |I_probe_interp|
         if probe_scan is not None:
-            I_probe_interp = np.interp(avg_scan.E, probe_scan.E, probe_scan.I)
+            I_probe_interp = interp_on_reference(avg_scan.E, probe_scan.E, probe_scan.I)
             with np.errstate(invalid="ignore", divide="ignore"):
                 delta = np.abs(I_probe_interp - avg_scan.I) / np.abs(I_probe_interp)
                 delta = np.where(I_probe_interp == 0, np.nan, delta)

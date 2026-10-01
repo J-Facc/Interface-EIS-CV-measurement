@@ -1,8 +1,8 @@
 """Page B — Analyse CV seule.
 
-Charge les courbes de voltammétrie cyclique, extrait les pics redox,
-normalise par le probe, et produit une calibration par électrode via
-ui.tabs.render_cv_tabs (run_cv_pipeline + plotting.cv_plots).
+Charge les courbes de voltammétrie cyclique, les superpose, normalise par le
+probe et produit une calibration par électrode via ui.tabs.render_cv_tabs
+(run_cv_pipeline + plotting.cv_plots). Visualisation et calibration seulement.
 """
 
 import streamlit as st
@@ -20,8 +20,8 @@ from ui.tabs import render_cv_tabs
 def _build_cv_assignments_electrode(experiment: dict, elec_idx: int) -> list:
     """Construit la liste cv_assignments (compatible run_cv_pipeline) pour
     une électrode donnée."""
-    cv = experiment["calibration"]["cv"]
-    concs = experiment["concentrations"]
+    cv = (experiment.get("calibration") or {}).get("cv") or {}
+    concs = experiment.get("concentrations") or []
     probe_dict = (experiment.get("probe") or {}).get("cv") or {}
 
     assignments: list = []
@@ -90,7 +90,7 @@ def _load_bare_cv(experiment: dict, elec_idx: int):
 
 def main() -> None:
     st.title("📈 Analyse CV — Voltammétrie cyclique")
-    st.caption("Extraction des pics redox · Normalisation probe · Calibration par électrode")
+    st.caption("Visualisation des courbes · Normalisation probe · Calibration par électrode")
 
     # Vérification que les données sont disponibles
     if not preprocessing_ready(st.session_state):
@@ -113,15 +113,29 @@ def main() -> None:
     if st.session_state.get("cv_sessions") is None:
         n_elec = experiment.get("n_electrodes", 2)
         cv_sessions = {}
+        failed = False
         for e in range(1, n_elec + 1):
             cv_assignments = _build_cv_assignments_electrode(experiment, e)
             if not cv_assignments:
                 continue
-            cv_session = run_cv_pipeline(cv_assignments)
+            try:
+                cv_session = run_cv_pipeline(cv_assignments)
+            except Exception as exc:  # fichier illisible / branches incompatibles
+                failed = True
+                st.error(
+                    f"❌ Électrode {e} — l'analyse CV a échoué : {exc}. "
+                    f"Vérifiez les fichiers CV de cette électrode."
+                )
+                continue
             # Référence « électrode nue » — attachée APRÈS l'analyse, jamais lue
             # par run_cv_pipeline (affichage seul).
             cv_session.bare_reference = _load_bare_cv(experiment, e)
             cv_sessions[e] = cv_session
+        if failed:
+            # Ne pas mémoriser un résultat incomplet : il serait servi comme
+            # final jusqu'au prochain « Relancer ». On affiche ce qui a marché.
+            render_cv_tabs(cv_sessions)
+            return
         st.session_state["cv_sessions"] = cv_sessions
 
     render_cv_tabs(st.session_state["cv_sessions"])

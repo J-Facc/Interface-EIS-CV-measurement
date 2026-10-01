@@ -3,7 +3,12 @@
 import numpy as np
 import pytest
 
-from core.cv_loader import load_cv_file, average_cv_replicates
+from core.cv_loader import (
+    average_cv_replicates,
+    interp_on_reference,
+    load_cv_file,
+    split_branches,
+)
 from core.cv_pipeline import run_cv_pipeline
 from core.cv_models import CVScan, CVSession
 
@@ -50,6 +55,119 @@ def test_sorted_by_potential():
     csv = b"Ewe,I\n0.5,1e-6\n-0.5,-1e-6\n0.0,0.0\n"
     scan = load_cv_file(csv, "unsorted", 0.0, "probe")
     assert scan.E[0] < scan.E[1] < scan.E[2]
+
+
+# ── CV-1 : boucle voltammétrique (AUDIT.md, Annexe A.6) ───────────────────────
+
+_N_BRANCH = 200
+
+
+def _loop_arrays():
+    """Boucle synthétique de l'Annexe A.6 : aller pic +5 µA à 0,25 V, retour
+    pic −4 µA à 0,19 V."""
+    n = _N_BRANCH
+    E = np.concatenate([np.linspace(-0.2, 0.6, n), np.linspace(0.6, -0.2, n)])
+
+    def peak(x, e0, w):
+        return np.exp(-(((x - e0) / w) ** 2))
+
+    I = np.concatenate([
+        5e-6 * peak(E[:n], 0.25, 0.06) + 1e-7 * E[:n],
+        -4e-6 * peak(E[n:], 0.19, 0.06) - 1e-7 * E[n:],
+    ])
+    return E, I
+
+
+def _loop_file(E, I) -> bytes:
+    txt = "Ewe/V\t<I>/mA\n" + "\n".join(f"{e:.6f}\t{i * 1e3:.9f}" for e, i in zip(E, I))
+    return txt.encode()
+
+
+def _sign_changes(y) -> int:
+    d = np.diff(y)
+    return int(np.sum(np.sign(d[1:]) != np.sign(d[:-1])))
+
+
+def test_loop_keeps_measurement_order_not_sorted():
+    E, I = _loop_arrays()
+    scan = load_cv_file(_loop_file(E, I), "loop", 0.0, "probe")
+    n = _N_BRANCH
+    assert len(scan.E) == 2 * n
+    # Pas de tri global : E n'est PAS monotone, il monte puis redescend.
+    assert not np.all(np.diff(scan.E) >= 0)
+    np.testing.assert_allclose(scan.E, E, atol=1e-6)
+    np.testing.assert_allclose(scan.I, I, atol=1e-9)
+    assert np.all(np.diff(scan.E[:n]) > 0)   # branche aller
+    assert np.all(np.diff(scan.E[n:]) < 0)   # branche retour
+
+
+def test_loop_branches_stay_coherent_no_interleaving():
+    E, I = _loop_arrays()
+    scan = load_cv_file(_loop_file(E, I), "loop", 0.0, "probe")
+    n = _N_BRANCH
+    # Avant correctif : 223 changements de signe de dI/dE (≈ 4 attendus).
+    assert _sign_changes(scan.I) <= 6
+    # Chaque branche garde son propre pic, avec le bon signe et au bon potentiel.
+    fwd_E, fwd_I = scan.E[:n], scan.I[:n]
+    ret_E, ret_I = scan.E[n:], scan.I[n:]
+    assert fwd_I.max() == pytest.approx(5e-6, rel=0.05)
+    assert fwd_E[np.argmax(fwd_I)] == pytest.approx(0.25, abs=0.01)
+    assert ret_I.min() == pytest.approx(-4e-6, rel=0.05)
+    assert ret_E[np.argmin(ret_I)] == pytest.approx(0.19, abs=0.01)
+    assert fwd_I.min() > -1e-6 and ret_I.max() < 1e-6
+
+
+def test_simple_sweep_is_still_sorted():
+    # Balayage simple désordonné (pas de cycle) : comportement historique.
+    E = np.linspace(-0.2, 0.6, 40)
+    rng = np.random.default_rng(0)
+    perm = rng.permutation(len(E))
+    csv = ("Ewe,I\n" + "\n".join(f"{E[i]},{1e-6 * E[i]}" for i in perm)).encode()
+    scan = load_cv_file(csv, "sweep", 0.0, "probe")
+    assert np.all(np.diff(scan.E) >= 0)
+    np.testing.assert_allclose(scan.I, 1e-6 * scan.E)
+
+
+def test_split_branches_loop_and_sweep():
+    E, _ = _loop_arrays()
+    assert len(split_branches(E)) == 2
+    assert len(split_branches(E[:_N_BRANCH])) == 1
+    # Deux cycles : aller, retour, aller, retour.
+    assert len(split_branches(np.concatenate([E, E]))) == 4
+    # Bruit de mesure < 5 % de l'étendue : pas de faux rebroussement.
+    noisy = E[:_N_BRANCH] + np.random.default_rng(1).normal(0, 1e-3, _N_BRANCH)
+    assert len(split_branches(noisy)) == 1
+
+
+def test_interp_on_reference_matches_branches():
+    E, I = _loop_arrays()
+    scan = load_cv_file(_loop_file(E, I), "loop", 0.0, "probe")
+    # Rééchantillonner la boucle sur elle-même doit la restituer (np.interp
+    # global sur un E non monotone ne le ferait pas).
+    np.testing.assert_allclose(interp_on_reference(scan.E, scan.E, scan.I), scan.I, atol=1e-9)
+    # Une boucle ne s'interpole pas sur un balayage simple.
+    with pytest.raises(ValueError, match="branches"):
+        interp_on_reference(scan.E, scan.E[:_N_BRANCH], scan.I[:_N_BRANCH])
+
+
+def test_loop_average_and_pipeline_keep_loop():
+    E, I = _loop_arrays()
+    data = _loop_file(E, I)
+    data2 = _loop_file(E, 2 * I)
+    s1 = load_cv_file(data, "r1", 0.0, "probe")
+    s2 = load_cv_file(data2, "r2", 0.0, "probe")
+    avg = average_cv_replicates([s1, s2])
+    np.testing.assert_allclose(avg.I, 1.5 * I, atol=1e-9)
+
+    cv = run_cv_pipeline([
+        _make_assignment(data, "probe", 0.0),
+        _make_assignment(_loop_file(E, 0.5 * I), "hybridization", 1e-9),
+    ])
+    delta = cv.groups[0].delta_signal
+    # |I_probe − 0,5·I_probe| / |I_probe| = 0,5 là où le courant est non nul,
+    # sur les deux branches (un entrelacement donnerait n'importe quoi).
+    big = np.abs(I) > 1e-7
+    np.testing.assert_allclose(delta[big], 0.5, atol=1e-4)  # arrondi du fichier
 
 
 def test_missing_e_column_raises():
