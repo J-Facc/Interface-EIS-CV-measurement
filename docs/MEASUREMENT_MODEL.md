@@ -198,10 +198,11 @@ Retirés à l'étape 5 : `kk_passed`/`kk_residuals` (le verdict KK est porté pa
 GROUPE, `GroupAnalysis.validation`). Ajouté : `fit_diagnostics`. `FitResult` vit dans
 `fits/result.py` (ré-exporté par `core.models`).
 
-**Affiché par l'UI depuis l'étape 5** (onglet « Résultats par groupe », expander
-« Diagnostics du fit du spectre moyen »). Avant l'étape 5, aucun écran ne
-lit `fit_diagnostics` : κ n'atteint l'utilisateur que sous forme d'alerte texte (rang
-déficient, ou κ > 1/√ε ≈ 6,7·10⁷), via `warnings`. Lors de la bascule, chaque fit
-affiché doit montrer à côté de ses paramètres : κ (jacobienne équilibrée), le rang
-sur P, les paramètres non identifiables, ceux dérivés par différence unilatérale
-(`jacobian_one_sided`), les bornes actives, et χ²ᵣ avec `chi2_reduced_ci`.
+**Affiché par l'UI** (onglet « Measurement model & fit Orazem », tableau « Diagnostics de chaque
+fit » — réplicats ET spectre moyen, jamais dans un expander replié). Chaque fit montre à côté de
+ses paramètres : κ (jacobienne équilibrée), le rang sur P, les paramètres non identifiables, ceux
+dérivés par différence unilatérale (`jacobian_one_sided`), les bornes actives, et χ²ᵣ avec
+`chi2_reduced_ci`. Un bandeau rouge s'affiche quand κ dépasse 1/√ε ≈ 6,7·10⁷
+(`fits.orazem_fit.CONDITION_NUMBER_WARN`, le seuil des alertes de `warnings`) ou qu'un paramètre
+n'est pas identifiable : les incertitudes ne sont alors pas fiables. Les lignes affichées sont
+construites par `core/results_table.py` (`fit_diagnostic_rows`, `param_rows`, `kk_rows`).

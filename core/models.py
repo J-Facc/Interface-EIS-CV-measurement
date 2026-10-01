@@ -18,6 +18,7 @@ __all__ = [
     "GroupAnalysis",
     "ConcentrationGroup",
     "EISSession",
+    "DisplayGroup",
     "GROUP_OK",
     "GROUP_ERROR_STRUCTURE_UNAVAILABLE",
     "GROUP_INVALID_INPUT",
@@ -171,6 +172,31 @@ ConcentrationGroup.fit_results = property(_group_fit_results_get, _group_fit_res
 
 
 @dataclass
+class DisplayGroup:
+    """Un groupe de réplicats tel qu'AFFICHÉ par l'onglet « Visualisation ».
+
+    Ni fit ni résultat : seulement des spectres. Les groupes BRUTS (avant les
+    exclusions du prétraitement) sont construits par la page EIS après l'analyse et
+    attachés à ``EISSession.raw_groups`` ; les groupes prétraités viennent de
+    ``EISSession.iter_groups()`` (``EISSession.display_groups``).
+
+    Attributes:
+        label: libellé d'affichage ('Bare', 'Probe', '1.00e-09 M').
+        concentration: mol/L (0.0 pour bare/probe).
+        step: 'bare', 'probe' ou 'hybridization'.
+        mean: spectre moyen, ou None si les réplicats ne se moyennent pas (grilles de
+            fréquences différentes — cas des données brutes seulement).
+        replicates: réplicats (EISSpectrum).
+    """
+
+    label: str
+    concentration: float
+    step: str
+    mean: Optional[EISSpectrum]
+    replicates: list = field(default_factory=list)
+
+
+@dataclass
 class EISSession:
     """Full analysis session state (one electrode), stored in st.session_state['eis_sessions'].
 
@@ -204,6 +230,18 @@ class EISSession:
     # que le pipeline soit structurellement incapable de la lire : elle est
     # attachée à la session APRÈS l'analyse et seulement superposée au Nyquist.
     bare_reference: Optional[EISSpectrum] = None
+    # Groupes BRUTS (``DisplayGroup``, avant exclusions du prétraitement) — AFFICHAGE
+    # SEUL, même statut que ``bare_reference`` : attachés APRÈS l'analyse par la page EIS,
+    # jamais lus par le pipeline. Vide si non renseignés.
+    raw_groups: list = field(default_factory=list)
+
+    def display_groups(self) -> list:
+        """``DisplayGroup`` des spectres PRÉTRAITÉS analysés : bare, probe, concentrations."""
+        out = []
+        for label, mean_sp, reps, _an in self.iter_groups():
+            out.append(DisplayGroup(label=label, concentration=float(mean_sp.concentration),
+                                    step=mean_sp.step, mean=mean_sp, replicates=list(reps)))
+        return out
 
     def iter_groups(self):
         """(libellé d'affichage, spectre moyen, réplicats bruts, GroupAnalysis) de chaque

@@ -53,7 +53,7 @@ le porte dans ses alertes (`drt_diagnostics['cmdstan_version']`).
 
 La page EIS propose le mode (le pipeline d'analyse utilise `fit.drt.mode`, `optimize` par défaut
 dans `config/default.yaml` pour garder l'analyse d'ensemble rapide) ; un spectre peut être
-recalculé en `sample` à la demande depuis l'onglet « Courbes DRT ».
+recalculé en `sample` à la demande depuis l'onglet « DRT » (section « Recalcul bayésien » de chaque groupe).
 
 ### HMC / NUTS en deux phrases
 

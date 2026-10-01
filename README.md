@@ -64,8 +64,9 @@ l'affaire de `launch.bat` ou de `setup_drt_bayesien.py`.
    Kramers-Kronig de chaque groupe est calculé à ce stade.
 3. Page **EIS seule** : définir le circuit équivalent (expression, guess/bornes,
    paramètre cible) et le mode DRT, puis lancer l'analyse.
-4. Explorer les onglets : Validation KK · Résultats par groupe · Courbes DRT ·
-   Reconstructions Nyquist · Calibration, puis la page Export.
+4. Explorer les trois onglets : **Visualisation** (Nyquist et Bode mesurés) · **Measurement model
+   & fit Orazem** (verdict Kramers-Kronig, puis fit et diagnostics) · **DRT** (γ(τ), diagnostics
+   HMC, Rct), puis la page Export (qui produit aussi les CSV de calibration).
 
 ## Format des fichiers d'entrée
 

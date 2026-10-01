@@ -3,9 +3,9 @@ plotting/kk_plots.py
 ====================
 Figures Plotly pour la visualisation des résultats de validation KK.
 
-Deux figures :
-  1. residuals_figure()  — résidus Re et Im par fréquence (tous réplicats)
-  2. validation_badge()  — indicateur de validité compact pour l'onglet Nyquist
+Une figure : residuals_figure() — résidus Re et Im par fréquence (tous réplicats), lue par
+l'onglet « Measurement model & fit Orazem » (ui/tabs.py). Le récapitulatif par spectre est
+un tableau natif (core/results_table.kk_rows), plus une figure Plotly.
 
 Règle architecture : reçoit des données, ne les calcule pas.
 Aucun import Streamlit.
@@ -185,81 +185,6 @@ def residuals_figure(
         ),
         height=480,
         margin=dict(l=60, r=20, t=60, b=50),
-    )
-
-    return fig
-
-
-# ─────────────────────────────────────────────
-# Figure 2 : badge compact (inline dans onglet Nyquist)
-# ─────────────────────────────────────────────
-
-def validation_summary_table(
-    validation_results: dict,   # { label: ValidationResult }
-    theme_mode: str = "light",
-) -> go.Figure:
-    """
-    Tableau Plotly compact résumant la validité KK de tous les spectres.
-    Une ligne par spectre, colonnes : label, nombre d'éléments de Voigt moyen,
-    χ²ᵣ moyen de l'ajustement de Im, drift, verdict.
-    Destiné à être affiché dans un expander de l'onglet Paramètres ou Nyquist.
-    """
-    c = _colors(theme_mode)
-
-    labels, mus, chi2s, drifts, verdicts, colors_cell = [], [], [], [], [], []
-
-    for label, vr in validation_results.items():
-        if not vr.replicates:
-            continue
-        k_mean = np.mean([kk.n_elements for kk in vr.replicates])
-        chi2_vals = [kk.chi2_reduced for kk in vr.replicates if np.isfinite(kk.chi2_reduced)]
-
-        labels.append(label)
-        mus.append(f"{k_mean:.1f}")
-        chi2s.append(f"{np.mean(chi2_vals):.2f}" if chi2_vals else "—")
-        drifts.append("Oui ⚠" if vr.drift_detected else "Non ✓")
-
-        if vr.all_valid is None:
-            verdicts.append("❔ Indéterminé")
-            colors_cell.append("#f3f4f6")
-        elif not vr.all_valid:
-            verdicts.append("❌ Non conforme")
-            colors_cell.append("#fee2e2")
-        elif vr.drift_detected:
-            verdicts.append("⚠ Drift")
-            colors_cell.append("#fef9c3")
-        else:
-            verdicts.append("✅ Conforme")
-            colors_cell.append("#dcfce7")
-
-    fig = go.Figure(data=[go.Table(
-        header=dict(
-            values=["Spectre", "Éléments RC (moy.)", "χ²ᵣ Im (moy.)", "Drift", "Verdict KK"],
-            fill_color=c["paper"],
-            font=dict(color=c["text"], size=11),
-            align="left",
-            line_color=c["grid"],
-        ),
-        cells=dict(
-            values=[labels, mus, chi2s, drifts, verdicts],
-            fill_color=[
-                [c["paper"]] * len(labels),
-                [c["paper"]] * len(labels),
-                [c["paper"]] * len(labels),
-                [c["paper"]] * len(labels),
-                colors_cell,
-            ],
-            font=dict(color=c["text"], size=11),
-            align="left",
-            line_color=c["grid"],
-        ),
-    )])
-
-    fig.update_layout(
-        paper_bgcolor=c["paper"],
-        font=dict(color=c["text"]),
-        margin=dict(l=0, r=0, t=10, b=0),
-        height=max(120, 40 * len(labels) + 50),
     )
 
     return fig

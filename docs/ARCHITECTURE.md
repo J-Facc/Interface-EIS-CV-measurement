@@ -181,7 +181,7 @@ réplicats BRUTS (EISSpectrum), conservés à chaque étape
         ↓  par groupe : probe, chaque concentration (et bare si fourni, affichage seul)
 core/measurement_model.analyze_replicates          — sur les réplicats BRUTS, AVANT tout fit
    • σ(ω) = structure d'erreur d'Orazem du groupe (≥ 3 réplicats)
-   • verdict Kramers-Kronig (réplicats + moyenne)   → ValidationResult (onglet KK)
+   • verdict Kramers-Kronig (réplicats + moyenne)   → ValidationResult (onglet « Measurement model & fit Orazem »)
    • ErrorStructureUnavailable → groupe ARRÊTÉ (GroupAnalysis.status + message)
         ↓
 fits/orazem_fit.fit_replicate_group
@@ -241,15 +241,17 @@ dans [MEASUREMENT_MODEL.md](MEASUREMENT_MODEL.md) ; la DRT dans [DRT_BAYESIENNE.
 ## 7. Onglets de l'analyse EIS (`ui/tabs.py::render_eis_tabs`)
 
 En tête de page : statut explicite de l'analyse (groupes arrêtés, fichiers écartés, moteur DRT
-absent) et diagnostics d'ajustement.
+absent). Les résultats sont présentés en **trois onglets exactement**, chacun découpé par
+électrode (sous-onglets, comme la page CV) puis par groupe de réplicats :
 
 | Onglet | Contenu |
 |---|---|
-| **Validation KK** | Verdict du measurement model par groupe (calculé avant le fit), résidus |
-| **Résultats par groupe** | Circuit (valeur ± intra-fit par réplicat, χ²ᵣ) et DRT (Rct ± a posteriori, R̂ max, divergences, ESS) ; agrégats moyenne / inter-réplicats / intra-fit / incertitude de la moyenne |
-| **Courbes DRT** | ln(γ/γ₀) vs ln(τ/τ₀) des moyennes et des réplicats ; diagnostics HMC ; recalcul bayésien d'un spectre |
-| **Reconstructions Nyquist** | Paramètre cible circuit vs DRT ; reconstructions moyenne et réplicat |
-| **Calibration** | Signal normalisé vs log([c]) + régression, une courbe par méthode |
+| **1 · Visualisation** | Données mesurées seulement, aucun fit. Nyquist et Bode (|Z| et −phase) : réplicats superposés (traits fins) + moyenne (trait épais), une couleur par concentration, légende cliquable par groupe, filtre de groupes, bascule prétraitées / brutes (avant exclusions), référence « électrode nue » en pointillés, et une vue « Normalisé E1 + E2 » |
+| **2 · Measurement model & fit Orazem** | Récapitulatif de l'électrode (verdict KK, éléments de Voigt, fiabilité du fit, nombre d'alertes), puis pour le groupe choisi, **dans l'ordre de lecture** : (1) measurement model et verdict KK — conforme / non conforme / indéterminé —, éléments de Voigt retenus et points hors bande par spectre, résidus, structure d'erreur ; (2) fit Orazem — bandeau **rouge** si κ dépasse `fits.orazem_fit.CONDITION_NUMBER_WARN` (≈ 6,7·10⁷) ou si un paramètre n'est pas identifiable, alertes de fit affichées d'emblée (jamais dans un expander), paramètre cible mis en évidence (★), Nyquist expérimental + circuit ajusté et résidus, tableau des paramètres (intra-fit, inter-réplicats, incertitude de la moyenne, fit du spectre moyen), diagnostics de CHAQUE fit (κ, rang/P, non identifiables, dérivée unilatérale, bornes actives, χ²ᵣ avec son intervalle attendu, départs convergés). Un groupe arrêté (moins de 3 réplicats…) affiche son verdict « indéterminé » et la cause, pas une erreur ni un tableau vide |
+| **3 · DRT** | Par groupe : tableau des diagnostics de CHAQUE spectre, toujours affiché (R̂ max, divergences, ESS bulk/tail avec leurs seuils, E-BFMI, Rct ± σ a posteriori, IC 95 % de Rct, origine de Rct, Rp) ; vue agrégée (γ(τ) moyenne + bande LARGE de variabilité inter-réplicats, min–max) ou vue d'un réplicat / du spectre moyen (γ(τ) + bande FINE de crédibilité HMC, diagnostics en grand, alertes) ; échec de calcul d'un spectre nommé en rouge avec son motif (le pipeline continue sans DRT pour ce spectre) ; rappel permanent sur les intervalles de Rp et de Rct ; recalcul bayésien d'un spectre |
+
+Plus de calibration ni de reconstructions dans la page EIS : les valeurs correspondantes
+(calibration EIS, reconstructions) restent produites par la page Export.
 
 La page **Export** (`E_export.py`) produit : paramètres (colonnes par modèle), résultats par
 réplicat et par groupe, DRT, reconstructions, calibration EIS/CV, YAML de session, ZIP complet.

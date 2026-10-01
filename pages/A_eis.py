@@ -5,6 +5,9 @@ core.pipeline.run_pipeline par électrode : pour chaque groupe de réplicats, me
 model + verdict Kramers-Kronig AVANT le fit, fit Orazem du circuit défini ici (chaque
 réplicat + la moyenne) et DRT (chaque réplicat + la moyenne). Les groupes arrêtés
 (structure d'erreur non caractérisable, AUDIT.md ERR-1) sont signalés explicitement.
+
+Résultats présentés en TROIS onglets (ui/tabs.py::render_eis_tabs) : Visualisation (spectres
+mesurés), Measurement model & fit Orazem, DRT.
 """
 
 import copy
@@ -18,34 +21,15 @@ from circuit import CircuitError, parse_circuit
 from core.app_state import preprocessing_ready
 from core.config import load_config, config_to_dict
 from core.loader import load_spectrum, average_replicates
+from core.models import DisplayGroup
 from core.pipeline import InvalidAnalysisInput, build_circuit_fit, run_pipeline
-from plotting.eis_plots import nyquist_figure_electrode, nyquist_normalized_figure, _spectrum_label
+from plotting.eis_plots import _spectrum_label
 from ui.tabs import render_eis_tabs
 
 _DEFAULT_CONFIG = config_to_dict(load_config())
 
 #: Clés de st.session_state des résultats EIS (sous-ensemble de core.app_state).
 _EIS_RESULT_KEYS = ("eis_sessions", "eis_validations", "eis_normalized")
-
-
-def _collect_fit_diagnostics(sessions: dict) -> list:
-    """Alertes d'ajustement à remonter à l'utilisateur (I7) : alertes de chaque fit du
-    spectre MOYEN (circuit et DRT) et alertes de groupe (verdict KK, réplicats écartés,
-    hétérogénéité, DRT non calculée…). Les groupes arrêtés sont signalés à part."""
-    out = []
-    for e, session in sorted(sessions.items()):
-        for label, mean_sp, _reps, an in session.iter_groups():
-            if an is not None and not an.ok:
-                continue
-            for model, fr in mean_sp.fit_results.items():
-                msgs = list(getattr(fr, "warnings", []) or [])
-                if not fr.converged and not any("convergé" in m for m in msgs):
-                    msgs.append("ajustement non convergé")
-                for m in msgs:
-                    out.append(f"E{e} · {label} (moyenne) · {model} : {m}")
-            for m in (an.warnings if an is not None else []):
-                out.append(f"E{e} · {label} : {m}")
-    return out
 
 
 def _render_analysis_status(sessions: dict) -> None:
@@ -141,61 +125,6 @@ def _circuit_editor(defaults: dict):
         return None, fingerprint
 
 
-def _load_electrode_spectra(experiment: dict, elec_idx: int) -> list:
-    """Charge et moyenne les spectres EIS pour une électrode.
-
-    Retourne une liste de dicts {"label", "Zre", "Zim", "concentration"}
-    pour le probe (concentration=0) et chaque concentration de calibration.
-    """
-    key = f"electrode_{elec_idx}"
-    probe_dict = (experiment.get("probe") or {}).get("eis") or {}
-    cal_dict   = (experiment.get("calibration") or {}).get("eis") or {}
-    concs      = experiment.get("concentrations") or []
-
-    result = []
-
-    # Probe
-    probe_files = probe_dict.get(key) or []
-    probe_specs = []
-    for ri, bio in enumerate(probe_files):
-        if bio is None:
-            continue
-        try:
-            bio.seek(0)
-            sp = load_spectrum(bio.read(), label=f"probe_e{elec_idx}_r{ri+1}")
-            bio.seek(0)
-            probe_specs.append(sp)
-        except Exception:
-            pass
-    if probe_specs:
-        avg = average_replicates(probe_specs) if len(probe_specs) > 1 else probe_specs[0]
-        result.append({"label": "Probe", "Zre": avg.Zre, "Zim": avg.Zim, "concentration": 0.0})
-
-    # Calibration
-    cal_by_conc = cal_dict.get(key) or []
-    for ci, rep_files in enumerate(cal_by_conc):
-        conc = concs[ci] if ci < len(concs) else 0.0
-        exp = int(np.floor(np.log10(conc))) if conc > 0 else 0
-        mant = conc / 10 ** exp if conc > 0 else 0
-        lbl = f"C{ci+1} = {mant:.0f}×10{str(exp).translate(str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻'))} M"
-        reps = []
-        for ri, bio in enumerate(rep_files or []):
-            if bio is None:
-                continue
-            try:
-                bio.seek(0)
-                sp = load_spectrum(bio.read(), label=f"e{elec_idx}_c{ci+1}_r{ri+1}")
-                bio.seek(0)
-                reps.append(sp)
-            except Exception:
-                pass
-        if reps:
-            avg = average_replicates(reps) if len(reps) > 1 else reps[0]
-            result.append({"label": lbl, "Zre": avg.Zre, "Zim": avg.Zim, "concentration": conc})
-
-    return result
-
-
 def _load_bare_eis(experiment: dict, elec_idx: int):
     """Charge et moyenne les fichiers « électrode nue » EIS d'une électrode.
 
@@ -227,6 +156,30 @@ def _load_bare_eis(experiment: dict, elec_idx: int):
     if not specs:
         return None
     return average_replicates(specs) if len(specs) > 1 else specs[0]
+
+
+def _load_raw_groups(experiment: dict, elec_idx: int, config: dict) -> list:
+    """Groupes BRUTS d'une électrode (``DisplayGroup``) : spectres de l'expérience AVANT les
+    exclusions du prétraitement, pour l'onglet « Visualisation ».
+
+    Mêmes loaders et même regroupement que le pipeline ; AFFICHAGE SEUL (rattaché à
+    ``session.raw_groups`` après l'analyse, jamais lu par ``run_pipeline``). Un fichier
+    illisible est ignoré : le pipeline l'a déjà signalé (``session.load_errors``).
+    """
+    by_key: dict = {}
+    for fa in _build_file_assignments_electrode(experiment, elec_idx):
+        try:
+            sp = load_spectrum(content=fa["content"], label=fa["filename"],
+                               concentration=fa["concentration"], step=fa["step"], config=config)
+        except ValueError:
+            continue
+        by_key.setdefault((fa["step"], fa["concentration"]), []).append(sp)
+    groups = []
+    for (step, conc), reps in sorted(by_key.items(), key=lambda kv: (kv[0][0] != "probe", kv[0][1])):
+        label = "Probe" if step == "probe" else f"{conc:.2e} M"
+        groups.append(DisplayGroup(label=label, concentration=float(conc), step=step,
+                                   mean=average_replicates(reps), replicates=reps))
+    return groups
 
 
 def _build_normalized_session(sessions: dict) -> dict:
@@ -295,44 +248,6 @@ def _build_normalized_session(sessions: dict) -> dict:
     return result
 
 
-def _render_three_nyquist(experiment: dict, sessions: dict) -> None:
-    """Affiche 3 graphes Nyquist côte à côte : E1, E2, Normalisé E1+E2."""
-    if experiment.get("mode") not in ("eis_only", "both"):
-        return
-
-    specs_e1 = _load_electrode_spectra(experiment, 1)
-    specs_e2 = _load_electrode_spectra(experiment, 2) if experiment.get("n_electrodes", 2) >= 2 else []
-
-    normalized = _build_normalized_session(sessions)
-    specs_norm = [
-        {"label": d["label"], "Zre_norm": d["Zre_norm"], "Zim_norm": d["Zim_norm"], "concentration": d["concentration"]}
-        for d in sorted(normalized.values(), key=lambda d: d["concentration"])
-    ] if normalized else []
-
-    bare_e1 = sessions.get(1).bare_reference if sessions.get(1) else None
-    bare_e2 = sessions.get(2).bare_reference if sessions.get(2) else None
-
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col1:
-        if specs_e1:
-            st.plotly_chart(nyquist_figure_electrode(specs_e1, title="Électrode 1", bare=bare_e1),
-                            width='stretch', key="nyq_e1")
-        else:
-            st.info("Aucun spectre EIS — Électrode 1")
-    with col2:
-        if specs_e2:
-            st.plotly_chart(nyquist_figure_electrode(specs_e2, title="Électrode 2", bare=bare_e2),
-                            width='stretch', key="nyq_e2")
-        else:
-            st.info("Aucun spectre EIS — Électrode 2")
-    with col3:
-        if specs_norm:
-            st.plotly_chart(nyquist_normalized_figure(specs_norm, title="Normalisé E1 + E2"),
-                            width='stretch', key="nyq_norm")
-        else:
-            st.info("Normalisation non disponible")
-
-
 def _build_file_assignments_electrode(experiment: dict, elec_idx: int) -> list:
     """Convertit experiment_clean en liste de file_assignments pour une seule électrode."""
     mode = experiment.get("mode", "both")
@@ -378,7 +293,7 @@ def _build_file_assignments_electrode(experiment: dict, elec_idx: int) -> list:
 
 def main() -> None:
     st.title("📡 Analyse EIS — Spectroscopie d'impédance")
-    st.caption("Measurement model & Kramers-Kronig · Fit Orazem du circuit · DRT · Calibration")
+    st.caption("Visualisation · Measurement model & Kramers-Kronig, fit Orazem du circuit · DRT")
 
     # Vérification que les données sont disponibles (B-STATE-b : jamais de KeyError)
     if not preprocessing_ready(st.session_state):
@@ -445,6 +360,10 @@ def main() -> None:
                     # Référence « électrode nue » — attachée APRÈS l'analyse,
                     # jamais lue par run_pipeline (affichage seul).
                     session.bare_reference = _load_bare_eis(experiment, e)
+                    # Spectres BRUTS (avant exclusions) — même statut : affichage seul.
+                    raw_experiment = st.session_state.get("experiment")
+                    if raw_experiment:
+                        session.raw_groups = _load_raw_groups(raw_experiment, e, cfg)
                     sessions[e] = session
                     validations[e] = vr_pipeline or None
             except InvalidAnalysisInput as exc:          # saisie invalide : message clair
@@ -474,25 +393,11 @@ def main() -> None:
 
     _render_analysis_status(sessions)
 
-    # I7 : remonter les diagnostics d'ajustement à l'utilisateur, pas dans les logs.
-    diags = _collect_fit_diagnostics(sessions)
-    if diags:
-        with st.expander(f"⚠️ Diagnostics d'ajustement ({len(diags)})", expanded=False):
-            for line in diags:
-                st.warning(line)
-
-    st.markdown("### Diagrammes de Nyquist")
-    _render_three_nyquist(experiment, sessions)
-
-    st.divider()
-
+    # Verdict KK, alertes et diagnostics de fit : onglet 2 (visibles d'emblée) ; diagnostics DRT :
+    # onglet 3. Pas de récapitulatif séparé ici, qui dupliquerait les onglets.
     normalized = _build_normalized_session(sessions)
     st.session_state["eis_normalized"] = normalized
-    render_eis_tabs(
-        sessions,
-        st.session_state.get("eis_config", cfg),
-        st.session_state.get("eis_validations") or {},
-    )
+    render_eis_tabs(sessions, normalized=normalized)
 
 
 if __name__ == "__main__":

@@ -87,6 +87,7 @@ from fits.regression_stats import JacobianStatistics, jacobian_statistics
 
 __all__ = [
     "ORAZEM_MODEL_NAME",
+    "CONDITION_NUMBER_WARN",
     "CircuitFit",
     "compile_circuit_fit",
     "FitSpecificationError",
@@ -107,6 +108,9 @@ ORAZEM_MODEL_NAME = "orazem"
 _LEVEL_2SIGMA = float(1.0 - 2.0 * stats.norm.sf(2.0))
 #: κ(J) au-delà duquel κ² dépasse 1/ε machine : (JᵀJ)⁻¹ à la limite de la précision.
 _COND_WARN = 1.0 / math.sqrt(np.finfo(float).eps)
+#: Même seuil, exposé à l'interface (docs/MEASUREMENT_MODEL.md §8) : l'UI compare le κ des
+#: ``fit_diagnostics`` à CETTE valeur plutôt que d'en recopier une (~6,7·10⁷).
+CONDITION_NUMBER_WARN = _COND_WARN
 
 
 class FitSpecificationError(ValueError):
