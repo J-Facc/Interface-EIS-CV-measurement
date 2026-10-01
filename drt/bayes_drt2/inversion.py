@@ -9,7 +9,9 @@ import os
 import re
 from copy import deepcopy
 import matplotlib.pyplot as plt
-from cmdstanpy import CmdStanModel
+# Patch 3 (drt/PROVENANCE.md) : meme appel `CmdStanModel(stan_file=...)` que l'amont, mais un
+# chemin non-ASCII n'atteint jamais make (drt/stan_compile.py). Les sites d'appel sont inchanges.
+from ..stan_compile import compile_stan_model as CmdStanModel
 
 from .matrices import get_basis_func, construct_A, construct_L, construct_M
 from . import peak_fit as pf

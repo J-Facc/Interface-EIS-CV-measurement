@@ -33,9 +33,10 @@ La DRT est reconstruite par **inversion hiérarchique bayésienne** (Huang, Papa
 *Electrochimica Acta* 367 (2020) 137493) : γ(τ) est décomposée sur une base de fonctions
 régulières, et les hyperparamètres (niveau de bruit, lissage) sont eux aussi estimés, par un
 modèle écrit en Stan. Le code est un **clone identifié** (dépôt `jdhuang-csm/bayes-drt2`,
-commit `99d5b60`, licence BSD-3) avec exactement deux patchs, tous deux justifiés dans
-`drt/PROVENANCE.md` : `np.trapz → np.trapezoid` (compatibilité numpy 2) et l'exposition du
-réglage NUTS `adapt_delta`. Rien d'autre n'est modifié ; les sha256 sont publiés.
+commit `99d5b60`, licence BSD-3) avec exactement trois patchs, tous justifiés dans
+`drt/PROVENANCE.md` : `np.trapz → np.trapezoid` (compatibilité numpy 2), l'exposition du
+réglage NUTS `adapt_delta` et l'appel de compilation Stan par `drt/stan_compile.py` (chemin
+d'installation non-ASCII). Rien d'autre n'est modifié ; les sha256 sont publiés.
 
 Les calculs passent par CmdStan : un compilateur C++ est requis (installé automatiquement par
 `launch.bat` / `python setup_drt_bayesien.py --ensure`, version 2.36.0, mingw-w64 sous Windows).
