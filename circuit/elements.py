@@ -183,7 +183,7 @@ def ZD_bounded(w: np.ndarray, R_D: float, tau_d: float) -> np.ndarray:
     Reprise À L'IDENTIQUE de ``fits/physics.py:Z_D`` (formule et traitement
     numérique), dont la provenance déclarée est : « Diffusion element follows the
     bounded-diffusion (Bissessur) formulation for a microfluidic channel »
-    (cf. METHODES.md §4.1). Aucune référence plus précise (article, équation)
+    (ancien METHODES.md §4.1, retiré ; voir docs/ARCHITECTURE.md §6). Aucune référence plus précise (article, équation)
     n'est donnée dans le dépôt pour cette formule.
 
         Z_D = R_D · tanh(√(j·ω·τ_d)) / √(j·ω·τ_d)

@@ -11,10 +11,11 @@
 #             (fit mode='optimize' MAP et mode='sample' HMC — tous deux compilent
 #             un modèle Stan).
 #
-# cmdstanpy fournit le binding Python mais PAS la toolchain CmdStan (compilateur
-# C++ + modèles Stan compilés). Elle est installée AUTOMATIQUEMENT au premier
-# lancement par setup_drt_bayesien.ensure_drt_ready() → install_cmdstan(compiler=True)
-# (installe mingw-w64, n'exige pas RTools). Sans toolchain, la DRT est désactivée
-# proprement — voir drt/engine.py (engine_available) et app.py.
-cvxopt>=1.3.0
-cmdstanpy>=1.2.0
+# Versions épinglées : ce sont celles avec lesquelles la DRT a été validée
+# (drt/VALIDATION_REGLAGES.md). cmdstanpy fournit le binding Python mais PAS la
+# toolchain CmdStan (compilateur C++ + modèles Stan compilés) : launch.bat l'installe
+# via `python setup_drt_bayesien.py --ensure` (install_cmdstan(compiler=True) : mingw-w64
+# sous Windows, RTools inutile). Sans toolchain, la DRT est désactivée proprement —
+# voir drt/engine.py (engine_available) et app.py.
+cvxopt==1.3.3
+cmdstanpy==1.3.0

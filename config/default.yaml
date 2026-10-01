@@ -1,24 +1,3 @@
-# Paramètres physiques (électrochimie)
-physics:
-  T: 298.0          # K
-  F: 96485.0        # C/mol
-  R: 8.314          # J/mol/K
-  n: 1              # électrons échangés
-  C0: 0.02          # M — concentration médiateur Fe(CN)6
-  D_FeIII: 7.2e-10  # m^2/s
-  D_FeII: 6.5e-10   # m^2/s
-
-# Géométrie microfluidique
-geometry:
-  xe: 30.0e-6       # m — largeur électrode WE
-  h: 60.0e-6        # m — hauteur canal
-  d: 300.0e-6       # m — largeur canal
-  S_WE: 9.0e-9      # m^2 — surface active
-
-# Conditions opératoires
-conditions:
-  Fv: 5.0e-10       # m^3/s (= 0.5 µL/s)
-
 # Acquisition EIS — plage de balayage fréquentiel (fixe).
 # Sert à reconstruire l'axe fréquence des exports EC-Lab qui ne contiennent
 # que Re(Z)/-Im(Z) sans colonne fréquence (balayage log HF→BF).
@@ -37,7 +16,6 @@ fit:
   n_freqs_parasites: [50.0, 100.0]
   tol_parasites: 3.0
   max_iter: 10000              # plafond d'évaluations par départ du fit Orazem
-  n_monte_carlo: 1000
   # Circuit ajusté par le fit Orazem (fits/orazem_fit.py) — valeurs PAR DÉFAUT
   # proposées dans l'interface, où l'utilisateur les modifie. Syntaxe :
   # docs/CIRCUIT_UTILISATEUR.md. Ici : le Randles complet historique (ex-
@@ -64,11 +42,3 @@ fit:
     # recalculé en 'sample' à la demande depuis l'onglet DRT (core.pipeline.recompute_drt).
     enabled: true
     mode: optimize
-  drt_wiener_W: 1.0e-8   # filtre Wiener (plus petit = résolution plus fine)
-  drt_n_z: 10000          # points de la grille log-ω
-
-# Export
-export:
-  dpi: 150
-  fig_width: 1200
-  fig_height: 800

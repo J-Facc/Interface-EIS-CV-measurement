@@ -1,18 +1,20 @@
 # Measurement model, structure d'erreur, Kramers-Kronig et fit Orazem
 
-> Référence de la méthode (étape 4 de la refonte). Code : `core/measurement_model.py`,
+> Référence de la méthode d'Orazem (measurement model, structure d'erreur, KK, fit). Code : `core/measurement_model.py`,
 > `fits/kk_validation.py`, `fits/orazem_fit.py`, `fits/regression_stats.py` ; tests :
 > `tests/test_measurement_model.py`, `tests/test_orazem_fit.py`, `tests/test_validator.py`.
 >
-> **Bascule faite (étape 5).** Le prétraitement (`core/validator.py`) ET le pipeline
-> d'analyse (`core/pipeline.py`) utilisent le measurement model : pour chaque groupe,
-> structure d'erreur et verdict KK sur les réplicats BRUTS, PUIS fit Orazem
-> (`fits/orazem_fit.py`) de chaque réplicat et de la moyenne, PUIS DRT de chaque réplicat
-> et de la moyenne. `fits/randles_full.py`, `fits/error_structure.py` (et sa persistance
-> JSON), `fits/weighting.py` sont supprimés ; un groupe dont la structure d'erreur n'est
-> pas caractérisable est ARRÊTÉ avec un statut explicite (`GroupAnalysis`, ERR-1). Les numéros d'équation des sources n'ont pas pu être vérifiés depuis
-> l'environnement de développement : chaque formule est écrite en clair ci-dessous et
-> dans les docstrings.
+> **Dans l'application.** Le prétraitement (`core/validator.py`) ET le pipeline d'analyse
+> (`core/pipeline.py`) utilisent le measurement model : pour chaque groupe, structure d'erreur
+> et verdict KK sur les réplicats BRUTS, PUIS fit Orazem de chaque réplicat et de la moyenne,
+> PUIS DRT de chaque réplicat et de la moyenne. Un groupe dont la structure d'erreur n'est pas
+> caractérisable est ARRÊTÉ avec un statut explicite (`GroupAnalysis`) : aucun fit, aucune
+> pondération de repli. Rien n'est persisté dans un fichier ni relu d'une analyse à l'autre.
+> Les numéros d'équation des sources n'ont pas pu être vérifiés depuis l'environnement de
+> développement : chaque formule est écrite en clair ci-dessous et dans les docstrings.
+>
+> Les mentions « ERR-n » renvoient à l'ancien audit (`git show 60371c7:AUDIT.md`, conservé
+> dans l'historique git uniquement).
 
 ## Sources
 

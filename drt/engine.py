@@ -138,7 +138,8 @@ def _import_inverter():
 def library_available() -> Tuple[bool, Optional[str]]:
     """(True, None) si bayes_drt2 et ses dépendances Python (cvxopt, cmdstanpy) sont
     importables, sinon (False, raison). Ne vérifie PAS CmdStan (voir ``engine_available``) :
-    sert au démarrage de l'app, qui installe CmdStan si besoin (``setup_drt_bayesien``)."""
+    sert au démarrage de l'app, qui constate l'état de CmdStan sans l'installer (c'est
+    ``launch.bat`` / ``setup_drt_bayesien.py --ensure`` qui l'installent)."""
     try:
         _import_inverter()
     except Exception as exc:  # noqa: BLE001 — toute cause d'import rend la DRT indisponible
@@ -402,7 +403,7 @@ def fit_drt(spectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG
     if mask is None:
         Rct, tau_Rct, rct_source = Rp, float("nan"), "rp_fallback"
         notes.append("Rct DRT calculé par REPLI sur Rp (aire totale sous γ : diffusion + transfert "
-                     "de charge). Grandeur DIFFÉRENTE de l'arc de transfert — calibration θ_EIS à "
+                     "de charge). Grandeur DIFFÉRENTE de l'arc de transfert — calibration à "
                      "interpréter avec prudence.")
         if rct_note:
             notes.append(rct_note)

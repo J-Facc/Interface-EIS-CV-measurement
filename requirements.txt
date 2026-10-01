@@ -1,3 +1,6 @@
+# Dépendances d'EXÉCUTION de l'application, toutes épinglées (même résultat quel que
+# soit le jour de l'installation). Python >= 3.12 requis (numpy 2.5.x).
+# Tests / CI : requirements-dev.txt. DRT bayésienne : requirements-drt.txt.
 streamlit==1.64.0
 numpy==2.5.3
 scipy==1.18.1
@@ -6,9 +9,6 @@ plotly==7.1.0
 matplotlib==3.11.2
 pyyaml==6.0.3
 pydantic==2.13.5
-kaleido==1.4.0
-pytest==9.1.1
-scikit-learn==1.9.1
 eclabfiles==0.4.1
 # La DRT (drt/engine.py autour du clone drt/bayes_drt2) est un extra optionnel : voir
 # requirements-drt.txt (cvxopt + cmdstanpy). L'app reste fonctionnelle sans lui,

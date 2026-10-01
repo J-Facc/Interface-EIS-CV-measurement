@@ -400,7 +400,8 @@ def run_pipeline(
         else:
             session.messages.append(
                 f"DRT non calculée : moteur indisponible — {why}. Installez l'extra DRT "
-                "(requirements-drt.txt) puis CmdStan (setup_drt_bayesien)."
+                "(requirements-drt.txt) et CmdStan : relancez launch.bat "
+                "(ou python setup_drt_bayesien.py --ensure)."
             )
             drt_kwargs = None
 

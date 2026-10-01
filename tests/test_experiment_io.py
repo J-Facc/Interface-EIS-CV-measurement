@@ -25,7 +25,6 @@ from core.experiment_io import (
     apply_point_exclusions,
     load_experiment,
     save_experiment,
-    zip_experiment,
 )
 from core.loader import load_spectrum
 
@@ -447,7 +446,6 @@ def test_sig_types_for_mode_and_dead_zip_alias():
     assert _sig_types_for_mode("cv_only") == ["cv"]
     assert _sig_types_for_mode("both") == ["eis", "cv"]
     assert _sig_types_for_mode("n'importe quoi") == ["eis", "cv"]      # repli silencieux
-    assert zip_experiment is save_experiment                            # alias jamais utilisé (AUDIT §2.1 #13)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

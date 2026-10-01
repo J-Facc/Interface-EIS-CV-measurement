@@ -1,4 +1,5 @@
 .venv/
+venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -21,5 +22,15 @@ build/
 # seuls les sources .stan sont versionnés.
 drt/bayes_drt2/stan_model_files/*
 !drt/bayes_drt2/stan_model_files/*.stan
-vendor/bayes_drt2/stan_model_files/*
-!vendor/bayes_drt2/stan_model_files/*.stan
+
+# Créés À CÔTÉ de launch.bat quand on l'exécute depuis un clone (voir launch.bat) :
+eis_app/
+eis_app.old/
+.eis_update/
+stan_cache/
+.version
+.deps_hash
+launcher.log
+# Configuration locale / secrets (aucun jeton n'est requis : dépôt public)
+.env.*
+*.local.yaml

@@ -1,0 +1,4 @@
+# Dépendances de DÉVELOPPEMENT et de CI (jamais installées chez l'utilisateur final).
+#   pip install -r requirements-dev.txt
+-r requirements.txt
+pytest==9.1.1
