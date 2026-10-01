@@ -13,6 +13,13 @@ ADN/ARN.
 2. Téléchargez [`launch.bat`](launch.bat), placez-le dans un **dossier court** (par exemple
    `C:\EIS`) et double-cliquez dessus.
 
+Un dossier **sans accents ni caractères spéciaux** reste le choix le plus sûr : sous Windows,
+`mingw32-make` reçoit un chemin accentué (`C:\Users\x\Desktop\.Thèse\…`) corrompu et échoue. L'application
+le contourne — les modèles Stan s'y compilent depuis un cache ASCII (`C:\cmdstan\model_cache`,
+`drt/stan_compile.py`) — et `launch.bat` signale un tel chemin au démarrage ; si malgré tout la
+compilation du moteur DRT échoue, déplacez le dossier (par exemple `C:\EIS_Analyzer`) et relancez.
+CmdStan lui-même doit rester dans un dossier sans accents (`C:\cmdstan` par défaut).
+
 C'est tout : le dépôt est public, aucun jeton n'est nécessaire. À chaque lancement, `launch.bat`
 
 * vérifie la dernière version sur GitHub (validation TLS normale) et ne la télécharge que si

@@ -62,6 +62,22 @@ if not "!APP_DIR:~110,1!"=="" (
     call :log "avertissement : chemin long"
 )
 
+rem Chemin non ASCII (accents, etc.) : le shell MSYS lance par mingw32-make recoit le chemin
+rem corrompu et la compilation du moteur DRT echoue. Simple information, jamais bloquant : la
+rem DRT compile depuis un cache ASCII (drt\stan_compile.py). Detection par PowerShell, qui lit
+rem l'environnement en Unicode ; la regle ne contient ni ! ni ^ (expansion de cmd).
+set "EIS_ROOT=!ROOT!"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if ($env:EIS_ROOT -cmatch '[\x80-\uFFFF]') { exit 77 } else { exit 0 }" >nul 2>&1
+if !errorlevel! equ 77 (
+    echo.
+    echo   Attention : votre dossier d'installation contient des caracteres accentues, ce qui
+    echo   peut poser probleme pour la compilation du moteur DRT. Si l'installation du moteur
+    echo   DRT echoue, essayez de deplacer l'application vers un chemin sans accents, par
+    echo   exemple C:\EIS_Analyzer.
+    echo.
+    call :log "avertissement : chemin non ASCII"
+)
+
 if not exist "!WORK_DIR!" mkdir "!WORK_DIR!"
 if !errorlevel! neq 0 (
     echo   ERREUR : impossible de creer le dossier temporaire !WORK_DIR!
@@ -466,8 +482,8 @@ if !RC_DRT! equ 7 (
 ) else (
     echo   ECHEC REEL de l'installation du moteur DRT, code !RC_DRT! - voir les messages
     echo   ci-dessus. L'application demarre sans DRT. 3 = cmdstanpy absent, 4 = installation
-    echo   CmdStan, 5 = chemin CmdStan, 6 = erreur de compilation Stan, 8 = toolchain C++
-    echo   absente ou non fonctionnelle.
+    echo   CmdStan, 5 = chemin CmdStan, 6 = erreur de compilation Stan ou chemin avec accents,
+    echo   8 = toolchain C++ absente ou non fonctionnelle.
 )
 call :log "moteur drt non installe code !RC_DRT!"
 exit /b 0

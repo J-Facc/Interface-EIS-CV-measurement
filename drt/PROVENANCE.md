@@ -2,12 +2,15 @@
 
 Code tiers : **bayes-drt2** (Jake Huang, Colorado School of Mines), inversion hiérarchique
 bayésienne de spectres d'impédance (DRT/DDT). Copié tel quel depuis un clone git identifié,
-puis **deux patchs**, chacun justifié par exécution ci-dessous :
+puis **trois patchs**, chacun justifié ci-dessous :
 
 1. `np.trapz` → `np.trapezoid` — **compatibilité**, indispensable avec numpy 2.5.3 (sinon aucun
    chemin ne s'exécute) ; c'est le **seul** patch de compatibilité nécessaire avec les versions épinglées ;
 2. `Inverter.fit(..., adapt_delta=0.9)` — **exposition** d'un réglage NUTS codé en dur, défaut amont
-   inchangé ; nécessaire au réglage par défaut retenu dans `drt/VALIDATION_REGLAGES.md` (§3).
+   inchangé ; nécessaire au réglage par défaut retenu dans `drt/VALIDATION_REGLAGES.md` (§3) ;
+3. `from cmdstanpy import CmdStanModel` → `from ..stan_compile import compile_stan_model as
+   CmdStanModel` — **robustesse** : un chemin d'installation non-ASCII (« .Thèse ») n'atteint plus
+   jamais `mingw32-make` (§3, patch 3). Une seule ligne ; les sites d'appel ne changent pas.
 
 ## 1. Origine
 
@@ -59,7 +62,7 @@ les blobs non patchés **sont** ceux de l'amont.
 | `__init__.py` (vide) | `e69de29b` | = | `e3b0c442…b855` |
 | `equiv_circuit.py` | `f6930ddf` | = | `e53e7f2a…b73d` |
 | `file_load.py` | `7f286a00` | = | `c4f8fdfa…1fd2` |
-| **`inversion.py`** (patch 2) | `24039a7f` | `421e2d84` | `187d7bd0…9816` (amont `9a730ac4…9e70`) |
+| **`inversion.py`** (patchs 2 et 3) | `63f64779` | `421e2d84` | `8a8f4569…1215` (amont `9a730ac4…9e70`) |
 | **`matrices.py`** (patch 1) | `c2c32cf2` | `81908307` | `43aed2f5…b2c2` (amont `f65803ac…ecdb`) |
 | **`peak_fit.py`** (patch 1) | `51e6126e` | `90aee12d` | `c38b9c17…abaf` (amont `82c22bc7…b158`) |
 | `plotting.py` | `4f9a65f3` | = | `3dd07137…aa94` |
@@ -224,6 +227,32 @@ Sans ce patch, le seul moyen serait de réécrire `Inverter.fit` hors du paquet.
  		# extract coefficients
 ```
 
+### Patch 3 (appliqué) — compiler par `drt/stan_compile.py` (chemin d'installation non-ASCII)
+
+**Pas une incompatibilité de bibliothèque : un défaut de Windows.** Sous Windows, cmdstanpy lance
+`mingw32-make`, qui lance le shell MSYS avec le chemin du `.stan` ; si ce chemin contient un
+caractère hors ASCII (`C:\Users\x\Desktop\.Thèse\…`), le shell le reçoit décalé (« è » → « Ã¨ ») et
+échoue en « No such file or directory ». `Inverter` compile `stan_model_files/*.stan` à la demande
+(tout modèle absent du cache, ex. `Parallel`), donc le chemin d'installation de l'utilisateur
+atteint make à l'exécution, pas seulement à l'installation.
+
+Le patch remplace l'import par un alias vers `compile_stan_model` : même appel
+`CmdStanModel(stan_file=…)`, mais un `.stan` sous un chemin non-ASCII est copié, compilé et mis en
+cache dans un dossier ASCII (clé : SHA-256 du `.stan` + version de CmdStan). Un chemin ASCII passe
+tel quel à cmdstanpy. Détails, pistes écartées (`PYTHONUTF8`, `chcp 65001`, `cpp_options`,
+`SanitizedOrTmpFilePath`) et garde-fous : docstring de `drt/stan_compile.py`,
+`tests/test_stan_compile.py` (qui échoue si un autre `CmdStanModel(` apparaît hors de ce module).
+
+```diff
+--- a/drt/bayes_drt2/inversion.py
++++ b/drt/bayes_drt2/inversion.py
+@@ -12,1 +12,3 @@
+-from cmdstanpy import CmdStanModel
++# Patch 3 (drt/PROVENANCE.md) : meme appel `CmdStanModel(stan_file=...)` que l'amont, mais un
++# chemin non-ASCII n'atteint jamais make (drt/stan_compile.py). Les sites d'appel sont inchanges.
++from ..stan_compile import compile_stan_model as CmdStanModel
+```
+
 ### Écarts constatés mais **non patchés** (non nécessaires — décision documentée)
 
 | Constat | Pourquoi pas de patch |
@@ -238,7 +267,7 @@ Sans ce patch, le seul moyen serait de réécrire `Inverter.fit` hors du paquet.
 
 1. `git clone https://github.com/jdhuang-csm/bayes-drt2` ; noter `git rev-parse HEAD` et la date.
 2. Remplacer `drt/bayes_drt2/` par `bayes_drt2/` + `LICENSE` ; réappliquer le patch 1 (commande `sed` ci-dessus)
-   et le patch 2 (diff ci-dessus), puis **refaire la recherche statique + dynamique** du §3 avec les
+   le patch 2 et le patch 3 (diffs ci-dessus), puis **refaire la recherche statique + dynamique** du §3 avec les
    versions épinglées du moment.
 3. Rejouer `drt/validation/run_matrix.py` (MAP et HMC) et comparer à `drt/VALIDATION_REGLAGES.md`
    **avant** de modifier le réglage par défaut de `drt/engine.py`.

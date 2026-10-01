@@ -229,11 +229,11 @@ def environment():
 
 def precompile():
     """Compile Series/Series_pos une fois (évite des compilations concurrentes)."""
-    from cmdstanpy import CmdStanModel
+    from drt.stan_compile import compile_stan_model
 
     d = ROOT / "drt" / "bayes_drt2" / "stan_model_files"
     for name in ("Series", "Series_pos"):
-        CmdStanModel(stan_file=str(d / f"{name}.stan"))
+        compile_stan_model(str(d / f"{name}.stan"))
 
 
 def main(argv=None):

@@ -186,3 +186,19 @@ def test_launcher_explains_every_failure_code_of_the_setup_script():
 def test_launcher_never_hardcodes_a_cmdstan_version():
     """La version vit dans drt/cmdstan_version.py ; launch.bat délègue à setup_drt_bayesien.py."""
     assert not re.search(r"\b2\.\d{2}\.\d\b", TEXT)
+
+
+def test_non_ascii_install_path_is_announced_early_and_never_blocks():
+    """Un chemin accentue fait echouer make sous Windows : avertir AVANT [1/5], sans jamais bloquer
+    (la DRT contourne par un cache ASCII, et l'application, elle, n'a pas ce probleme)."""
+    start = TEXT.index('set "EIS_ROOT=!ROOT!"')
+    block = TEXT[start:TEXT.index("if not exist \"!WORK_DIR!\" mkdir")]
+    assert TEXT.index("Verification des mises a jour") > start       # avant la premiere etape
+    assert "-cmatch" in block and "exit 77" in block                   # code dedie, pas un crash
+    assert "!errorlevel! equ 77" in block
+    assert "caracteres accentues" in block and "sans accents" in block
+    assert "goto" not in block and "exit /b" not in block              # simple information
+    assert "!" not in block.split("-Command", 1)[1].split("\r\n", 1)[0]   # ni ! ni ^ dans la regle PowerShell
+    assert "^" not in block.split("-Command", 1)[1].split("\r\n", 1)[0]
+    assert 'call :log "avertissement : chemin non ASCII"' in block
+

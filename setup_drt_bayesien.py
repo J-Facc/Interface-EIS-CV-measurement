@@ -16,7 +16,12 @@ développeur peut l'appeler à la main.
   impossible (hors ligne) — et le dit, dans ses logs comme dans l'UI ;
 * note, à côté de chaque exécutable Stan compilé, la version de CmdStan qui l'a produit :
   cmdstanpy ne recompile qu'une source plus récente que son exécutable, donc sans cette
-  trace un ``Series.exe`` bâti sous une autre version serait réutilisé en silence.
+  trace un ``Series.exe`` bâti sous une autre version serait réutilisé en silence ;
+* ne laisse jamais ``make`` voir un chemin non-ASCII (``C:\\Users\\x\\.Thèse\\…``) : le shell MSYS
+  que lance mingw32-make le reçoit corrompu. Un ``.stan`` situé sous un tel chemin est compilé
+  depuis un cache ASCII (``drt/stan_compile.py``, qui documente aussi pourquoi ni
+  ``PYTHONUTF8`` ni ``chcp 65001`` ne suffisent). Si même cela est impossible, le message dit
+  de déplacer le dossier — jamais la sortie brute de make.
 
 Points d'entrée :
 
@@ -63,6 +68,7 @@ REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
 
+from drt import stan_compile  # noqa: E402
 from drt.cmdstan_version import (  # noqa: E402 — après l'ajout de REPO_DIR au chemin
     PINNED_CMDSTAN_VERSION, installed_version, version_warning)
 
@@ -354,11 +360,21 @@ def _compiled_with(stan_dir: str, name: str):
         return None
 
 
+def _is_compiled(stan_dir: str, name: str, stamp: str) -> bool:
+    """Le modèle ``name`` est-il compilé POUR cette version de CmdStan et CE ``.stan`` ?"""
+    if stan_compile.has_non_ascii(stan_dir):
+        # Compilé dans le cache ASCII (stan_compile) : son tampon vérifie le contenu du .stan
+        # ET la version, pas seulement la version comme le marqueur ci-dessous.
+        return stan_compile.cached_exe(os.path.join(stan_dir, name), stamp) is not None
+    return os.path.exists(_exe_path(stan_dir, name)) and _compiled_with(stan_dir, name) == stamp
+
+
 def _models_to_compile(version, force: bool = False) -> list:
     """Modèles de ``STAN_TARGETS`` à (re)compiler pour CmdStan ``version``.
 
     À compiler : exécutable absent, OU non compilé sous cette version (marqueur absent ou
     différent — un exécutable d'origine inconnue n'est jamais présumé bon), OU ``force``.
+    Sous un chemin non-ASCII, « exécutable » et « marqueur » sont ceux du cache ASCII.
     """
     if force:
         return list(STAN_TARGETS)
@@ -367,8 +383,7 @@ def _models_to_compile(version, force: bool = False) -> list:
     except Exception:  # noqa: BLE001 — paquet drt illisible : rien n'est prêt
         return list(STAN_TARGETS)
     stamp = version or "inconnue"
-    return [name for name in STAN_TARGETS
-            if not os.path.exists(_exe_path(stan_dir, name)) or _compiled_with(stan_dir, name) != stamp]
+    return [name for name in STAN_TARGETS if not _is_compiled(stan_dir, name, stamp)]
 
 
 def _tail(text: str, lines: int = 15, chars: int = 1500) -> str:
@@ -381,15 +396,17 @@ def precompile(force: bool = False):
 
     Instancier l'Inverter valide l'import du paquet et résout le dossier des ``.stan``.
     ``CmdStanModel`` compile et met l'exécutable en cache ; aucun échantillonnage n'est lancé.
+    La compilation passe par :func:`drt.stan_compile.compile_stan_model`, qui ne montre jamais
+    à make un chemin non-ASCII.
     Un modèle n'est recompilé que s'il le faut (:func:`_models_to_compile`), ou si ``force``.
 
     Raises:
         StanCompileError: la compilation d'un modèle a échoué.
+        drt.stan_compile.NonAsciiPathError: chemin non-ASCII impossible à contourner.
         RuntimeError: un ``.stan`` de ``STAN_TARGETS`` manque — jamais ignoré : le moteur
             peut le sélectionner.
     """
     import cmdstanpy
-    from cmdstanpy import CmdStanModel
 
     from drt.bayes_drt2.inversion import Inverter
 
@@ -409,13 +426,16 @@ def precompile(force: bool = False):
             continue
         log(f"[stan] Compilation de {name} avec CmdStan {version} (1er passage : 1-3 min)...")
         try:
-            # force_compile : un exécutable plus récent que sa source mais bâti sous une
-            # autre version de CmdStan serait sinon réutilisé tel quel par cmdstanpy.
-            model = CmdStanModel(stan_file=stan_file, force_compile=True)
+            # force : un exécutable plus récent que sa source mais bâti sous une autre version
+            # de CmdStan serait sinon réutilisé tel quel par cmdstanpy.
+            model = stan_compile.compile_stan_model(stan_file, force=True)
+        except stan_compile.NonAsciiPathError:
+            raise                              # déjà explicite : ni enveloppée, ni « erreur C++ »
         except Exception as exc:  # noqa: BLE001
             raise StanCompileError(name, exc) from exc
-        with open(_marker_path(stan_dir, name), "w", encoding="utf-8") as fh:
-            fh.write(version + "\n")
+        if not stan_compile.has_non_ascii(stan_dir):   # sinon le tampon du cache ASCII en tient lieu
+            with open(_marker_path(stan_dir, name), "w", encoding="utf-8") as fh:
+                fh.write(version + "\n")
         log(f"[stan]   -> executable : {model.exe_file}")
         compiled.append(name)
     return compiled
@@ -488,6 +508,15 @@ def _ensure(parent: str = None, force: bool = False, allow_install: bool = True)
             "cmdstanpy absent : installez l'extra DRT (pip install -r requirements-drt.txt)."
         )
 
+    # 0. make tourne DANS le dossier de CmdStan : un chemin non-ASCII là ne se contourne pas par
+    #    une copie. Mieux vaut le refuser AVANT un téléchargement de plusieurs minutes.
+    if allow_install and stan_compile.has_non_ascii(parent):
+        return EXIT_BAD_PATH, (
+            f"Le dossier d'installation de CmdStan ({parent}) contient des caractères accentués "
+            "ou spéciaux, ce qui empêche la compilation du moteur DRT sur certains systèmes "
+            "Windows ; utilisez un dossier sans accents (ex: C:\\cmdstan : --cmdstan-dir "
+            "C:\\cmdstan, ou la variable CMDSTAN_INSTALL_DIR) et relancez.")
+
     # 1. CmdStan. La version épinglée est celle qu'on veut ; si elle manque, on l'installe
     #    (téléchargement + build, plusieurs minutes ; idempotent via overwrite=False) — si on
     #    y est autorisé, et À CÔTÉ d'une autre version éventuelle, qu'on ne touche pas.
@@ -539,6 +568,8 @@ def _ensure(parent: str = None, force: bool = False, allow_install: bool = True)
             precompile(force=force)
         except StanCompileError as exc:
             return _explain_compile_failure(exc)
+        except stan_compile.NonAsciiPathError as exc:
+            return EXIT_COMPILE, str(exc)
         except Exception as exc:  # noqa: BLE001 — hors compilation C++ : import, .stan absent…
             return EXIT_COMPILE, (
                 f"Echec de preparation des modeles Stan (avant la compilation C++) : "
@@ -605,6 +636,10 @@ def main(argv=None):
 
     if _is_ms_store_python():
         log("[info] Python Microsoft Store detecte -> dossier court obligatoire pour cmdstan.")
+    if stan_compile.has_non_ascii(REPO_DIR):
+        log("[info] " + stan_compile.INSTALL_PATH_WARNING)
+        log("[info] Les modeles Stan seront compiles depuis un cache ASCII ; en cas d'echec, "
+            "deplacez l'application, par exemple vers C:\\EIS_Analyzer.")
 
     code, message = _ensure(parent=args.cmdstan_dir, force=args.force, allow_install=True)
     log()
