@@ -186,10 +186,6 @@ def save_experiment(
     return buf.getvalue()
 
 
-# alias pour clarté dans les pages
-zip_experiment = save_experiment
-
-
 # ─────────────────────────────────────────────
 # Chargement
 # ─────────────────────────────────────────────

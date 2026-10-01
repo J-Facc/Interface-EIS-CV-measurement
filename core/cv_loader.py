@@ -8,7 +8,6 @@ import pandas as pd
 
 from core.cv_models import CVScan
 from core.loader import parse_robust
-from core.models import CVCurve
 
 _E_ALIASES = {"ewe", "e", "potential", "voltage"}
 _I_ALIASES = {"i", "current", "<i>"}
@@ -243,26 +242,6 @@ def load_cv_file(
         step=step,
         source_files=[label],
     )
-
-
-def load_cv_curve(content: bytes, label: str, warnings_out: Optional[list] = None) -> CVCurve:
-    """Parse a CV file into a lightweight CVCurve(Ewe, I, label).
-
-    Thin wrapper over load_cv_file for callers that only need the raw (Ewe, I)
-    curve — e.g. to stash a detected CV file in session without plotting it,
-    before a dedicated CV view exists. `I` is already in amperes. For full CV
-    analysis (concentration, step, replicates), use load_cv_file → CVScan.
-
-    Args:
-        content: Raw file bytes.
-        label: Display label (typically the filename).
-        warnings_out: Optional list; parser warnings are appended to it.
-
-    Returns:
-        A CVCurve with Ewe in volts and I in amperes.
-    """
-    scan = load_cv_file(content, label=label, concentration=0.0, step="cv", warnings_out=warnings_out)
-    return CVCurve(Ewe=scan.E, I=scan.I, label=label)
 
 
 def average_cv_replicates(scans: list) -> CVScan:

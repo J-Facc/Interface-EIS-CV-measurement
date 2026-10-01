@@ -324,42 +324,6 @@ def nyquist_normalized_figure(
     return fig
 
 
-# ── Bode ───────────────────────────────────────────────────────────────────────────
-
-def bode_figure(session: EISSession) -> go.Figure:
-    theme = get_theme("light")
-    colors = theme["colors"]
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        subplot_titles=["Module |Z| (Ω)", "Phase (°)"],
-        vertical_spacing=0.12,
-    )
-    all_spectra: list = []
-    if session.bare:
-        all_spectra.append(session.bare)
-    if session.probe:
-        all_spectra.append(session.probe)
-    for grp in session.groups:
-        all_spectra.append(grp.spectrum)
-
-    for ci, sp in enumerate(all_spectra):
-        color = colors[ci % len(colors)]
-        lbl = _spectrum_label(sp)
-        Zmod = np.sqrt(sp.Zre ** 2 + sp.Zim ** 2)
-        phase_deg = np.degrees(np.arctan2(-sp.Zim, sp.Zre))
-        kw = dict(x=sp.f, mode="markers+lines",
-                  marker=dict(color=color, size=5), line=dict(color=color))
-        fig.add_trace(go.Scatter(**kw, y=Zmod, name=lbl, showlegend=True), row=1, col=1)
-        fig.add_trace(go.Scatter(**kw, y=phase_deg, name=lbl, showlegend=False), row=2, col=1)
-
-    fig.update_xaxes(type="log", title_text="Fréquence (Hz)", row=2, col=1)
-    fig.update_yaxes(type="log", title_text="|Z| (Ω)", row=1, col=1)
-    fig.update_yaxes(title_text="Phase (°)", row=2, col=1)
-    fig.update_layout(title="Diagramme de Bode")
-    apply_theme_to_figure(fig, "light")
-    return fig
-
-
 # ── DRT ───────────────────────────────────────────────────────────────────────────
 
 def _hex_to_rgba(color: str, alpha: float) -> str:
@@ -762,86 +726,6 @@ def calibration_figure(session: EISSession) -> go.Figure:
     return fig
 
 
-# ── Kramers-Kronig (fits/kk_validation.py) ───────────────────────────────────
-
-def kk_figure(spectrum: EISSpectrum, kk_result: dict, label: str = "") -> go.Figure:
-    """Nyquist (mesuré vs reconstruction KK) + résidus normalisés (%) en sous-graphes.
-
-    Args:
-        spectrum: Spectre EIS d'origine.
-        kk_result: dict retourné par fits.kk_validation.kramers_kronig_check.
-        label: Nom affiché dans le titre.
-    """
-    fig = make_subplots(
-        rows=2, cols=1,
-        row_heights=[0.6, 0.4],
-        subplot_titles=["Nyquist — mesuré vs reconstruction KK", "Résidus normalisés (%)"],
-        vertical_spacing=0.12,
-    )
-
-    fig.add_trace(go.Scatter(
-        x=spectrum.Zre, y=spectrum.Zim, mode="markers", name="Mesuré",
-        marker=dict(color="#1a56db", size=7),
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=kk_result["Z_kk_re"], y=kk_result["Z_kk_im"], mode="lines", name="Reconstruction KK",
-        line=dict(color="#dc2626", width=2),
-    ), row=1, col=1)
-    fig.update_xaxes(title_text="Z' (Ω)", row=1, col=1)
-    fig.update_yaxes(title_text="-Z'' (Ω)", scaleanchor="x", row=1, col=1)
-
-    f = np.asarray(spectrum.f, dtype=float)
-    Zmod = np.sqrt(np.asarray(spectrum.Zre)**2 + np.asarray(spectrum.Zim)**2)
-    Zmod = np.where(Zmod > 0, Zmod, 1e-30)
-    res_re_pct = 100.0 * kk_result["residuals_re"] / Zmod
-    res_im_pct = 100.0 * kk_result["residuals_im"] / Zmod
-
-    fig.add_trace(go.Scatter(
-        x=f, y=res_re_pct, mode="markers+lines", name="Résidu Re",
-        line=dict(color="#1a56db", width=1), marker=dict(size=5),
-    ), row=2, col=1)
-    fig.add_trace(go.Scatter(
-        x=f, y=res_im_pct, mode="markers+lines", name="Résidu Im",
-        line=dict(color="#db2777", width=1), marker=dict(size=5),
-    ), row=2, col=1)
-    fig.add_hline(y=0, line=dict(color="#9ca3af", width=0.5), row=2, col=1)
-    fig.update_xaxes(type="log", title_text="Fréquence (Hz)", row=2, col=1)
-    fig.update_yaxes(title_text="Résidu (%)", row=2, col=1)
-
-    verdict = "✅ KK validé" if kk_result["kk_passed"] else "❌ KK échoué"
-    fig.update_layout(
-        title=f"Validation Kramers-Kronig — {label} — {verdict} "
-              f"(max résidu={kk_result['max_residual']*100:.2f}%)",
-        legend=dict(orientation="h", y=-0.15),
-    )
-    apply_theme_to_figure(fig, "light")
-    return fig
-
-
-def drt_reconstruction_figure(spectrum: EISSpectrum, fit_result, label: str = "") -> go.Figure:
-    """Nyquist mesuré vs reconstruit par le modèle DRT, avec ε affiché."""
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=spectrum.Zre, y=spectrum.Zim, mode="markers", name="Mesuré",
-        marker=dict(color="#1a56db", size=7),
-    ))
-    fig.add_trace(go.Scatter(
-        x=fit_result.Zfit_re, y=fit_result.Zfit_im, mode="lines", name="Reconstruction DRT",
-        line=dict(color="#dc2626", width=2),
-    ))
-    fig.update_xaxes(title_text="Z' (Ω)")
-    fig.update_yaxes(title_text="-Z'' (Ω)", scaleanchor="x")
-
-    err = fit_result.reconstruction_error
-    err_str = f"ε = {err*100:.2f}%" if err is not None else "ε non disponible"
-    fig.update_layout(
-        title=f"Reconstruction DRT — {label} — {err_str}",
-        legend=dict(orientation="h", y=-0.15),
-    )
-    apply_theme_to_figure(fig, "light")
-    return fig
-
-
 def calibration_drt_figure(session: EISSession, model_name: str = "drt_bayes") -> go.Figure:
     """Calibration log(Rct) vs log([c]) pour un modèle DRT, avec barres d'erreur et régression.
 
@@ -858,7 +742,7 @@ def calibration_drt_figure(session: EISSession, model_name: str = "drt_bayes") -
         apply_theme_to_figure(fig, "light")
         return fig
 
-    log_c, log_rct, rcts, errs = cal.log_c, cal.y, cal.rcts, cal.errs
+    log_c, log_rct, errs = cal.log_c, cal.y, cal.errs
     log_c_line = np.linspace(log_c.min(), log_c.max(), 200)
     y_line = cal.slope * log_c_line + cal.intercept
 

@@ -7,27 +7,6 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 
-class PhysicsSettings(BaseModel):
-    T: float = 298.0
-    F: float = 96485.0
-    R: float = 8.314
-    n: int = 1
-    C0: float = 0.02
-    D_FeIII: float = 7.2e-10
-    D_FeII: float = 6.5e-10
-
-
-class GeometrySettings(BaseModel):
-    xe: float = 30e-6
-    h: float = 60e-6
-    d: float = 300e-6
-    S_WE: float = 9e-9
-
-
-class ConditionsSettings(BaseModel):
-    Fv: float = 5e-10
-
-
 class CircuitParameterSettings(BaseModel):
     """Guess et bornes d'UN paramètre du circuit (``None`` = non borné de ce côté)."""
 
@@ -111,17 +90,8 @@ class FitSettings(BaseModel):
     n_freqs_parasites: list = Field(default_factory=lambda: [50.0, 100.0])
     tol_parasites: float = 3.0
     max_iter: int = 10000
-    n_monte_carlo: int = 1000
     circuit: CircuitSettings = Field(default_factory=CircuitSettings)
     drt: DRTSettings = Field(default_factory=DRTSettings)
-    drt_wiener_W: float = 1.0e-8
-    drt_n_z: int = 10000
-
-
-class ExportSettings(BaseModel):
-    dpi: int = 150
-    fig_width: int = 1200
-    fig_height: int = 800
 
 
 class AcquisitionSettings(BaseModel):
@@ -133,12 +103,8 @@ class AcquisitionSettings(BaseModel):
 
 
 class AppSettings(BaseModel):
-    physics: PhysicsSettings = Field(default_factory=PhysicsSettings)
-    geometry: GeometrySettings = Field(default_factory=GeometrySettings)
-    conditions: ConditionsSettings = Field(default_factory=ConditionsSettings)
     acquisition: AcquisitionSettings = Field(default_factory=AcquisitionSettings)
     fit: FitSettings = Field(default_factory=FitSettings)
-    export: ExportSettings = Field(default_factory=ExportSettings)
 
 
 _DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config" / "default.yaml"

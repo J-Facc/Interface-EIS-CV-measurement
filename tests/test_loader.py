@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from core.loader import load_spectrum, average_replicates
-from core.cv_loader import load_cv_file, load_cv_curve
-from core.models import CVCurve, EISSpectrum
+from core.cv_loader import load_cv_file
+from core.models import EISSpectrum
 from core.robust_loader import parse_eclab_file
 
 
@@ -301,18 +301,3 @@ def test_load_spectrum_new_format_respects_config_bounds():
     )
     assert sp.f[0] == pytest.approx(5.0e5, rel=1e-6)
     assert sp.f[-1] == pytest.approx(1.0, rel=1e-6)
-
-
-def test_load_cv_curve_returns_cvcurve(tmp_path):
-    """load_cv_curve renvoie la dataclass légère CVCurve(Ewe, I, label)."""
-    text = (
-        "Ewe/V\t<I>/mA\n"
-        "-9,2510954E-003\t-6,674337782897055E-004\n"
-        "1,0000000E-002\t-5,000000000000000E-004\n"
-    )
-    curve = load_cv_curve(text.encode(), "cv_curve.txt")
-    assert isinstance(curve, CVCurve)
-    assert curve.label == "cv_curve.txt"
-    assert curve.Ewe.size == 2 and curve.I.size == 2
-    # courant déjà en ampères
-    assert np.all(np.abs(curve.I) < 1e-3)

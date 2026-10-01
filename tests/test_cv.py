@@ -10,7 +10,7 @@ from core.cv_loader import (
     split_branches,
 )
 from core.cv_pipeline import run_cv_pipeline
-from core.cv_models import CVScan, CVSession
+from core.cv_models import CVSession
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -239,7 +239,7 @@ def test_pipeline_no_probe():
 # ── cv_plots (import only — no display) ──────────────────────────────────────
 
 def test_cv_current_figure_importable():
-    from plotting.cv_plots import cv_current_figure, cv_calibration_figure
+    from plotting.cv_plots import cv_current_figure, cv_calibration_figure_multi
     assignments = [
         _make_assignment(CSV_BASIC, "probe", 0.0),
         _make_assignment(b"Ewe,I\n-0.5,-2e-6\n0.0,0.0\n0.5,2e-6\n", "hybridization", 1e-9),
@@ -247,6 +247,6 @@ def test_cv_current_figure_importable():
     ]
     cv = run_cv_pipeline(assignments)
     fig1 = cv_current_figure(cv)
-    fig2 = cv_calibration_figure(cv)
+    fig2 = cv_calibration_figure_multi({1: cv})
     assert fig1 is not None
     assert fig2 is not None

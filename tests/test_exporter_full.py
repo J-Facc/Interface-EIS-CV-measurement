@@ -335,11 +335,9 @@ def _cv_session():
 
 
 def test_cv_calibration_csv_uses_the_mean_signal_per_positive_concentration():
-    rows = _dicts(E.export_cv_calibration_csv(_cv_session()))
+    rows = _dicts(E.export_cv_calibration_csv_multi({1: _cv_session()}))
 
-    assert list(rows[0]) == ["concentration_M", "log10_concentration", "signal_norm",
-                             "slope", "intercept", "r2", "p_value", "std_err"]
-    assert [float(r["signal_norm"]) for r in rows] == pytest.approx([0.2, 0.5])   # la conc. 0 est écartée
+    assert [float(r["delta_signal_moyen"]) for r in rows] == pytest.approx([0.2, 0.5])   # la conc. 0 est écartée
     assert float(rows[0]["slope"]) == pytest.approx(0.3)
 
 
@@ -353,25 +351,7 @@ def test_cv_calibration_csv_multi_has_one_block_per_electrode_and_skips_unusable
 
 
 def test_cv_calibration_csv_is_header_only_with_fewer_than_two_concentrations():
-    assert len(_rows(E.export_cv_calibration_csv(CVSession()))) == 1
-
-
-def test_cv_calibration_csv_from_result_is_reachable_but_has_no_producer():
-    """COMPORTEMENT ACTUEL (AUDIT.md §2.1 #8 / §2.6) : cette variante ne sert qu'à un dict
-    ``{"groups": [...]}`` que plus aucune page ne produit ; elle reste pourtant testable
-    et atteignable depuis export_full_zip. Ne retient que les groupes à conc > 0 et
-    signal fini."""
-    result = {"groups": [
-        {"concentration": 1e-9, "delta_I_norm_mean": 0.2},
-        {"concentration": 1e-8, "delta_I_norm_mean": float("nan")},
-        {"concentration": 0.0, "delta_I_norm_mean": 0.9},
-        {"concentration": 1e-7, "delta_I_norm_mean": 0.8},
-    ]}
-    rows = _dicts(E.export_cv_calibration_csv_from_result(result, {"slope": 0.3, "r2": 0.9}))
-
-    assert [r["concentration_M"] for r in rows] == ["1e-09", "1e-07"]
-    assert rows[0]["slope"] == "0.3" and rows[0]["intercept"] == ""     # clé absente → champ vide
-    assert len(_rows(E.export_cv_calibration_csv_from_result({}))) == 1
+    assert len(_rows(E.export_cv_calibration_csv_multi({1: CVSession()}))) == 1
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -460,19 +440,17 @@ def test_full_zip_omits_everything_that_is_absent():
     assert "export/fits/parametres_electrode_1.csv" not in names
 
 
-def test_full_zip_picks_the_cv_calibration_exporter_from_the_shape_of_cv_session():
+def test_full_zip_writes_the_cv_calibration_of_an_electrode_dict():
     def cv_csv(cv_session):
         z = E.export_full_zip(None, None, None, cv_session=cv_session)
         with zipfile.ZipFile(io.BytesIO(z)) as zf:
             return _rows(zf.read("export/calibration/cv_calibration.csv"))[0]
 
-    assert cv_csv(_cv_session())[0] == "concentration_M"                       # CVSession seule
     assert cv_csv({1: _cv_session()})[0] == "electrode"                         # dict d'électrodes
-    assert cv_csv({"groups": [{"concentration": 1e-9, "delta_I_norm_mean": 0.2}]})[2] == "delta_I_norm_mean"
     # Un CVSession sans concentration exploitable : le fichier est écrit quand même, réduit à
     # son en-tête (même défaut que le drt_values.csv vide ci-dessous).
-    assert len(cv_csv(CVSession())) == 8
-    assert _zip_names(E.export_full_zip(None, None, None, cv_session=CVSession())) == [
+    assert len(cv_csv({1: CVSession()})) == 9
+    assert _zip_names(E.export_full_zip(None, None, None, cv_session={1: CVSession()})) == [
         "export/calibration/cv_calibration.csv"]
 
 

@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import io
 import csv
-import math
 import zipfile
 import yaml
 import numpy as np
 
 from core.models import EISSession
-from core.cv_models import CVSession
 from core.calibration import compute_calibration_all, compute_cv_calibration
 from core.results_table import group_rows, replicate_rows
 
@@ -112,51 +110,6 @@ def export_group_results_csv(sessions) -> bytes:
     return _rows_csv(group_rows(_as_sessions_dict(sessions)))
 
 
-def export_spectra_csv(sessions) -> bytes:
-    """Return raw spectra (f, Zre, Zim) for all groups as CSV bytes.
-
-    Accepte un EISSession unique (rétro-compatibilité) ou un dict
-    {electrode_index: EISSession}.
-    """
-    sessions = _as_sessions_dict(sessions)
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["electrode", "label", "concentration", "f_Hz", "Zre_Ohm", "Zim_Ohm"])
-
-    for e, session in sorted(sessions.items()):
-        spectra = []
-        if session.bare is not None:
-            spectra.append(("bare", 0.0, session.bare))
-        if session.probe is not None:
-            spectra.append(("probe", 0.0, session.probe))
-        for grp in session.groups:
-            spectra.append((grp.spectrum.label, grp.concentration, grp.spectrum))
-
-        for label, conc, sp in spectra:
-            for f, zre, zim in zip(sp.f, sp.Zre, sp.Zim):
-                writer.writerow([e, label, conc, f, zre, zim])
-
-    return buf.getvalue().encode()
-
-
-def export_figure_html(fig) -> str:
-    """Return a Plotly figure as a standalone HTML string."""
-    return fig.to_html(full_html=True, include_plotlyjs="cdn")
-
-
-def export_figure_png(fig, config: dict) -> bytes:
-    """Return a Plotly figure as PNG bytes.
-
-    Requires kaleido. Raises RuntimeError if not available.
-    """
-    try:
-        return fig.to_image(format="png", scale=2)
-    except Exception as exc:
-        raise RuntimeError(
-            "Export PNG indisponible — installez kaleido : pip install kaleido"
-        ) from exc
-
-
 def _yaml_value(v):
     if hasattr(v, "tolist"):
         return v.tolist()
@@ -254,57 +207,7 @@ def export_calibration_csv(sessions: dict) -> bytes:
     return buf.getvalue().encode()
 
 
-# ── Calibration CV — export (ajout, même pattern que EIS) ─────────────────────
-
-def export_cv_calibration_csv(cv_session: CVSession) -> bytes:
-    """Exporte concentration / log10(conc) / signal normalisé moyen + régression
-    OLS (slope, intercept, r2, p_value, std_err) pour la calibration CV.
-    """
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow([
-        "concentration_M", "log10_concentration", "signal_norm",
-        "slope", "intercept", "r2", "p_value", "std_err",
-    ])
-
-    cal = compute_cv_calibration(cv_session)  # source unique (core/calibration.py)
-    if cal is None:
-        return buf.getvalue().encode()
-
-    for conc, lc, sig in zip(cal.concentrations, cal.log_c, cal.signals):
-        writer.writerow([
-            conc, lc, sig,
-            cal.slope, cal.intercept, cal.r2, cal.pvalue, cal.stderr,
-        ])
-
-    return buf.getvalue().encode()
-
-
-def export_cv_calibration_csv_from_result(cv_result: dict, cv_ols: dict | None = None) -> bytes:
-    """Variante de export_cv_calibration_csv pour la structure dict réellement
-    produite par pages/B_cv.py (st.session_state['cv_result'] / ['cv_ols']),
-    plutôt que pour le dataclass CVSession (non utilisé par la page live)."""
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow([
-        "concentration_M", "log10_concentration", "delta_I_norm_mean",
-        "slope", "intercept", "r2", "p_value", "std_err",
-    ])
-
-    reg = cv_ols or {}
-    for g in (cv_result or {}).get("groups", []):
-        conc = g.get("concentration")
-        sig = g.get("delta_I_norm_mean")
-        if conc is None or conc <= 0 or sig is None or not np.isfinite(sig):
-            continue
-        writer.writerow([
-            conc, math.log10(conc), sig,
-            reg.get("slope"), reg.get("intercept"), reg.get("r2"),
-            reg.get("p_value"), reg.get("stderr"),
-        ])
-
-    return buf.getvalue().encode()
-
+# ── Calibration CV — export ───────────────────────────────────────────────────
 
 def export_cv_calibration_csv_multi(cv_sessions: dict) -> bytes:
     """Exporte la calibration CV pour plusieurs électrodes : une section par
@@ -453,7 +356,7 @@ def export_full_zip(
     experiment_clean: dict,
     sessions: dict,
     normalized: dict,
-    cv_session=None,
+    cv_session: dict | None = None,
     config: dict | None = None,
 ) -> bytes:
     """Construit une archive ZIP en mémoire regroupant tous les exports
@@ -581,12 +484,7 @@ def export_full_zip(
             if cal_eis.strip():
                 zf.writestr("export/calibration/eis_calibration.csv", cal_eis)
         if cv_session:
-            if isinstance(cv_session, dict) and "groups" in cv_session:
-                cal_cv = export_cv_calibration_csv_from_result(cv_session)
-            elif isinstance(cv_session, dict):
-                cal_cv = export_cv_calibration_csv_multi(cv_session)
-            else:
-                cal_cv = export_cv_calibration_csv(cv_session)
+            cal_cv = export_cv_calibration_csv_multi(cv_session)
             if cal_cv.strip():
                 zf.writestr("export/calibration/cv_calibration.csv", cal_cv)
 

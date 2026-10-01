@@ -160,7 +160,7 @@ def _render_aggregate(prefix: str, g: dict, label: str, intra_label: str) -> Non
 
 
 def _render_mean_fit_diagnostics(an) -> None:
-    """Diagnostics du fit du spectre moyen (MEASUREMENT_MODEL.md §8) : κ, rang,
+    """Diagnostics du fit du spectre moyen (docs/MEASUREMENT_MODEL.md §8) : κ, rang,
     identifiabilité, différences unilatérales, bornes actives, χ²ᵣ et son intervalle."""
     fr = an.orazem.mean_fit
     d = fr.fit_diagnostics or {}
@@ -296,8 +296,8 @@ def _render_drt_tab(sessions: dict) -> None:
     if not ok:
         st.error(
             f"Moteur DRT indisponible : {why}. Installez l'extra DRT "
-            "(`pip install -r requirements-drt.txt`) puis lancez **setup_drt_bayesien** "
-            "pour la toolchain CmdStan."
+            "(`pip install -r requirements-drt.txt`) et la toolchain CmdStan : relancez "
+            "**launch.bat** (ou `python setup_drt_bayesien.py --ensure`)."
         )
         return
 

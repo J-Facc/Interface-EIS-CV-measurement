@@ -7,6 +7,7 @@ réplicat + la moyenne) et DRT (chaque réplicat + la moyenne). Les groupes arr�
 (structure d'erreur non caractérisable, AUDIT.md ERR-1) sont signalés explicitement.
 """
 
+import copy
 import math
 
 import numpy as np
@@ -138,27 +139,6 @@ def _circuit_editor(defaults: dict):
     except InvalidAnalysisInput as exc:
         st.error(str(exc))
         return None, fingerprint
-
-
-def _merge_overrides(base: dict, overrides: dict) -> dict:
-    """Apply user physical-parameter overrides to a config copy."""
-    cfg = {k: dict(v) if isinstance(v, dict) else v for k, v in base.items()}
-    cfg.setdefault("conditions", {})
-    cfg.setdefault("geometry", {})
-    cfg.setdefault("physics", {})
-    key_map = {
-        "Fv": "conditions",
-        "xe": "geometry",
-        "h":  "geometry",
-        "d":  "geometry",
-        "T":  "physics",
-        "C0": "physics",
-    }
-    for key, value in overrides.items():
-        section = key_map.get(key)
-        if section:
-            cfg[section][key] = value
-    return cfg
 
 
 def _load_electrode_spectra(experiment: dict, elec_idx: int) -> list:
@@ -411,7 +391,7 @@ def main() -> None:
 
     experiment = st.session_state["experiment_clean"]
 
-    with st.expander("⚙️ Circuit, DRT et paramètres physiques", expanded=False):
+    with st.expander("⚙️ Circuit, DRT et pondération", expanded=False):
         circuit_fit, circuit_inputs = _circuit_editor(_DEFAULT_CONFIG)
 
         st.markdown("**DRT** (drt/engine.py — chaque réplicat ET la moyenne de chaque groupe)")
@@ -427,16 +407,6 @@ def main() -> None:
             key="eis_drt_mode", disabled=not run_drt,
         )
 
-        st.markdown("**Paramètres physiques**")
-        phys_overrides = {
-            "Fv": st.number_input("Fv (m³/s)", value=5e-10, format="%.2e", key="eis_Fv"),
-            "xe": st.number_input("xe (m)",    value=30e-6, format="%.2e", key="eis_xe"),
-            "h":  st.number_input("h (m)",     value=60e-6, format="%.2e", key="eis_h"),
-            "d":  st.number_input("d (m)",     value=300e-6, format="%.2e", key="eis_d"),
-            "T":  st.number_input("T (K)",     value=298.0, format="%.1f",  key="eis_T"),
-            "C0": st.number_input("C0 (M)",    value=0.02,  format="%.4f",  key="eis_C0"),
-        }
-
         st.markdown("**Pondération du fit**")
         st.caption(
             "⚖️ Méthode UNIQUE : structure d'erreur d'Orazem σ = α|Zj| + β|Zr − R_sol| + "
@@ -446,7 +416,7 @@ def main() -> None:
             "groupe est **arrêté** avec un message (aucun repli arbitraire)."
         )
 
-    cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
+    cfg = copy.deepcopy(_DEFAULT_CONFIG)   # copie isolée : le pipeline ne touche jamais au défaut
     inputs = {"circuit": circuit_inputs, "run_drt": run_drt, "drt_mode": drt_mode}
 
     if st.button("↺ Relancer l'analyse", key="eis_rerun_btn"):

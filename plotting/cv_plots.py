@@ -134,48 +134,6 @@ def cv_calibration_figure_multi(cv_sessions: dict) -> go.Figure:
     return fig
 
 
-def cv_calibration_figure(cv_session: CVSession) -> go.Figure:
-    """Signal normalisé vs log([c]) avec régression (core.calibration)."""
-    cal = compute_cv_calibration(cv_session)
-    if cal is None:
-        return go.Figure()
-
-    x_fit, y_fit = _fit_line(cal)
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=cal.log_c, y=cal.signals,
-        mode="markers",
-        name="Signal mesuré",
-        marker=dict(size=10),
-    ))
-    fig.add_trace(go.Scatter(
-        x=x_fit, y=y_fit,
-        mode="lines",
-        name="Régression linéaire",
-        line=dict(dash="dash"),
-    ))
-
-    fig.add_annotation(
-        xref="paper", yref="paper",
-        x=0.05, y=0.95,
-        text=f"R² = {cal.r2:.2f} — régression linéaire (scipy.stats.linregress)",
-        showarrow=False,
-        align="left",
-        bgcolor="rgba(255,255,255,0.7)",
-        bordercolor="gray",
-        borderwidth=1,
-    )
-
-    fig.update_layout(
-        title="Calibration CV — Signal normalisé vs log([c])",
-        xaxis_title="log([c] / M)",
-        yaxis_title="|ΔI| / |I_probe|",
-        legend_title="Courbe",
-    )
-    return fig
-
-
 def open_cv_calibration_matplotlib_window_multi(cv_sessions: dict) -> None:
     """Ouvre une fenêtre matplotlib (bloquante) reproduisant
     cv_calibration_figure_multi() : une droite par électrode."""

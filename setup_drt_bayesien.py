@@ -3,24 +3,34 @@ setup_drt_bayesien.py — installe/enregistre CmdStan (toolchain C++ incluse) pu
 précompile les modèles Stan de la DRT bayésienne (drt/bayes_drt2), afin que la première analyse
 ne paie pas le coût de compilation.
 
-Deux points d'entrée :
+C'est LA logique d'installation de la DRT : ``launch.bat`` l'appelle depuis le venv du
+lanceur (``--check`` puis, si besoin, ``--ensure``) au lieu de la dupliquer ; un
+développeur peut l'appeler à la main.
 
-* :func:`main` — script CLI (``setup_drt_bayesien.bat``), lancement manuel.
-* :func:`ensure_drt_ready` — **idempotent**, importé par ``app.py`` pour préparer
-  la DRT AU PREMIER LANCEMENT (install CmdStan + compilation de ``Series.stan``),
-  sans aucune étape manuelle. Sur les lancements suivants, c'est un quasi no-op
-  (chemin enregistré + exécutable Stan en cache). Ne lève jamais : renvoie
-  ``(ready, message)`` pour que l'app reste utilisable même si la préparation échoue.
+Points d'entrée :
+
+* :func:`main` — CLI (voir ci-dessous).
+* :func:`check_drt_ready` — sans effet de bord ni réseau : la DRT est-elle prête ?
+* :func:`ensure_drt_ready` — **idempotent**, renvoie ``(ready, message)`` et ne lève
+  jamais. ``app.py`` l'appelle avec ``allow_install=False`` : l'application n'installe
+  RIEN d'elle-même (une installation lancée depuis le script d'une page bloquerait
+  l'interface sans délai maximal, et hors ligne elle échouerait à chaque démarrage) ;
+  l'installation est l'affaire du lanceur.
 
 Usage CLI :
-    python setup_drt_bayesien.py [--cmdstan-dir DIR] [--path-out FICHIER]
+    python setup_drt_bayesien.py --check             # 0 si prêt, 1 sinon (aucune installation)
+    python setup_drt_bayesien.py [--ensure]          # installe/compile SEULEMENT ce qui manque
+    python setup_drt_bayesien.py --ensure --force    # recompile les modèles Stan
+    options : --cmdstan-dir DIR
 
 Codes de sortie :
-    0  succès
+    0  succès (ou, avec --check : prêt)
+    1  --check : pas prêt
     3  cmdstanpy absent du venv
-    4  échec install_cmdstan (téléchargement / SSL / toolchain)
+    4  échec install_cmdstan (téléchargement / SSL / toolchain) alors que le réseau répond
     5  chemin cmdstan introuvable / invalide
     6  échec de la précompilation du modèle Stan
+    7  échec de l'installation de CmdStan parce que le réseau est injoignable (hors ligne)
 """
 from __future__ import annotations
 
@@ -28,6 +38,7 @@ import argparse
 import glob
 import os
 import re
+import socket
 import sys
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +50,13 @@ if REPO_DIR not in sys.path:
 # Modèles DRT « série » compilés d'avance : nonneg=False -> Series,
 # nonneg=True -> Series_pos. Couvre les deux cas d'usage par défaut.
 STAN_TARGETS = ["Series.stan", "Series_pos.stan"]
+
+#: Version de CmdStan avec laquelle la DRT a été validée (drt/VALIDATION_REGLAGES.md ;
+#: la CI utilise la même). Épinglée : sans elle, install_cmdstan prendrait la dernière.
+PINNED_CMDSTAN_VERSION = "2.36.0"
+
+EXIT_OK, EXIT_NOT_READY, EXIT_NO_CMDSTANPY, EXIT_INSTALL, EXIT_BAD_PATH, EXIT_COMPILE, EXIT_OFFLINE = (
+    0, 1, 3, 4, 5, 6, 7)
 
 
 def log(msg=""):
@@ -57,6 +75,10 @@ def _default_cmdstan_dir():
     return os.path.join(os.path.expanduser("~"), ".cmdstan")
 
 
+def _resolve_parent(parent=None):
+    return parent or os.environ.get("CMDSTAN_INSTALL_DIR") or _default_cmdstan_dir()
+
+
 def _latest_cmdstan(parent):
     """Renvoie le dossier ``cmdstan-X.Y.Z`` le plus récent sous ``parent``."""
     candidates = []
@@ -72,14 +94,36 @@ def _latest_cmdstan(parent):
     return candidates[-1][1]
 
 
+def _network_down(timeout: float = 5.0) -> bool:
+    """True si github.com:443 est injoignable ET qu'aucun proxy n'est déclaré.
+
+    Sert UNIQUEMENT à étiqueter un échec (« hors ligne » ≠ « échec réel »), jamais à en
+    bloquer un : derrière un proxy, une connexion directe échoue alors que pip/requests
+    passent très bien, donc on ne conclut « hors ligne » que sans variable de proxy.
+    """
+    if any(os.environ.get(v) for v in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")):
+        return False
+    try:
+        with socket.create_connection(("github.com", 443), timeout=timeout):
+            return False
+    except OSError:
+        return True
+
+
 def install(parent):
     import cmdstanpy
 
     os.makedirs(parent, exist_ok=True)
-    log(f"[cmdstan] Installation dans : {parent}")
+    log(f"[cmdstan] Installation de CmdStan {PINNED_CMDSTAN_VERSION} dans : {parent}")
     log("[cmdstan] compiler=True -> mingw-w64 sous Windows (evite d'exiger RTools).")
+    log("[cmdstan] Telechargement puis compilation : plusieurs minutes la premiere fois.")
     # overwrite=False -> idempotent : ne retélécharge pas si déjà présent.
-    cmdstanpy.install_cmdstan(dir=parent, compiler=True, overwrite=False)
+    # install_cmdstan RENVOIE un booléen au lieu de lever : l'ignorer ferait passer un
+    # échec pour un succès jusqu'à l'étape suivante, avec un message sans rapport.
+    ok = cmdstanpy.install_cmdstan(
+        version=PINNED_CMDSTAN_VERSION, dir=parent, compiler=True, overwrite=False, progress=True)
+    if not ok:
+        raise RuntimeError("install_cmdstan a echoue (voir les messages ci-dessus)")
 
 
 def register(parent):
@@ -103,6 +147,12 @@ def verify():
     return path
 
 
+def _stan_dir() -> str:
+    from drt.bayes_drt2 import inversion
+
+    return os.path.join(os.path.dirname(inversion.__file__), "stan_model_files")
+
+
 def precompile():
     """Instancie l'Inverter puis compile les modèles Stan de drt/bayes_drt2 (sans sampling).
 
@@ -112,11 +162,10 @@ def precompile():
     """
     from cmdstanpy import CmdStanModel
 
-    from drt.bayes_drt2 import inversion
     from drt.bayes_drt2.inversion import Inverter
 
     Inverter()  # honore « instancie l'Inverter » + valide l'import du paquet
-    stan_dir = os.path.join(os.path.dirname(inversion.__file__), "stan_model_files")
+    stan_dir = _stan_dir()
 
     compiled = []
     for name in STAN_TARGETS:
@@ -139,10 +188,9 @@ def _series_exe_exists() -> bool:
     """True si les exécutables compilés de ``STAN_TARGETS`` existent tous (``Series_pos`` :
     modèle par défaut du moteur, ``drt.engine.DEFAULT_NONNEG`` ; ``Series`` : nonneg=False)."""
     try:
-        from drt.bayes_drt2 import inversion
+        stan_dir = _stan_dir()
     except Exception:
         return False
-    stan_dir = os.path.join(os.path.dirname(inversion.__file__), "stan_model_files")
     for name in STAN_TARGETS:
         exe = os.path.join(stan_dir, name)[:-len(".stan")] + (".exe" if os.name == "nt" else "")
         if not os.path.exists(exe):
@@ -150,56 +198,92 @@ def _series_exe_exists() -> bool:
     return True
 
 
-def ensure_drt_ready(parent: str = None, force: bool = False):
-    """Prépare la DRT une fois (idempotent) : CmdStan enregistré + Series.stan compilé.
+def check_drt_ready(parent: str = None):
+    """La DRT est-elle prête ? ``(ready, raison)`` — AUCUNE installation, AUCUN réseau.
 
-    Réalise automatiquement, au premier lancement de l'app, ce que l'utilisateur
-    devrait sinon faire à la main : ``install_cmdstan(compiler=True)`` (installe
-    mingw-w64, n'exige pas RTools) puis compilation de ``Series.stan``, mis en cache.
-    Sur les lancements suivants : le chemin est ré-enregistré (instantané) et la
-    compilation est sautée si l'exécutable existe déjà.
-
-    Ne lève jamais : renvoie ``(ready: bool, message: str)`` pour que l'app reste
-    fonctionnelle (DRT désactivée proprement) même si la toolchain échoue.
+    Prête = cmdstanpy importable, un CmdStan valide sous ``parent`` (enregistré dans le
+    process) et les exécutables Stan de ``STAN_TARGETS`` présents.
     """
-    parent = parent or os.environ.get("CMDSTAN_INSTALL_DIR") or _default_cmdstan_dir()
+    parent = _resolve_parent(parent)
+    try:
+        import cmdstanpy  # noqa: F401
+    except ImportError:
+        return False, "cmdstanpy absent (pip install -r requirements-drt.txt)"
+    try:
+        register(parent)
+        verify()
+    except Exception as exc:
+        return False, f"CmdStan introuvable ou invalide ({exc})"
+    if not _series_exe_exists():
+        return False, "modeles Stan non compiles"
+    return True, "DRT prete : CmdStan enregistre et modeles Stan compiles."
+
+
+def _ensure(parent: str = None, force: bool = False, allow_install: bool = True):
+    """Cœur de :func:`ensure_drt_ready` : renvoie ``(code_de_sortie, message)``."""
+    parent = _resolve_parent(parent)
 
     try:
         import cmdstanpy  # noqa: F401
     except ImportError:
-        return False, (
-            "cmdstanpy absent : installez l'extra DRT "
-            "(pip install -r requirements-drt.txt)."
+        return EXIT_NO_CMDSTANPY, (
+            "cmdstanpy absent : installez l'extra DRT (pip install -r requirements-drt.txt)."
         )
 
     # 1. S'assurer que le chemin CmdStan est connu du process (register instantané).
-    #    S'il échoue, CmdStan n'est pas installé → l'installer (téléchargement +
-    #    build, plusieurs minutes ; idempotent via overwrite=False).
+    #    S'il échoue, CmdStan n'est pas installé -> l'installer (téléchargement + build,
+    #    plusieurs minutes ; idempotent via overwrite=False) — si on y est autorisé.
     try:
         register(parent)
         verify()
-    except Exception:
+    except Exception as exc_register:
+        if not allow_install:
+            return EXIT_BAD_PATH, f"CmdStan absent ({exc_register}) : lancez launch.bat ou " \
+                                  "python setup_drt_bayesien.py --ensure."
         try:
             install(parent)
+        except Exception as exc:  # téléchargement / SSL / toolchain
+            if _network_down():
+                return EXIT_OFFLINE, (
+                    f"Hors ligne : CmdStan ne peut pas etre telecharge ({exc}). "
+                    "La DRT restera indisponible jusqu'au prochain lancement avec reseau."
+                )
+            return EXIT_INSTALL, (
+                f"Echec d'installation de CmdStan : {exc}. Verifiez le proxy/SSL (aide : "
+                "python setup_drt_bayesien.py --help) ou la toolchain C++."
+            )
+        try:
             register(parent)
             verify()
-        except Exception as exc:  # téléchargement / SSL / toolchain
-            return False, (
-                f"Échec d'installation de CmdStan : {exc}. Vérifiez la connexion "
-                "réseau (proxy/SSL) ou lancez setup_drt_bayesien manuellement."
-            )
+        except Exception as exc:
+            return EXIT_BAD_PATH, f"CmdStan installe mais inutilisable : {exc}"
 
-    # 2. Compiler Series.stan si l'exécutable n'est pas déjà en cache.
+    # 2. Compiler les modèles Stan SEULEMENT si leurs exécutables manquent.
     if force or not _series_exe_exists():
+        if not allow_install:
+            return EXIT_COMPILE, "Modeles Stan non compiles : lancez launch.bat ou " \
+                                 "python setup_drt_bayesien.py --ensure."
         try:
             precompile()
         except Exception as exc:
-            return False, (
-                f"Échec de compilation du modèle Stan : {exc}. Vérifiez la toolchain "
+            return EXIT_COMPILE, (
+                f"Echec de compilation du modele Stan : {exc}. Verifiez la toolchain "
                 "C++ (install_cmdstan(compiler=True)) puis relancez."
             )
 
-    return True, "DRT prête : CmdStan enregistré et Series.stan compilé."
+    return EXIT_OK, "DRT prete : CmdStan enregistre et modeles Stan compiles."
+
+
+def ensure_drt_ready(parent: str = None, force: bool = False, allow_install: bool = True):
+    """Prépare la DRT (idempotent) : CmdStan enregistré + modèles Stan compilés.
+
+    Ne fait que ce qui manque. Ne lève jamais : renvoie ``(ready: bool, message: str)``
+    pour que l'app reste fonctionnelle (DRT désactivée proprement) si la toolchain échoue.
+    ``allow_install=False`` : ne fait que ré-enregistrer un CmdStan DÉJÀ installé et
+    constater l'état — aucun téléchargement, aucune compilation.
+    """
+    code, message = _ensure(parent=parent, force=force, allow_install=allow_install)
+    return code == EXIT_OK, message
 
 
 def _ssl_hint():
@@ -212,71 +296,42 @@ def _ssl_hint():
         "  - Interception TLS (certificat interne) -> pointer vers le CA bundle :\n"
         "        set REQUESTS_CA_BUNDLE=C:\\chemin\\vers\\ca-bundle.pem\n"
         "        set SSL_CERT_FILE=C:\\chemin\\vers\\ca-bundle.pem\n"
-        "  puis relancer setup_drt_bayesien.bat.\n"
+        "  puis relancer launch.bat.\n"
     )
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Setup DRT bayesien (cmdstan + toolchain C++ + precompilation Stan)"
+        description="DRT bayesienne : verifie / installe CmdStan (toolchain C++) et "
+                    "precompile les modeles Stan. Idempotent.",
+        epilog=_ssl_hint(), formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true",
+                      help="verifie seulement (aucune installation, aucun reseau) : 0 = pret, 1 = non")
+    mode.add_argument("--ensure", action="store_true",
+                      help="installe/compile seulement ce qui manque (comportement par defaut)")
+    parser.add_argument("--force", action="store_true", help="recompile les modeles Stan")
     parser.add_argument(
         "--cmdstan-dir", default=None,
-        help="Dossier parent d'installation de cmdstan (defaut : dossier court)",
+        help="Dossier parent d'installation de cmdstan (defaut : C:\\cmdstan sous Windows)",
     )
-    parser.add_argument(
-        "--path-out", default=None,
-        help="Fichier ou ecrire le chemin cmdstan resolu (consomme par le .bat)",
-    )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    parent = (
-        args.cmdstan_dir
-        or os.environ.get("CMDSTAN_INSTALL_DIR")
-        or _default_cmdstan_dir()
-    )
+    if args.check:
+        ready, reason = check_drt_ready(args.cmdstan_dir)
+        log(reason)
+        return EXIT_OK if ready else EXIT_NOT_READY
 
     if _is_ms_store_python():
         log("[info] Python Microsoft Store detecte -> dossier court obligatoire pour cmdstan.")
 
-    try:
-        import cmdstanpy  # noqa: F401
-    except ImportError:
-        log("ERREUR : cmdstanpy absent du venv. Lancez d'abord : pip install cmdstanpy")
-        return 3
-
-    try:
-        install(parent)
-    except Exception as exc:  # téléchargement / SSL / toolchain
-        log(f"ERREUR pendant install_cmdstan : {exc}")
-        log(_ssl_hint())
-        return 4
-
-    try:
-        register(parent)
-        cmdstan_path = verify()
-    except Exception as exc:
-        log(f"ERREUR : impossible d'enregistrer/verifier le chemin cmdstan : {exc}")
-        return 5
-
-    # Écrire le chemin résolu pour que le .bat puisse le rendre persistant (CMDSTAN).
-    if args.path_out:
-        try:
-            with open(args.path_out, "w", encoding="utf-8") as handle:
-                handle.write(cmdstan_path)
-        except OSError as exc:
-            log(f"[avert] impossible d'ecrire {args.path_out} : {exc}")
-
-    try:
-        precompile()
-    except Exception as exc:
-        log(f"ERREUR pendant la precompilation du modele Stan : {exc}")
-        return 6
-
+    code, message = _ensure(parent=args.cmdstan_dir, force=args.force, allow_install=True)
     log()
-    log("SUCCES : cmdstan installe, chemin enregistre, modele Stan precompile.")
-    log(f"        CMDSTAN = {cmdstan_path}")
-    return 0
+    log(("SUCCES : " if code == EXIT_OK else "ECHEC : ") + message)
+    if code in (EXIT_INSTALL, EXIT_COMPILE):
+        log(_ssl_hint())
+    return code
 
 
 if __name__ == "__main__":

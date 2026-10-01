@@ -15,8 +15,7 @@ Clés deleted_points : f"deleted_points_{e_str}_{modality}_c{ci_str}_r{ri}"
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -893,21 +892,13 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
 
         st.success(
             "✅ Prétraitement validé. Rendez-vous dans les pages "
-            "**EIS seule**, **CV seule**, **Export** ou **Prédiction**."
+            "**EIS seule**, **CV seule** ou **Export**."
         )
 
 
 # ─────────────────────────────────────────────
 # Export des graphiques du prétraitement
 # ─────────────────────────────────────────────
-
-def _collect_deleted_points() -> dict:
-    """Collecte tous les deleted_points depuis st.session_state."""
-    return {
-        k: v for k, v in st.session_state.items()
-        if k.startswith("deleted_points_") and v
-    }
-
 
 def _mpl_conc_color(concentration: float, c_min: float, c_max: float):
     """Couleur log-interpolée plasma, équivalent matplotlib de _conc_color (plotly)."""

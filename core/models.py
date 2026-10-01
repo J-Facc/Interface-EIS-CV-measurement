@@ -14,7 +14,6 @@ from fits.result import FitResult
 
 __all__ = [
     "EISSpectrum",
-    "CVCurve",
     "FitResult",
     "GroupAnalysis",
     "ConcentrationGroup",
@@ -70,28 +69,6 @@ class EISSpectrum:
         self.n_points = len(self.f)
         if self.replicates is None:
             self.replicates = []
-
-
-@dataclass
-class CVCurve:
-    """Courbe voltammétrique légère issue du parseur EC-Lab robuste.
-
-    Structure minimale (Ewe, I, label) destinée au routage des fichiers CV
-    détectés par core.robust_loader.parse_eclab_file lorsqu'aucun traitement CV
-    complet n'est requis : elle permet de stocker la courbe en session sans la
-    tracer. Le courant `I` est déjà en ampères (conversion d'unité appliquée par
-    le parseur). Pour l'analyse CV complète (concentration, step, réplicats,
-    delta_signal), utiliser core.cv_models.CVScan.
-
-    Attributes:
-        Ewe: Potentiel appliqué (V).
-        I: Courant mesuré (A) — déjà converti en ampères par le parseur.
-        label: Nom d'affichage (typiquement le nom de fichier).
-    """
-
-    Ewe: np.ndarray
-    I: np.ndarray
-    label: str
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -222,7 +199,7 @@ class EISSession:
     load_errors: list = field(default_factory=list)
     messages: list = field(default_factory=list)
     # Référence « électrode nue » — AFFICHAGE SEUL, JAMAIS utilisée dans les
-    # calculs (ni fit, ni θ_EIS, ni normalisation, ni calibration, ni export de
+    # calculs (ni fit, ni normalisation, ni calibration, ni export de
     # valeurs calculées). Champ dédié et séparé de `bare`/`probe`/`groups` afin
     # que le pipeline soit structurellement incapable de la lire : elle est
     # attachée à la session APRÈS l'analyse et seulement superposée au Nyquist.

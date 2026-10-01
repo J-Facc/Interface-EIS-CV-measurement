@@ -16,7 +16,6 @@ from core.calibration import compute_calibration, compute_cv_calibration
 from plotting.eis_plots import calibration_figure
 from exports.exporter import (
     export_calibration_csv,
-    export_cv_calibration_csv,
     export_cv_calibration_csv_multi,
 )
 
@@ -117,9 +116,7 @@ def _cv_export_regression(csv_bytes, model_col_absent=True):
 def test_cv_export_matches_core_exactly():
     s = _cv_session()
     cal = compute_cv_calibration(s)
-    for exporter in (lambda: export_cv_calibration_csv(s),
-                     lambda: export_cv_calibration_csv_multi({1: s})):
-        slope, intercept, r2 = _cv_export_regression(exporter())
-        assert slope == cal.slope
-        assert intercept == cal.intercept
-        assert r2 == cal.r2
+    slope, intercept, r2 = _cv_export_regression(export_cv_calibration_csv_multi({1: s}))
+    assert slope == cal.slope
+    assert intercept == cal.intercept
+    assert r2 == cal.r2
