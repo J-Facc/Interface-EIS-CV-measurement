@@ -39,7 +39,9 @@ réglage NUTS `adapt_delta`. Rien d'autre n'est modifié ; les sha256 sont publi
 
 Les calculs passent par CmdStan : un compilateur C++ est requis (installé automatiquement par
 `launch.bat` / `python setup_drt_bayesien.py --ensure`, version 2.36.0, mingw-w64 sous Windows).
-Sans lui, l'application fonctionne **sans** DRT et le dit.
+Sans lui, l'application fonctionne **sans** DRT et le dit. Les réglages n'ont été validés que sur
+CmdStan 2.36.0 : avec une autre version, l'onglet DRT affiche un avertissement et chaque résultat
+le porte dans ses alertes (`drt_diagnostics['cmdstan_version']`).
 
 ## 3. Deux modes
 

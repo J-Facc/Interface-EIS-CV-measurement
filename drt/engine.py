@@ -19,6 +19,12 @@ Ce que ce module ajoute à ``Inverter`` (et pourquoi — AUDIT.md §4)
 * **Gardes qualité** (``drt.diagnostics``) qui remplissent ``FitResult.warnings`` ;
   ``converged`` est CALCULÉ (plus de ``True`` codé en dur — correction de DRT-2).
 * ``params['tau_Rct']`` en **secondes** (correction de DRT-4 : c'était ln τ).
+* **Échec de calcul diagnostiquable** : toute exception survenue pendant le calcul devient une
+  :class:`DRTComputationError` (``RuntimeError``) qui nomme l'étape, la cause (classe ET message)
+  et la ligne d'origine, et porte le traceback complet dans ``.detail`` (écrit au journal par
+  ``core.pipeline``). Un « domain error » nu ne se reproduit plus pour être compris.
+* **Version de CmdStan** : ``drt_diagnostics['cmdstan_version']`` ; si ce n'est pas la version
+  des réglages validés (``drt.cmdstan_version``), une note le dit dans ``FitResult.warnings``.
 * ``chi2_reduced = NaN`` : la DRT ne calcule pas de χ² pondéré ; l'erreur de
   reconstruction relative a son propre champ ``reconstruction_error_relative`` (max) et
   ``reconstruction_error`` suit la formule RMS du fit Orazem (DRT-5).
@@ -40,6 +46,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
+import sys
+import traceback
 import warnings
 from dataclasses import asdict, dataclass
 from typing import Optional, Tuple
@@ -47,10 +56,13 @@ from typing import Optional, Tuple
 import numpy as np
 
 from drt import diagnostics as dg
+from drt.cmdstan_version import PINNED_CMDSTAN_VERSION, installed_version, version_warning
 from fits.result import FitResult
 
 DIST_NAME = "DRT"
 MODEL_NAME = "drt_bayes"
+
+_LOG = logging.getLogger("drt.engine")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Réglages par défaut — CHAQUE valeur est justifiée dans drt/VALIDATION_REGLAGES.md
@@ -159,6 +171,25 @@ def engine_available() -> Tuple[bool, Optional[str]]:
     except Exception as exc:  # noqa: BLE001
         return False, f"CmdStan introuvable : {exc}"
     return True, None
+
+
+def cmdstan_version_info() -> Tuple[Optional[str], Optional[str]]:
+    """``(version, avertissement)`` du CmdStan ACTIF (celui que cmdstanpy utilisera).
+
+    ``version`` est « x.y.z » (``None`` si indéterminable ou si CmdStan est absent) ;
+    ``avertissement`` n'est non vide que si cette version n'est pas ``PINNED_CMDSTAN_VERSION``,
+    celle de ``drt/VALIDATION_REGLAGES.md``. Aucun effet de bord : ne lit que le chemin déjà
+    enregistré (``setup_drt_bayesien.register``) et le ``makefile`` de CmdStan. CmdStan absent
+    → ``(None, None)`` : ce cas relève de :func:`engine_available`, pas d'un avertissement.
+    """
+    try:
+        import cmdstanpy
+
+        path = cmdstanpy.cmdstan_path()
+    except Exception:  # noqa: BLE001
+        return None, None
+    version = installed_version(path)
+    return version, version_warning(version)
 
 
 @contextlib.contextmanager
@@ -311,6 +342,70 @@ def _validate_spectrum(spectrum) -> Tuple[np.ndarray, np.ndarray]:
     return f, zre - 1j * zim
 
 
+class _Progress:
+    """Où en est le calcul — lu par :func:`_computation_error` si une exception survient."""
+
+    def __init__(self) -> None:
+        self.stage: str = "validation"
+        self.stan_model: Optional[str] = None
+        self.library_warnings: list = []
+
+
+class DRTComputationError(RuntimeError):
+    """Une exception est survenue PENDANT le calcul DRT (après la validation d'entrée).
+
+    ``str(exc)`` est le message court, destiné à l'utilisateur : étape, classe ET message de la
+    cause, et ligne exacte d'où elle a été levée. ``detail`` est le diagnostic complet — contexte
+    du spectre, réglages, version de CmdStan, avertissements bibliothèque, traceback complet de
+    la cause — destiné au journal : ``core.pipeline`` l'écrit dans ``logs/eis_analyzer.log``
+    (le moteur n'importe pas ``core`` et n'a donc pas ce journal). La cause d'origine est
+    chaînée (``__cause__``).
+
+    Hérite de ``RuntimeError`` : c'est le contrat de :func:`fit_drt`, que le pipeline intercepte
+    pour ne perdre qu'UN spectre et non toute l'analyse.
+    """
+
+    def __init__(self, message: str, detail: str) -> None:
+        super().__init__(message)
+        self.detail = detail
+
+
+def _short_path(filename: str) -> str:
+    parts = os.path.normpath(filename).split(os.sep)
+    return "/".join(parts[-2:])
+
+
+def _computation_error(exc: BaseException, progress: _Progress, freq: np.ndarray,
+                       Z: np.ndarray, settings: DRTSettings) -> DRTComputationError:
+    """Construit l'erreur détaillée d'un échec de calcul. Ne lève jamais."""
+    what = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    frames = traceback.extract_tb(exc.__traceback__)
+    origin = frames[-1] if frames else None
+    where = f"{_short_path(origin.filename)}:{origin.lineno} dans {origin.name}()" if origin else "origine inconnue"
+    abs_z = np.abs(Z)
+    f_min, f_max = float(np.min(freq)), float(np.max(freq))
+    message = (f"échec à l'étape « {progress.stage} » ({what}), levé dans {where} ; "
+               f"{freq.size} points de {f_min:.3g} à {f_max:.3g} Hz. "
+               f"Traceback complet dans logs/eis_analyzer.log.")
+    version, _ = cmdstan_version_info()
+    lines = [
+        f"Échec du calcul DRT à l'étape « {progress.stage} » : {what}",
+        f"  levé dans : {where}",
+        f"  spectre : {freq.size} points, f ∈ [{f_min:.6g} ; {f_max:.6g}] Hz, "
+        f"|Z| ∈ [{float(np.min(abs_z)):.6g} ; {float(np.max(abs_z)):.6g}] Ω, "
+        f"{int(np.sum(abs_z == 0))} point(s) à Z = 0",
+        f"  réglages : {asdict(settings)}",
+        f"  modèle Stan : {progress.stan_model}",
+        f"  CmdStan : {version} (validé : {PINNED_CMDSTAN_VERSION}) ; python {sys.version.split()[0]}",
+    ]
+    if progress.library_warnings:
+        lines.append("  avertissements émis avant l'échec :")
+        lines += [f"    - {w}" for w in progress.library_warnings]
+    lines.append("Traceback complet de la cause :")
+    lines.append("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip())
+    return DRTComputationError(message, "\n".join(lines))
+
+
 def fit_drt(spectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG,
             init_from_ridge: bool = DEFAULT_INIT_FROM_RIDGE, random_seed: int = DEFAULT_RANDOM_SEED,
             chains: int = DEFAULT_CHAINS, warmup: int = DEFAULT_WARMUP, samples: int = DEFAULT_SAMPLES,
@@ -335,8 +430,10 @@ def fit_drt(spectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG
         ssi aucune alerte de catégorie ``'convergence'``.
 
     Raises:
-        ValueError: réglage ou spectre invalide.
-        RuntimeError: moteur indisponible, ou échec de CmdStan (erreur propagée).
+        ValueError: réglage ou spectre invalide (levée AVANT tout calcul).
+        RuntimeError: moteur indisponible ; ou :class:`DRTComputationError` — toute exception
+            survenue PENDANT le calcul (CmdStan, cvxopt, numpy…), qui porte l'étape, l'origine
+            exacte et le traceback complet de la cause (voir cette classe).
     """
     settings = DRTSettings(mode=mode, nonneg=bool(nonneg), init_from_ridge=bool(init_from_ridge),
                            random_seed=random_seed,
@@ -346,6 +443,22 @@ def fit_drt(spectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG
     ok, why = engine_available()
     if not ok:
         raise RuntimeError(f"Moteur DRT indisponible — {why}")
+    progress = _Progress()
+    try:
+        return _run_inversion(spectrum, freq, Z, settings, model_name, progress)
+    except Exception as exc:  # noqa: BLE001 — contrat : le pipeline ne reçoit que ValueError/RuntimeError
+        error = _computation_error(exc, progress, freq, Z, settings)
+        _LOG.error("%s", error.detail)
+        raise error from exc
+
+
+def _run_inversion(spectrum, freq: np.ndarray, Z: np.ndarray, settings: DRTSettings,
+                   model_name: str, progress: "_Progress") -> FitResult:
+    """Corps de :func:`fit_drt` après validation : inversion, diagnostics, extraction de Rct.
+
+    ``progress.stage`` nomme l'étape en cours, pour que l'échec en dise l'endroit.
+    """
+    progress.stage = "préparation de l'inversion"
     Inverter = _import_inverter()
 
     order = np.argsort(freq)[::-1]          # HF → BF sur les fréquences mesurées
@@ -361,12 +474,22 @@ def fit_drt(spectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG
         kw.update(max_iter=int(settings.max_iter))
 
     inv = Inverter()
+    progress.stage = f"inversion bayes_drt2 (ridge puis Stan, mode {settings.mode})"
     with _quiet_cmdstanpy(), warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        inv.fit(f_s, Z_s, **kw)
+        try:
+            inv.fit(f_s, Z_s, **kw)
+        except Exception:
+            # Les avertissements émis avant l'échec (numpy « invalid value », cvxopt…) sont
+            # souvent la cause : ils se perdraient avec ce contexte.
+            progress.library_warnings = sorted({f"{w.category.__name__}: {w.message}" for w in caught})
+            progress.stan_model = getattr(inv, "stan_model_name", None)
+            raise
+    progress.stan_model = getattr(inv, "stan_model_name", None)
     library_warnings = sorted({f"{w.category.__name__}: {w.message}" for w in caught
                                if not issubclass(w.category, (SyntaxWarning, DeprecationWarning))})
 
+    progress.stage = "lecture de γ(τ), de Rp et de la reconstruction"
     try:
         tau = np.asarray(inv.distributions[DIST_NAME]["tau"], dtype=float)
     except KeyError as exc:
@@ -380,6 +503,7 @@ def fit_drt(spectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG
     Rp_ci = (float("nan"), float("nan"))
     sampler = None
     if settings.mode == "sample":
+        progress.stage = "intervalles de crédibilité et diagnostics HMC"
         gamma_lo = np.asarray(inv.predict_distribution(DIST_NAME, tau=tau, percentile=2.5), dtype=float)
         gamma_hi = np.asarray(inv.predict_distribution(DIST_NAME, tau=tau, percentile=97.5), dtype=float)
         Rp_ci = (float(inv.predict_Rp(percentile=2.5)), float(inv.predict_Rp(percentile=97.5)))
@@ -394,7 +518,11 @@ def fit_drt(spectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG
     quality_alerts = dg.check_quality(rp=Rp, recon=recon, gamma=gamma, tau=tau)
 
     # Rct (Bissessur) — τ en secondes ; incertitude a posteriori en mode 'sample'
+    progress.stage = "extraction de Rct"
     notes: list = []
+    cmdstan_version, version_note = cmdstan_version_info()
+    if version_note:                       # réglages validés sur une AUTRE version de CmdStan
+        notes.append(version_note)
     tau_bounds = measured_tau_window(freq)
     mask, peak_idx, rct_source, rct_note = rct_window(
         tau, gamma, tau_bounds if RCT_PEAKS_IN_MEASURED_WINDOW else None)
@@ -421,6 +549,7 @@ def fit_drt(spectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG
             else:
                 notes.append("Incertitude a posteriori de Rct non calculable (tirages illisibles).")
 
+    progress.stage = "assemblage du résultat"
     alerts = conv_alerts + quality_alerts
     converged = not any(a.category == "convergence" for a in alerts)
     Zfit_re, Zfit_im = np.real(Zfit), -np.imag(Zfit)
@@ -430,6 +559,8 @@ def fit_drt(spectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG
         "settings": asdict(settings),
         "engine": "drt.engine / bayes_drt2 99d5b60 (drt/PROVENANCE.md)",
         "stan_model": getattr(inv, "stan_model_name", None),
+        "cmdstan_version": cmdstan_version,
+        "cmdstan_validated_version": PINNED_CMDSTAN_VERSION,
         "sampler": sampler,
         "reconstruction_error_relative": recon,
         "negative_area_fraction": dg.negative_area_fraction(tau, gamma),

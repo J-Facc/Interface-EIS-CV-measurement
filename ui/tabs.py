@@ -301,6 +301,10 @@ def _render_drt_tab(sessions: dict) -> None:
         )
         return
 
+    version_warning = st.session_state.get("drt_version_warning")
+    if version_warning:
+        st.warning(f"⚠️ {version_warning}")
+
     config = st.session_state.get("eis_config", {})
     electrodes = sorted(sessions.keys())
     if all(sessions[e].drt_mode is None for e in electrodes):

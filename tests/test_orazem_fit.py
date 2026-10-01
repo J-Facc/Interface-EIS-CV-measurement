@@ -14,6 +14,8 @@ test_measurement_model.py) :
 Et les correctifs FIT-1 à FIT-5 de AUDIT.md §5.4, l'agrégation par réplicat.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 from scipy.optimize import curve_fit
@@ -141,6 +143,37 @@ def _well_conditioned(seed, n=80):
     s = orazem_sigma(z.real, -z.imag, alpha=0.01, beta=0.01, delta=2.0, R_sol=500.0)
     rng = np.random.default_rng(seed)
     return f, z.real + rng.normal(0, s), -z.imag + rng.normal(0, s), s
+
+
+def _fit_with_zero_points(zero_idx):
+    """Spectre de Randles bruité dont les points ``zero_idx`` valent Z = 0 (Zre = Zim = 0)."""
+    f, zre, zim, s = orazem_noisy_arrays(_RCT, 0, n_points=60)
+    zre, zim = zre.copy(), zim.copy()
+    zre[zero_idx] = 0.0
+    zim[zero_idx] = 0.0
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        fr = fit_spectrum(Z_FUNC, NAMES, f, zre, zim, s, s, SPECS, "Rct", options=FitOptions(n_starts=1))
+    return fr, [w for w in caught if w.filename.endswith("orazem_fit.py")]
+
+
+def test_points_at_zero_impedance_are_excluded_from_the_relative_residual_and_reported():
+    """Le premier test réel sous Windows a levé une division par zéro à Zre² + Zim² = 0 dans le
+    résidu relatif. Le point est exclu de CET indicateur, signalé, et l'indicateur reste fini —
+    au lieu d'un RuntimeWarning silencieux et d'un `inf`/`nan` qui contaminait toute la moyenne."""
+    fr, own_warnings = _fit_with_zero_points([5, 20])
+    assert own_warnings == [], [str(w.message) for w in own_warnings]       # aucun RuntimeWarning de numpy
+    assert np.isfinite(fr.reconstruction_error)
+    assert any("2 point(s) à Z = 0 exclu(s) du résidu relatif" in w for w in fr.warnings), fr.warnings
+
+
+def test_the_relative_residual_is_unchanged_when_no_point_is_zero():
+    """Non-régression : sans point nul, ni avertissement ni changement de la formule RMS."""
+    f, zre, zim, s = orazem_noisy_arrays(_RCT, 0, n_points=60)
+    fr = fit_spectrum(Z_FUNC, NAMES, f, zre, zim, s, s, SPECS, "Rct", options=FitOptions(n_starts=1))
+    expected = float(np.sqrt(np.mean(((zre - fr.Zfit_re) ** 2 + (zim - fr.Zfit_im) ** 2) / (zre ** 2 + zim ** 2))))
+    assert fr.reconstruction_error == pytest.approx(expected, rel=1e-12)
+    assert not any("Z = 0" in w for w in fr.warnings)
 
 
 def test_covariance_is_absolute_and_matches_curve_fit():

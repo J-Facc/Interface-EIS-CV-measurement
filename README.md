@@ -23,9 +23,13 @@ C'est tout : le dépôt est public, aucun jeton n'est nécessaire. À chaque lan
   « HORS LIGNE » d'un « ECHEC REEL ») ;
 * crée l'environnement Python (`venv\`) et n'installe les dépendances (versions épinglées) que
   si elles ont changé ;
-* installe au **premier lancement** le moteur DRT (CmdStan 2.36.0 dans `C:\cmdstan` et
-  compilation des modèles Stan : plusieurs minutes, une seule fois ; les modèles compilés
-  survivent aux mises à jour). Si cette étape échoue, l'application démarre sans DRT ;
+* installe au **premier lancement** le moteur DRT (CmdStan 2.36.0 — la version sur laquelle les
+  réglages DRT ont été validés — dans `C:\cmdstan`, puis compilation des deux modèles Stan
+  `Series` et `Series_pos` : plusieurs minutes, une seule fois ; les modèles compilés survivent
+  aux mises à jour). Une **autre version** de CmdStan déjà présente est conservée, jamais
+  supprimée, mais n'est pas utilisée tant que la 2.36.0 est installable : si elle ne l'est pas
+  (hors ligne), l'application s'en sert **en le signalant** dans l'onglet DRT. Si cette étape
+  échoue, l'application démarre sans DRT ;
 * ouvre le navigateur sur http://localhost:8501 (ou le premier port libre jusqu'à 8510)
   **seulement quand le serveur répond**.
 
@@ -77,9 +81,10 @@ Un groupe dont la structure d'erreur n'est pas caractérisable (moins de 3
 réplicats…) est **arrêté** avec un message explicite : aucun fit, aucune pondération
 arbitraire.
 
-Le calcul DRT compile des modèles Stan via CmdStan : la toolchain C++ est installée par
-`launch.bat` au premier lancement (`install_cmdstan(compiler=True)`, sans exiger RTools), puis
-mise en cache — voir [docs/DRT_BAYESIENNE.md](docs/DRT_BAYESIENNE.md) pour lire les intervalles de
+Le calcul DRT compile des modèles Stan via CmdStan : la toolchain C++ (RTools 4.0, mingw-w64)
+est installée par `launch.bat` au premier lancement (`install_cmdstan(compiler=True)`, sans
+exiger d'installer RTools soi-même) et **vérifiée** — `mingw32-make` et `g++` répondent — avant
+toute compilation, puis les modèles sont mis en cache — voir [docs/DRT_BAYESIENNE.md](docs/DRT_BAYESIENNE.md) pour lire les intervalles de
 crédibilité et les diagnostics. La figure DRT trace `ln(γ/γ₀)` en fonction
 de `ln(τ/τ₀)` (logarithme népérien, γ₀ = 1 Ω, τ₀ = 1 s), avec un badge indiquant le
 mode (`optimize`/`sample`). Référence DRT : Bissessur, Man, Gamby, *Use of an

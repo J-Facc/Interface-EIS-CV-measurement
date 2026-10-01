@@ -538,6 +538,10 @@ ciblées) :
 * **Portée** : spectres synthétiques (2 RC idéaux, Randles/CPE/diffusion bornée), bruit 0,5 %, 40 à
   80 points, 1e6→1e-2 Hz. **Non vérifié** : bruit plus fort, points aberrants, dérive (spectres non KK),
   plus de trois constantes de temps, Windows / versions CmdStan du poste cible (déjà signalé par l'audit).
+  Premier test réel sous Windows : CmdStan 2.39.0 se trouvait dans le dossier d'installation et était
+  celui enregistré. **Toute version autre que 2.36.0 reste non vérifiée** : `setup_drt_bayesien.py`
+  enregistre désormais la 2.36.0 de préférence (`drt/cmdstan_version.py`), et l'application signale
+  explicitement tout repli sur une autre version.
 * `sigma_min` (plancher de bruit amont, 0,002 en unités réduites) et la grille τ (10 pts/décade, une
   décade au-delà des fréquences mesurées) sont laissés aux valeurs amont : non explorés.
 

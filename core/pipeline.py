@@ -289,6 +289,18 @@ def _refresh_drt_target(analysis: GroupAnalysis, reps: list) -> None:
         analysis.warnings.append(msg)
 
 
+def _log_drt_detail(label: str, exc: BaseException) -> None:
+    """Écrit au journal le diagnostic COMPLET d'un échec de calcul DRT (traceback de la cause).
+
+    Le message affiché à l'utilisateur reste court ; ceci permet de diagnostiquer après coup,
+    sans avoir à reproduire. ``drt.engine`` n'importe pas ``core`` : c'est ici, côté ``core``,
+    que se trouve le journal fichier.
+    """
+    detail = getattr(exc, "detail", None)
+    if detail:
+        log.error(f"DRT de « {label} » : diagnostic complet de l'échec\n{detail}")
+
+
 def _run_drt(sp: EISSpectrum, drt_kwargs: dict, analysis: GroupAnalysis) -> None:
     """DRT d'un spectre ; spectre invalide ou échec de CmdStan → ``drt_failures``."""
     try:
@@ -298,6 +310,7 @@ def _run_drt(sp: EISSpectrum, drt_kwargs: dict, analysis: GroupAnalysis) -> None
         msg = f"DRT de « {sp.label} » non calculée : {exc}"
         analysis.warnings.append(msg)
         log.warning(msg)
+        _log_drt_detail(sp.label, exc)
         return
     sp.fit_results[DRT_MODEL_NAME] = fr
 
@@ -496,7 +509,11 @@ def recompute_drt(
     if spectrum is None:
         raise ValueError(f"Spectre introuvable dans la session : {spectrum_id!r}.")
     drt_kwargs = _drt_request(config, True, mode)
-    fr = drt_engine.fit_drt(spectrum, **drt_kwargs)
+    try:
+        fr = drt_engine.fit_drt(spectrum, **drt_kwargs)
+    except (ValueError, RuntimeError) as exc:     # relevée telle quelle à l'UI, mais journalisée
+        _log_drt_detail(spectrum.label, exc)
+        raise
     spectrum.fit_results[DRT_MODEL_NAME] = fr
 
     owners = [(session.bare_analysis, session.bare, session.bare_replicate_spectra),
