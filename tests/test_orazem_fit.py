@@ -292,6 +292,80 @@ def test_non_identifiable_parameters_get_infinite_std_not_a_fabricated_one():
     assert fr.params["Ra"] + fr.params["Rb"] == pytest.approx(150.0, rel=1e-6)
 
 
+def _negligible_bypass(seed):
+    """Randles dont le contournement est négligeable (Cb = 1e-14 F) : le fit pousse Cb
+    contre sa borne 0, là où l'élément C(0) = 1/(jω·0) n'est pas défini."""
+    f = np.logspace(5, -1, 40)
+    p = dict(Re=200.0, Re_prime=20.0, Cb=1e-14, Rct=_RCT, Qdl=2e-6, alpha=0.9, R_D=900.0, tau_d=0.5)
+    z = Z_FUNC(2 * np.pi * f, **p)
+    s = orazem_sigma(z.real, -z.imag, **ORAZEM_NOISE)
+    rng = np.random.default_rng(seed)
+    return f, z.real + rng.normal(0, s), -z.imag + rng.normal(0, s), s
+
+
+def test_a_parameter_on_a_singular_bound_keeps_the_other_uncertainties():
+    """Régression (revue de l'étape 4). Les différences centrées évaluaient le circuit
+    exactement à Cb = 0, où il vaut NaN : la colonne de Cb, non finie, rendait TOUS les
+    écarts-types infinis, Rct compris (6 fits sur 40 de ce jeu). Désormais la colonne
+    passe en différence unilatérale et seul Cb est signalé."""
+    f, zre, zim, s = _negligible_bypass(7)
+    fr = fit_spectrum(Z_FUNC, NAMES, f, zre, zim, s, s, SPECS, "Rct", options=FitOptions(n_starts=2))
+    p = dict(fr.params, Cb=0.0)
+    with np.errstate(all="ignore"):
+        assert not np.all(np.isfinite(Z_FUNC(2 * np.pi * f, **p)))   # modèle non défini à la borne
+    assert fr.params["Cb"] < 1e-13
+    d = fr.fit_diagnostics
+    assert d["jacobian_one_sided"] == ["Cb"] and d["rank"] == len(NAMES)
+    assert np.isfinite(fr.target_std) and 5.0 < fr.target_std < 20.0
+    assert not any(w.startswith("incertitudes indisponibles") for w in fr.warnings)
+    assert any(w.startswith("Cb en butée basse") for w in fr.warnings)
+
+
+@pytest.mark.parametrize("failure", ["undefined_on_both_sides", "svd_not_converged"])
+def test_unavailable_uncertainties_are_reported_never_raised_nor_invented(monkeypatch, failure):
+    """Comportement EXACT quand aucune covariance n'est calculable : pas d'exception
+    (échec numérique, pas un bug), paramètres de l'optimum conservés, TOUS les
+    écarts-types à inf, rang 0, conditionnement inf, une seule alerte explicite."""
+    import fits.orazem_fit as orazem
+
+    if failure == "undefined_on_both_sides":
+        real = orazem._central_jacobian
+
+        def jac_with_undefined_column(*args):
+            J, one_sided = real(*args)
+            J[:, NAMES.index("Cb")] = np.nan
+            return J, one_sided
+
+        monkeypatch.setattr(orazem, "_central_jacobian", jac_with_undefined_column)
+        reason = "le circuit n'est défini d'aucun côté de l'optimum pour Cb (jacobienne non finie)"
+    else:
+        def svd_failure(J):
+            raise np.linalg.LinAlgError("SVD did not converge")
+
+        monkeypatch.setattr(orazem, "jacobian_statistics", svd_failure)
+        reason = "la décomposition en valeurs singulières de la jacobienne n'a pas convergé"
+
+    f, zre, zim, s = orazem_noisy_arrays(_RCT, 0)
+    fr = fit_spectrum(Z_FUNC, NAMES, f, zre, zim, s, s, SPECS, "Rct", options=FitOptions(n_starts=1))
+    assert fr.converged is True                                  # l'optimum n'est pas en cause
+    assert fr.target_value == pytest.approx(_RCT, rel=0.05)      # valeur rendue…
+    assert fr.target_std == np.inf                               # …incertitude NON inventée
+    assert all(v == np.inf for v in fr.params_std.values())
+    d = fr.fit_diagnostics
+    assert d["condition_number"] == np.inf and d["rank"] == 0
+    assert not any(d["identifiable"].values())
+    assert f"incertitudes indisponibles : {reason}" in fr.warnings
+    assert sum(w.startswith("incertitudes indisponibles") for w in fr.warnings) == 1
+    assert not any("non identifiable" in w or "fortement corrélés" in w for w in fr.warnings)
+
+
+def test_jacobian_statistics_refuses_a_non_finite_jacobian():
+    from core.regression_stats import jacobian_statistics
+
+    with pytest.raises(ValueError, match="jacobienne non finie"):
+        jacobian_statistics(np.array([[1.0, np.nan], [0.0, 1.0]]))
+
+
 def test_condition_number_is_reported_on_the_equilibrated_jacobian():
     f, zre, zim, s = orazem_noisy_arrays(_RCT, 0)
     fr = fit_spectrum(Z_FUNC, NAMES, f, zre, zim, s, s, SPECS, "Rct", options=FitOptions(n_starts=2))

@@ -46,7 +46,11 @@ Corrections (AUDIT.md §5.4)
   autre exception (erreur de programmation, circuit mal compilé…) REMONTE.
 * FIT-2 : covariance par SVD de la jacobienne équilibrée
   (``core.regression_stats``) ; conditionnement rapporté ; un paramètre non
-  identifiable reçoit un écart-type INFINI (et non une valeur fabriquée).
+  identifiable reçoit un écart-type INFINI (et non une valeur fabriquée). Jacobienne
+  finale par différences centrées, unilatérales pour un paramètre dont un côté n'est
+  pas évaluable (borne singulière) ; si le circuit n'est défini d'aucun côté, ou si la
+  SVD échoue, TOUS les écarts-types valent inf avec l'alerte « incertitudes
+  indisponibles » — jamais d'exception, jamais de valeur inventée.
 * FIT-3 : ``x_scale`` = ordre de grandeur de chaque paramètre (des pF aux GΩ) ;
   départs multiples (guess de l'utilisateur + perturbations log-normales
   reproductibles), le meilleur χ² est gardé.
@@ -248,20 +252,43 @@ def _perturbed_starts(x0, lb, ub, scale, opt: FitOptions) -> list:
 
 
 def _central_jacobian(fun, x, lb, ub, scale):
-    """Jacobienne par différences centrées (pas relatif à l'échelle, bornes respectées).
+    """Jacobienne par différences finies à l'optimum, pour la covariance.
 
-    Utilisée pour la covariance à l'optimum : plus précise (O(h²)) que la jacobienne
-    à 2 points de la dernière itération du solveur.
+    Différences CENTRÉES (O(h²), plus précises que la jacobienne à 2 points de la
+    dernière itération du solveur), h = ε^(1/3)·max(|x|, échelle), bornes respectées.
+
+    Si un côté n'est pas évaluable — borne atteinte, ou circuit non défini, typiquement
+    une capacité à sa borne 0 où 1/(jω·0) n'est pas fini — la colonne est calculée par
+    différence UNILATÉRALE du côté défini (O(h)). Sans ce repli, mesuré : 6 fits sur 40
+    d'un Randles à contournement négligeable (Cb poussé à ~1e-15 F, borne 0) perdaient
+    TOUS leurs écarts-types, Rct compris, à cause de cette seule colonne. Une colonne
+    n'est laissée non finie que si le modèle n'est défini d'aucun côté.
+
+    Returns:
+        (J, indices des paramètres dérivés par différence unilatérale).
     """
     f0 = fun(x)
     J = np.empty((f0.size, x.size))
+    one_sided = []
     for i in range(x.size):
         h = np.cbrt(np.finfo(float).eps) * max(abs(x[i]), scale[i])
         up, dn = x.copy(), x.copy()
         up[i] = min(x[i] + h, ub[i])
         dn[i] = max(x[i] - h, lb[i])
-        J[:, i] = (fun(up) - fun(dn)) / (up[i] - dn[i])
-    return J
+        fu, fd = fun(up), fun(dn)
+        ok_up = up[i] > x[i] and bool(np.all(np.isfinite(fu)))
+        ok_dn = dn[i] < x[i] and bool(np.all(np.isfinite(fd)))
+        if ok_up and ok_dn:
+            J[:, i] = (fu - fd) / (up[i] - dn[i])
+        elif ok_up:
+            J[:, i] = (fu - f0) / (up[i] - x[i])
+            one_sided.append(i)
+        elif ok_dn:
+            J[:, i] = (f0 - fd) / (x[i] - dn[i])
+            one_sided.append(i)
+        else:
+            J[:, i] = np.nan
+    return J, one_sided
 
 
 def _chi2_interval(dof: int, dof_sigma: Optional[int]) -> tuple:
@@ -396,15 +423,24 @@ def fit_spectrum(
 
     # ── Statistiques à l'optimum ─────────────────────────────────────────────
     with np.errstate(all="ignore"):
-        J = _central_jacobian(fun, x, lb, ub, scale)
-    if np.all(np.isfinite(J)):
-        st = jacobian_statistics(J)                    # absolute_sigma : pas de rééchelonnement
-    else:                                              # optimum aux confins du domaine du circuit
+        J, one_sided = _central_jacobian(fun, x, lb, ub, scale)
+    st, unavailable = None, None
+    undefined = [names[i] for i in range(P) if not np.all(np.isfinite(J[:, i]))]
+    if undefined:
+        unavailable = (f"le circuit n'est défini d'aucun côté de l'optimum pour "
+                       f"{', '.join(undefined)} (jacobienne non finie)")
+    else:
+        try:
+            st = jacobian_statistics(J)                # absolute_sigma : pas de rééchelonnement
+        except np.linalg.LinAlgError:                  # échec NUMÉRIQUE, pas un bug : rapporté
+            unavailable = "la décomposition en valeurs singulières de la jacobienne n'a pas convergé"
+    if st is None:
+        # Aucun écart-type fabriqué : tout est inf, et on le DIT. Les paramètres restent
+        # ceux de l'optimum (le solveur a pu converger).
         st = JacobianStatistics(
             cov=np.full((P, P), np.inf), std=np.full(P, np.inf), condition_number=float("inf"),
             rank=0, identifiable=np.zeros(P, dtype=bool), leverage=np.full(n_obs, np.nan))
-        warnings.append("jacobienne non finie à l'optimum (paramètres aux confins du domaine du "
-                        "circuit) : incertitudes indisponibles")
+        warnings.append(f"incertitudes indisponibles : {unavailable}")
     r = fun(x)
     chi2 = float(r @ r)
     dof = n_obs - P
@@ -484,6 +520,7 @@ def fit_spectrum(
             condition_number=st.condition_number, rank=st.rank,
             identifiable=dict(zip(names, st.identifiable.tolist())),
             x_scale=dict(zip(names, scale.tolist())), active_bounds=active,
+            jacobian_one_sided=[names[i] for i in one_sided],
             n_starts=len(runs), n_converged=len(conv),
             starts=[dict(start=rr["start"], skipped=rr["skipped"],
                          chi2=(2.0 * rr["cost"]) if not rr["skipped"] else None,

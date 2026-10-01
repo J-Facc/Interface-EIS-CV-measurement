@@ -168,7 +168,7 @@ calibration. Pondération 1/σ² par composante, `absolute_sigma` toujours vrai.
 | Défaut de l'ancien moteur | Correction |
 |---|---|
 | FIT-1 `except Exception` → guess renvoyé | échec numérique → `converged=False` + meilleur itéré + alerte ; spécification invalide → `FitSpecificationError` ; toute autre exception remonte |
-| FIT-2 `inv(JᵀJ)`, `sqrt(abs(diag))` | SVD de la jacobienne équilibrée ; conditionnement rapporté ; paramètre non identifiable → écart-type **infini** |
+| FIT-2 `inv(JᵀJ)`, `sqrt(abs(diag))` | SVD de la jacobienne équilibrée ; conditionnement κ calculé (`fit_diagnostics`) ; paramètre non identifiable → écart-type **infini** ; différence unilatérale pour un paramètre sur une borne singulière (ex. Cb = 0 : sans cela 6 fits sur 40 perdaient TOUS leurs écarts-types) ; circuit non défini des deux côtés ou SVD non convergée → tous les écarts-types à inf + alerte « incertitudes indisponibles », jamais d'exception |
 | FIT-3 pas d'échelle, mono-départ | `x_scale` = ordre de grandeur de chaque paramètre ; départs multiples reproductibles, meilleur χ² gardé, alerte si un autre départ atteint un χ² équivalent (Δχ² < 1) avec une cible différente de plus de 2σ |
 | FIT-4 butée à 1 % de la valeur de la borne | butée = borne à moins d'**un écart-type** (contrainte active, σ gaussien invalide) |
 | FIT-5 deux formes de poids | une seule : (σ_r, σ_j) |
@@ -193,3 +193,10 @@ Retirés : `Rct_sigma`, `drt_S`, `drt_lnGamma`, `chi2_is_valid_test`. Conservés
 `chi2_reduced_ci` (la nouvelle UI doit afficher χ²ᵣ avec son intervalle attendu),
 `kk_passed`/`kk_residuals` (écrits par l'ancien pipeline jusqu'à l'étape 5, désormais
 `None` faute de structure d'erreur à cet endroit). Ajouté : `fit_diagnostics`.
+
+**À afficher par l'UI (étape 5) — pas seulement stocké.** Aujourd'hui, aucun écran ne
+lit `fit_diagnostics` : κ n'atteint l'utilisateur que sous forme d'alerte texte (rang
+déficient, ou κ > 1/√ε ≈ 6,7·10⁷), via `warnings`. Lors de la bascule, chaque fit
+affiché doit montrer à côté de ses paramètres : κ (jacobienne équilibrée), le rang
+sur P, les paramètres non identifiables, ceux dérivés par différence unilatérale
+(`jacobian_one_sided`), les bornes actives, et χ²ᵣ avec `chi2_reduced_ci`.
