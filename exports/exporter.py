@@ -12,6 +12,7 @@ import numpy as np
 from core.models import EISSession
 from core.cv_models import CVSession
 from core.calibration import compute_calibration_all, compute_cv_calibration
+from core.results_table import group_rows, replicate_rows
 
 
 def _as_sessions_dict(sessions) -> dict:
@@ -22,37 +23,93 @@ def _as_sessions_dict(sessions) -> dict:
     return {1: sessions}
 
 
-def export_params_csv(sessions) -> bytes:
-    """Return fitted parameters for all groups as CSV bytes.
+_PARAM_BASE_COLUMNS = [
+    "electrode", "group", "concentration", "spectrum", "kind", "model",
+    "target_param", "target_value", "target_std", "chi2_reduced", "converged",
+]
 
-    Accepte un EISSession unique (rétro-compatibilité) ou un dict
-    {electrode_index: EISSession}.
-    """
-    sessions = _as_sessions_dict(sessions)
-    buf = io.StringIO()
-    writer = csv.writer(buf)
 
-    header_written = False
+def _fit_rows(sessions: dict) -> list:
+    """(colonnes de base, {modèle: [noms de paramètres]}) de chaque FitResult : chaque
+    réplicat BRUT puis le spectre moyen, pour chaque groupe (bare, probe, concentrations)."""
+    out = []
     for e, session in sorted(sessions.items()):
-        for grp in session.groups:
-            for model_name, fit in grp.fit_results.items():
-                row_base = {
-                    "electrode": e,
-                    "concentration": grp.concentration,
-                    "model": model_name,
-                    "target_param": fit.target_param,
-                    "target_value": fit.target_value,
-                    "target_std": fit.target_std,
-                    "chi2_reduced": fit.chi2_reduced,
-                    "converged": fit.converged,
-                }
-                row_base.update(fit.params)
-                if not header_written:
-                    writer.writerow(list(row_base.keys()))
-                    header_written = True
-                writer.writerow(list(row_base.values()))
+        for group, mean_sp, reps, _an in session.iter_groups():
+            spectra = [(sp, "réplicat") for sp in reps] + [(mean_sp, "moyenne")]
+            for sp, kind in spectra:
+                for model_name, fit in sp.fit_results.items():
+                    out.append((dict(
+                        electrode=e, group=group, concentration=sp.concentration,
+                        spectrum=sp.label, kind=kind, model=model_name,
+                        target_param=fit.target_param, target_value=fit.target_value,
+                        target_std=fit.target_std, chi2_reduced=fit.chi2_reduced,
+                        converged=fit.converged,
+                    ), model_name, fit))
+    return out
 
+
+def export_params_csv(sessions) -> bytes:
+    """Paramètres de TOUS les fits (circuit Orazem et DRT), réplicats ET moyennes.
+
+    Chaque modèle écrit SES PROPRES colonnes, nommées ``<modèle>.<paramètre>`` (et
+    ``<modèle>.<paramètre>_std`` quand un écart-type existe) : une ligne ne remplit que
+    les colonnes de son modèle, les autres restent vides. Corrige B-EXP (AUDIT.md
+    §8.4) : l'en-tête était écrit une seule fois d'après le PREMIER modèle rencontré et
+    les lignes des autres modèles y étaient alignées par POSITION (Rp de la DRT sous
+    « Re », ln τ sous « Re_prime »…). L'alignement se fait désormais par NOM
+    (``csv.DictWriter``) et un même nom de paramètre de deux modèles (« Rct » du
+    circuit vs « Rct » DRT, grandeurs différentes) ne partage jamais une colonne.
+
+    Accepte un EISSession unique (électrode 1) ou un dict {electrode_index: EISSession}.
+    """
+    rows = _fit_rows(_as_sessions_dict(sessions))
+    model_columns: dict = {}
+    for _base, model_name, fit in rows:
+        cols = model_columns.setdefault(model_name, [])
+        for k in fit.params:
+            for col in (f"{model_name}.{k}",) + ((f"{model_name}.{k}_std",) if k in fit.params_std else ()):
+                if col not in cols:
+                    cols.append(col)
+    header = _PARAM_BASE_COLUMNS + [c for cols in model_columns.values() for c in cols]
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=header, restval="")
+    writer.writeheader()
+    for base, model_name, fit in rows:
+        row = dict(base)
+        for k, v in fit.params.items():
+            row[f"{model_name}.{k}"] = v
+            if k in fit.params_std:
+                row[f"{model_name}.{k}_std"] = fit.params_std[k]
+        writer.writerow(row)
     return buf.getvalue().encode()
+
+
+def _rows_csv(rows: list) -> bytes:
+    """Liste de dicts → CSV, colonnes = union dans l'ordre d'apparition."""
+    header: list = []
+    for r in rows:
+        for k in r:
+            if k not in header:
+                header.append(k)
+    buf = io.StringIO()
+    if header:
+        writer = csv.DictWriter(buf, fieldnames=header, restval="")
+        writer.writeheader()
+        writer.writerows(rows)
+    return buf.getvalue().encode()
+
+
+def export_replicate_results_csv(sessions) -> bytes:
+    """Une ligne par spectre (réplicats bruts + moyenne) : valeur cible et incertitude
+    INTRA-fit du circuit, et Rct DRT avec ses diagnostics HMC (``core/results_table.py``)."""
+    return _rows_csv(replicate_rows(_as_sessions_dict(sessions)))
+
+
+def export_group_results_csv(sessions) -> bytes:
+    """Une ligne par groupe : statut, verdict KK, incertitude intra-fit et variabilité
+    INTER-réplicats, côte à côte (``core/results_table.py``)."""
+    return _rows_csv(group_rows(_as_sessions_dict(sessions)))
 
 
 def export_spectra_csv(sessions) -> bytes:
@@ -100,35 +157,67 @@ def export_figure_png(fig, config: dict) -> bytes:
         ) from exc
 
 
+def _yaml_value(v):
+    if hasattr(v, "tolist"):
+        return v.tolist()
+    if isinstance(v, (list, tuple)):
+        return [_yaml_value(x) for x in v]
+    if isinstance(v, (str, bool)) or v is None:
+        return v
+    return float(v)
+
+
+def _fit_yaml(fit) -> dict:
+    return {
+        "target_param": str(fit.target_param),
+        "target_value": float(fit.target_value),
+        "target_std": float(fit.target_std),
+        "chi2_reduced": float(fit.chi2_reduced),
+        "converged": bool(fit.converged),
+        "params": {k: _yaml_value(v) for k, v in fit.params.items()},
+        "warnings": list(fit.warnings or []),
+    }
+
+
+def _aggregate_yaml(agg) -> dict:
+    return {k: _yaml_value(getattr(agg, k)) for k in (
+        "name", "n", "n_excluded", "mean", "std_between", "std_within", "sem_within", "sem",
+        "q", "q_pvalue", "values", "stds")}
+
+
 def export_session_yaml(session: EISSession) -> str:
-    """Return a YAML summary of the session (metadata + fitted parameters)."""
+    """Résumé YAML de la session : circuit, puis pour chaque groupe (bare, probe,
+    concentrations) son statut, le fit de la moyenne, les fits PAR RÉPLICAT et les
+    agrégats (incertitude intra-fit vs variabilité inter-réplicats)."""
     data: dict = {
         "created_at": str(session.created_at),
+        "circuit": session.circuit,
+        "drt_mode": session.drt_mode,
+        "messages": list(session.messages),
+        "load_errors": list(session.load_errors),
         "groups": [],
     }
 
-    for grp in session.groups:
+    for group, mean_sp, reps, an in session.iter_groups():
         grp_data: dict = {
-            "concentration": grp.concentration,
-            "n_points": grp.spectrum.n_points,
-            "fits": {},
+            "group": group,
+            "concentration": float(mean_sp.concentration),
+            "n_points": mean_sp.n_points,
+            "n_replicates": len(reps),
+            "status": an.status if an is not None else None,
+            "message": an.message if an is not None else None,
+            "fits": {m: _fit_yaml(f) for m, f in mean_sp.fit_results.items()},
+            "replicates": [
+                {"label": sp.label, "fits": {m: _fit_yaml(f) for m, f in sp.fit_results.items()}}
+                for sp in reps
+            ],
         }
-        for model_name, fit in grp.fit_results.items():
-            grp_data["fits"][model_name] = {
-                "target_param": str(fit.target_param),
-                "target_value": float(fit.target_value),
-                "target_std": float(fit.target_std),
-                "chi2_reduced": float(fit.chi2_reduced),
-                "converged": bool(fit.converged),
-                "params": {
-                    k: (v.tolist() if hasattr(v, "tolist") else
-                        [float(x) for x in v] if isinstance(v, (list, tuple)) else
-                        v if isinstance(v, str) else
-                        float(v))
-                    for k, v in fit.params.items()
-                    if not k.startswith("_lc_") and not k.startswith("_gcv_")
-                },
-            }
+        if an is not None and an.orazem is not None:
+            grp_data["orazem_target"] = _aggregate_yaml(an.orazem.target)
+        if an is not None and an.drt_target is not None:
+            grp_data["drt_target"] = _aggregate_yaml(an.drt_target)
+        if an is not None and an.drt_failures:
+            grp_data["drt_failures"] = dict(an.drt_failures)
         data["groups"].append(grp_data)
 
     return yaml.dump(data, allow_unicode=True, sort_keys=False)
@@ -246,12 +335,10 @@ def export_cv_calibration_csv_multi(cv_sessions: dict) -> bytes:
 def export_drt_csv(sessions: dict) -> bytes:
     """Exporte les valeurs DRT (ln_tau, ln_gamma) du modèle 'drt_bayes'.
 
-    La DRT est calculée par le pipeline sur les spectres MOYENNÉS (replicate_idx =
-    'avg', colonne du même nom). Les réplicats individuels n'ont pas de DRT par
-    défaut (voir core.pipeline) : seuls ceux recalculés à la demande
-    (recompute_drt) sont exportés, avec leur indice. L'absence de DRT est gérée
-    sans crash (spectre simplement omis). La colonne ``drt_mode`` distingue
-    'optimize' (MAP) et 'sample' (HMC).
+    Le pipeline calcule la DRT de CHAQUE réplicat brut (``replicate_idx`` = indice)
+    et du spectre moyen (``replicate_idx`` = 'avg'). Un spectre sans DRT (moteur
+    absent, échec enregistré dans ``GroupAnalysis.drt_failures``) est simplement omis.
+    La colonne ``drt_mode`` distingue 'optimize' (MAP) et 'sample' (HMC).
     """
     sessions = _as_sessions_dict(sessions)
     buf = io.StringIO()
@@ -291,9 +378,9 @@ def export_drt_csv(sessions: dict) -> bytes:
             )
 
         for label, conc, averaged, reps in spectra_by_label:
-            # Spectre moyenné : porteur de la DRT par défaut.
+            # Spectre moyen.
             _write_spectrum(e, label, conc, "avg", averaged)
-            # Réplicats : uniquement ceux recalculés à la demande (sinon omis).
+            # Réplicats bruts : chacun porte sa propre DRT.
             for ri, sp in enumerate(reps or []):
                 _write_spectrum(e, label, conc, ri, sp)
 
@@ -323,12 +410,12 @@ def export_normalization_csv(normalized: dict) -> bytes:
     return buf.getvalue().encode()
 
 
-# ── Reconstructions Randles/DRT vs mesure ─────────────────────────────────────
+# ── Reconstructions circuit (Orazem)/DRT vs mesure ─────────────────────────────────────
 
 def export_reconstruction_csv(sessions: dict) -> bytes:
-    """Exporte, pour chaque électrode/spectre/méthode (randles_full,
-    drt_bayes), les valeurs mesurées et reconstruites et l'erreur de
-    reconstruction."""
+    """Exporte, pour chaque électrode/spectre MOYEN/méthode (circuit Orazem, DRT),
+    les valeurs mesurées et reconstruites et l'erreur de reconstruction (RMS
+    relative). Les tableaux d'un FitResult suivent l'ordre des fréquences du spectre."""
     sessions = _as_sessions_dict(sessions)
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -348,10 +435,7 @@ def export_reconstruction_csv(sessions: dict) -> bytes:
             spectra.append((grp.spectrum.label, grp.concentration, grp.spectrum))
 
         for label, conc, sp in spectra:
-            for model in ("randles_full", "drt_bayes"):
-                fr = sp.fit_results.get(model)
-                if fr is None:
-                    continue
+            for model, fr in sp.fit_results.items():
                 Zfit_re = getattr(fr, "Zfit_re", None)
                 Zfit_im = getattr(fr, "Zfit_im", None)
                 if Zfit_re is None or Zfit_im is None:
@@ -474,18 +558,16 @@ def export_full_zip(
         if normalized:
             zf.writestr("export/normalisation/nyquist_normalise.csv", export_normalization_csv(normalized))
 
-        # fit_randles/
+        # fits/ — paramètres de tous les modèles (colonnes par modèle, B-EXP) et
+        # résultats par réplicat / par groupe (intra-fit vs inter-réplicats).
         if sessions:
-            import copy
             for e, session in sorted(sessions.items()):
-                filtered = copy.deepcopy(session)
-                for grp in filtered.groups:
-                    grp.fit_results = {k: v for k, v in grp.fit_results.items() if k == "randles_full"}
-                if any(grp.fit_results for grp in filtered.groups):
-                    zf.writestr(
-                        f"export/fit_randles/parametres_electrode_{e}.csv",
-                        export_params_csv({e: filtered}),
-                    )
+                one = {e: session}
+                params = export_params_csv(one)
+                if params.count(b"\n") > 1:
+                    zf.writestr(f"export/fits/parametres_electrode_{e}.csv", params)
+            zf.writestr("export/fits/resultats_par_replicat.csv", export_replicate_results_csv(sessions))
+            zf.writestr("export/fits/resultats_par_groupe.csv", export_group_results_csv(sessions))
 
         # reconstructions/
         if sessions:

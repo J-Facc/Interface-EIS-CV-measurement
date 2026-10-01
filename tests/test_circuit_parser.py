@@ -30,7 +30,7 @@ from circuit.parser import (
     _Compiler,
     parse_circuit,
 )
-from fits.physics import Z_randles_full
+from tests.synthetic_data import RANDLES_EXPRESSION, Z_randles_reference
 
 W = 2.0 * np.pi * np.logspace(-3, 6, 60)
 
@@ -370,16 +370,21 @@ def test_user_example_from_specification():
     np.testing.assert_allclose(Z(W, **p), expected, rtol=1e-14)
 
 
-def test_full_randles_reconstruction_matches_fits_physics():
-    """Le Randles complet de fits/physics.py se réécrit avec les éléments."""
+def test_full_randles_reconstruction_matches_the_closed_form():
+    """Le Randles complet (ancien fits/physics.py:Z_randles_full, forme fermée reprise
+    comme oracle dans tests/synthetic_data.py) se réécrit avec les éléments — et c'est
+    exactement le circuit par défaut de la configuration."""
+    from core.config import load_config
+
     expr = ("Re + parallel(Re_prime + parallel(R(Rct) + ZD_bounded(R_D, tau_d), "
             "Q(Qdl, alpha)), C(Cb))")
+    assert expr == RANDLES_EXPRESSION == load_config().fit.circuit.expression
     Z, names = parse_circuit(expr)
     assert sorted(names) == sorted(
         ["Re", "Re_prime", "Cb", "Rct", "Qdl", "alpha", "R_D", "tau_d"])
     p = dict(Re=100.0, Re_prime=5.0, Cb=1e-9, Rct=2e3, Qdl=1e-6, alpha=0.85,
              R_D=400.0, tau_d=2.0)
-    np.testing.assert_allclose(Z(W, **p), Z_randles_full(W, **p), rtol=1e-12)
+    np.testing.assert_allclose(Z(W, **p), Z_randles_reference(W, **p), rtol=1e-12)
 
 
 def test_simple_randles_with_semi_infinite_warburg():

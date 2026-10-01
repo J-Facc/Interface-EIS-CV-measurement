@@ -257,7 +257,7 @@ def test_a_programming_error_in_lin_kk_is_no_longer_swallowed(monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("bug")
 
-    monkeypatch.setattr("fits.kk_validation.lin_kk", boom)
+    monkeypatch.setattr("core.validator.lin_kk", boom)
     f, zre, zim = _clean()
     with pytest.raises(RuntimeError, match="bug"):
         validate_spectrum(f, zre, zim)
@@ -297,7 +297,7 @@ def no_error_structure(monkeypatch):
     def refuse(reps, **kwargs):
         raise ErrorStructureUnavailable("forcé par le test", group_label=kwargs.get("label", ""))
 
-    monkeypatch.setattr("core.measurement_model.analyze_replicates", refuse)
+    monkeypatch.setattr("core.validator.analyze_replicates", refuse)
 
 
 def test_single_replicate_group_has_no_verdict_no_drift_check_and_no_sigma():

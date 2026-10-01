@@ -70,8 +70,9 @@ def main(argv=None):
     ap.add_argument("--adapt-delta", type=float, default=eng.DEFAULT_ADAPT_DELTA)
     args = ap.parse_args(argv)
 
-    from core.models import EISSpectrum
-    from drt.engine import fit_drt
+    from types import SimpleNamespace
+
+    from drt.engine import fit_drt   # le moteur lit seulement f, Zre, Zim (drt → core interdit)
 
     out = Path(args.out)
     npz_dir = out.with_suffix("")
@@ -81,8 +82,7 @@ def main(argv=None):
         if args.cases and cid not in args.cases:
             continue
         f, Z, rp_true = builder()
-        sp = EISSpectrum(label=cid, f=f, Zre=Z.real, Zim=-Z.imag, concentration=0.0, step="probe",
-                         n_points=len(f))
+        sp = SimpleNamespace(label=cid, f=f, Zre=Z.real, Zim=-Z.imag)
         rct_true, tau_true = _rct_target(cid)
         for seed in (args.seeds or [seed0]):
             for st in args.settings:

@@ -10,6 +10,6 @@ kaleido==1.4.0
 pytest==9.1.1
 scikit-learn==1.9.1
 eclabfiles==0.4.1
-# La DRT (moteur bayes-drt2 vendoré) est un extra optionnel : voir
+# La DRT (drt/engine.py autour du clone drt/bayes_drt2) est un extra optionnel : voir
 # requirements-drt.txt (cvxopt + cmdstanpy). L'app reste fonctionnelle sans lui,
 # l'onglet DRT se désactivant proprement.

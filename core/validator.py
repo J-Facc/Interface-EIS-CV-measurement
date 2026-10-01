@@ -30,6 +30,9 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+from core.measurement_model import ErrorStructureUnavailable, analyze_replicates, check_kk_consistency
+from fits.kk_validation import lin_kk
+
 logger = logging.getLogger(__name__)
 
 
@@ -159,8 +162,6 @@ def validate_spectrum(
         points) donnent ``is_valid=False`` avec le motif ; toute autre exception
         remonte (ce n'est plus « Lin-KK échoué » pour n'importe quelle erreur).
     """
-    from fits.kk_validation import lin_kk
-
     f = np.asarray(frequencies, dtype=float)
     zre = np.asarray(z_re, dtype=float)
     zim = np.asarray(z_im, dtype=float)
@@ -169,7 +170,6 @@ def validate_spectrum(
 
     try:
         if error_structure is not None:
-            from core.measurement_model import check_kk_consistency
             kk = check_kk_consistency(f, zre, zim, error_structure, n_averaged=n_averaged,
                                       reference=reference, label=label)
             return _kk_result_from_consistency(kk, label)
@@ -262,16 +262,13 @@ def validate_replicate_group(
     -------
     ValidationResult complet
     """
-    from core.measurement_model import ErrorStructureUnavailable, analyze_replicates
-
-    result = ValidationResult(label=label)
-
     if not frequencies_list:
+        result = ValidationResult(label=label)
         result.all_valid = False
         result.drift_warning = "Aucun réplicat fourni."
         return result
 
-    labels = [f"{label}_rep{i+1}" for i in range(len(frequencies_list))]
+    labels = replicate_display_labels(label, len(frequencies_list))
     reps = [
         SimpleNamespace(f=np.asarray(f, dtype=float), Zre=np.asarray(zre, dtype=float),
                         Zim=np.asarray(zim, dtype=float), label=lab)
@@ -279,28 +276,74 @@ def validate_replicate_group(
     ]
 
     # ── 1. Measurement model : structure d'erreur puis verdict KK ──
-    analysis = None
     try:
         analysis = analyze_replicates(reps, options=options, label=label)
     except ErrorStructureUnavailable as exc:
-        result.error_structure_message = exc.user_message
         logger.warning("'%s' : %s", label, exc.user_message)
+        return validation_without_structure(reps, label, exc.user_message, drift_cv_threshold)
+    return validation_from_analysis(analysis, label, drift_cv_threshold)
 
-    if analysis is not None:
-        result.measurement_model = analysis
-        result.kk_message = analysis.kk_message
-        result.all_valid = analysis.kk_conform
-        result.replicates = [
-            _kk_result_from_consistency(kk, lab) for kk, lab in zip(analysis.kk_replicates, labels)
-        ]
-        result.sigma_re, result.sigma_im = analysis.error_structure.sigmas(
-            analysis.mean_Zre, analysis.mean_Zim)
-    else:
-        result.all_valid = None
-        result.kk_message = _UNDETERMINED
-        result.replicates = [validate_spectrum(r.f, r.Zre, r.Zim, label=r.label) for r in reps]
-        if any(kk.is_valid is False for kk in result.replicates):
-            result.all_valid = False           # données inexploitables : pas « indéterminé »
+
+def replicate_display_labels(label: str, n: int) -> List[str]:
+    """Libellés d'affichage des réplicats d'un groupe : « <groupe>_rep1 », « _rep2 »…"""
+    return [f"{label}_rep{i+1}" for i in range(n)]
+
+
+def validation_from_analysis(
+    analysis,
+    label: str = "",
+    drift_cv_threshold: float = DRIFT_CV_THRESHOLD,
+) -> ValidationResult:
+    """ValidationResult depuis une ``MeasurementModelAnalysis`` DÉJÀ calculée.
+
+    Permet au pipeline de n'exécuter le measurement model qu'UNE fois par groupe : la
+    même analyse fournit le verdict KK affiché ici et la structure d'erreur qui
+    pondère ensuite le fit Orazem (``fits.orazem_fit.fit_replicate_group``).
+    """
+    labels = replicate_display_labels(label, len(analysis.kk_replicates))
+    result = ValidationResult(label=label)
+    result.measurement_model = analysis
+    result.kk_message = analysis.kk_message
+    result.all_valid = analysis.kk_conform
+    result.replicates = [
+        _kk_result_from_consistency(kk, lab) for kk, lab in zip(analysis.kk_replicates, labels)
+    ]
+    result.sigma_re, result.sigma_im = analysis.error_structure.sigmas(
+        analysis.mean_Zre, analysis.mean_Zim)
+    return _finalize(result, label, drift_cv_threshold)
+
+
+def validation_without_structure(
+    replicates,
+    label: str,
+    message: str,
+    drift_cv_threshold: float = DRIFT_CV_THRESHOLD,
+) -> ValidationResult:
+    """ValidationResult quand la structure d'erreur n'est PAS caractérisable.
+
+    Aucun verdict (``all_valid=None``, sauf données inexploitables → False) ;
+    ``message`` (``ErrorStructureUnavailable.user_message``) dans
+    ``error_structure_message`` ; résidus Lin-KK affichés à titre indicatif.
+
+    Args:
+        replicates: objets portant ``f``, ``Zre``, ``Zim`` (l'ordre fixe les libellés).
+    """
+    labels = replicate_display_labels(label, len(replicates))
+    result = ValidationResult(label=label)
+    result.error_structure_message = message
+    result.all_valid = None
+    result.kk_message = _UNDETERMINED
+    result.replicates = [validate_spectrum(r.f, r.Zre, r.Zim, label=lab)
+                         for r, lab in zip(replicates, labels)]
+    if any(kk.is_valid is False for kk in result.replicates):
+        result.all_valid = False           # données inexploitables : pas « indéterminé »
+    return _finalize(result, label, drift_cv_threshold)
+
+
+def _finalize(result: ValidationResult, label: str, drift_cv_threshold: float) -> ValidationResult:
+    """Plage commune puis détection de drift (étapes 2-3 de ``validate_replicate_group``)."""
+    if not result.replicates:
+        return result
 
     # ── 2. Plage commune ──
     f_mins = [kk.f_min_valid for kk in result.replicates]

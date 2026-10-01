@@ -17,7 +17,34 @@ import numpy as np
 
 from core.config import config_to_dict, load_config
 from core.models import EISSpectrum, FitResult
-from fits.physics import Z_randles_full
+
+
+def Z_randles_reference(omega, Re, Re_prime, Cb, Rct, Qdl, alpha, R_D, tau_d):
+    """Randles complet en FORME FERMÉE — ORACLE de test, indépendant du code applicatif.
+
+    Reprise littérale de l'ancien ``fits/physics.py:Z_randles_full`` (supprimé à
+    l'étape 5 : le circuit est désormais défini par l'utilisateur). Les jeux
+    synthétiques sont générés par cette formule écrite à la main, et non par
+    ``circuit.parse_circuit`` : une erreur du parseur ne peut donc pas se masquer
+    elle-même (``test_circuit_parser`` compare les deux à 1e-12).
+
+        Z_D  = R_D·tanh(√(jωτ_d))/√(jωτ_d)
+        Z_eq = R'e + (Rct + Z_D) / [1 + Qdl·(jω)^α·(Rct + Z_D)]
+        Z    = Re + Z_eq / [1 + jω·Cb·Z_eq]
+    """
+    omega = np.asarray(omega, dtype=float)
+    jw = 1j * omega
+    x = np.sqrt(jw * tau_d)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        Zd = R_D * np.where(np.abs(x) < 1e-8, 1.0, np.tanh(x) / x)
+    Z_eq = Re_prime + (Rct + Zd) / (1.0 + Qdl * (jw ** alpha) * (Rct + Zd))
+    return Re + Z_eq / (1.0 + jw * Cb * Z_eq)
+
+
+#: Expression de ce même circuit (défaut de ``fit.circuit``, docs/CIRCUIT_UTILISATEUR.md §3).
+RANDLES_EXPRESSION = (
+    "Re + parallel(Re_prime + parallel(R(Rct) + ZD_bounded(R_D, tau_d), Q(Qdl, alpha)), C(Cb))"
+)
 
 # 40 points : un run complet du pipeline (fits Randles de tous les réplicats
 # compris) dure ~0,1 s. Avec 60 points (valeur de l'Annexe A), un réplicat bruité
@@ -38,7 +65,7 @@ def frequencies(n_points: int = N_POINTS) -> np.ndarray:
 def randles_impedance(Rct: float, n_points: int = N_POINTS) -> tuple:
     """Spectre de Randles sans bruit : (f, Z complexe, Im(Z) < 0)."""
     f = frequencies(n_points)
-    Z = Z_randles_full(2 * np.pi * f, Rct=Rct, R_D=0.3 * Rct, **_RANDLES_FIXED)
+    Z = Z_randles_reference(2 * np.pi * f, Rct=Rct, R_D=0.3 * Rct, **_RANDLES_FIXED)
     return f, Z
 
 
@@ -80,12 +107,12 @@ def orazem_noisy_arrays(Rct: float, seed: int = 0, n_points: int = N_POINTS,
     f = frequencies(n_points)
     if drift:
         Z = np.array([
-            Z_randles_full(2 * np.pi * f[i:i + 1], Rct=Rct * (1 + drift * i / (n_points - 1)),
-                           R_D=0.3 * Rct, **_RANDLES_FIXED)[0]
+            Z_randles_reference(2 * np.pi * f[i:i + 1], Rct=Rct * (1 + drift * i / (n_points - 1)),
+                                R_D=0.3 * Rct, **_RANDLES_FIXED)[0]
             for i in range(n_points)
         ])
     else:
-        Z = Z_randles_full(2 * np.pi * f, Rct=Rct, R_D=0.3 * Rct, **_RANDLES_FIXED)
+        Z = Z_randles_reference(2 * np.pi * f, Rct=Rct, R_D=0.3 * Rct, **_RANDLES_FIXED)
     zre, zim = Z.real, -Z.imag
     sigma = orazem_sigma(zre, zim, **nz)
     rng = np.random.default_rng(seed)
@@ -131,14 +158,12 @@ def replicate_assignments(step: str, concentration: float, Rct: float, n_rep: in
     ]
 
 
-def make_config(persistence_path) -> dict:
-    """Config par défaut, avec la structure d'erreur persistée dans ``persistence_path``.
-
-    Sans cela, ``run_pipeline`` écrirait dans ``config/error_structure.json`` du dépôt.
-    Passer un chemin INEXISTANT reproduit le « premier usage » (AUDIT.md ERR-1).
-    """
+def make_config(**drt) -> dict:
+    """Config par défaut (``config/default.yaml``) ; ``drt`` surcharge ``fit.drt``
+    (ex. ``make_config(enabled=False)``). Aucune structure d'erreur n'est plus
+    persistée : rien n'est écrit sur disque par une analyse."""
     cfg = config_to_dict(load_config())
-    cfg["fit"]["error_structure"]["persistence_path"] = str(persistence_path)
+    cfg["fit"]["drt"].update(drt)
     return cfg
 
 

@@ -1,4 +1,4 @@
-"""Fit « méthode Orazem » d'un circuit équivalent LIBRE (remplace fits/randles_full.py).
+"""Fit « méthode Orazem » d'un circuit équivalent LIBRE (a remplacé fits/randles_full.py, supprimé).
 
 CNLS complexe (moindres carrés non linéaires sur Re et Im empilés), pondéré par
 1/σ², σ(ω) étant la structure d'erreur stochastique caractérisée par le measurement
@@ -45,7 +45,7 @@ Corrections (AUDIT.md §5.4)
   explicite. Une spécification invalide lève ``FitSpecificationError`` ; toute
   autre exception (erreur de programmation, circuit mal compilé…) REMONTE.
 * FIT-2 : covariance par SVD de la jacobienne équilibrée
-  (``core.regression_stats``) ; conditionnement rapporté ; un paramètre non
+  (``fits.regression_stats``) ; conditionnement rapporté ; un paramètre non
   identifiable reçoit un écart-type INFINI (et non une valeur fabriquée). Jacobienne
   finale par différences centrées, unilatérales pour un paramètre dont un côté n'est
   pas évaluable (borne singulière) ; si le circuit n'est défini d'aucun côté, ou si la
@@ -81,10 +81,14 @@ import numpy as np
 from scipy import stats
 from scipy.optimize import least_squares
 
-from core.models import FitResult
-from core.regression_stats import JacobianStatistics, jacobian_statistics
+from circuit import parse_circuit       # circuit/ est une feuille : fits → circuit autorisé
+from fits.result import FitResult
+from fits.regression_stats import JacobianStatistics, jacobian_statistics
 
 __all__ = [
+    "ORAZEM_MODEL_NAME",
+    "CircuitFit",
+    "compile_circuit_fit",
     "FitSpecificationError",
     "ParameterSpec",
     "FitOptions",
@@ -95,6 +99,9 @@ __all__ = [
     "fit_replicate_group",
     "aggregate_parameter",
 ]
+
+#: Nom de modèle (clé de ``fit_results``) des fits Orazem produits par le pipeline.
+ORAZEM_MODEL_NAME = "orazem"
 
 #: Niveau des intervalles « 2σ » (95,45 %), convention d'Orazem & Tribollet.
 _LEVEL_2SIGMA = float(1.0 - 2.0 * stats.norm.sf(2.0))
@@ -717,3 +724,64 @@ def fit_replicate_group(
         analysis=analysis, mean_fit=mean_fit, replicate_fits=rep_fits,
         aggregate=aggregate, target=target, warnings=group_warnings,
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Circuit utilisateur compilé (entrée du pipeline)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class CircuitFit:
+    """Circuit utilisateur compilé + spécifications VALIDÉES, prêt pour ``fit_*``.
+
+    Construit par :func:`compile_circuit_fit` AVANT tout calcul : une saisie invalide
+    (expression, guess/bornes, paramètre cible) est refusée d'emblée, pas découverte
+    au milieu d'une analyse.
+
+    Attributes:
+        expression: texte du circuit (``circuit.parse_circuit``).
+        Z_func, param_names: circuit compilé.
+        specs: {nom: ParameterSpec} validés, dans l'ordre de ``param_names``.
+        target_param: paramètre désigné comme signal de calibration.
+        model_name: clé de ``fit_results`` (``"orazem"`` par défaut).
+    """
+
+    expression: str
+    Z_func: Callable[..., np.ndarray]
+    param_names: tuple
+    specs: Mapping
+    target_param: str
+    model_name: str = ORAZEM_MODEL_NAME
+
+    def to_dict(self) -> dict:
+        """Description sérialisable (exports, rappel dans l'UI)."""
+        return {
+            "expression": self.expression,
+            "target_param": self.target_param,
+            "parameters": {p: {"initial": s.initial, "lower": s.lower, "upper": s.upper,
+                               "scale": s.scale} for p, s in self.specs.items()},
+        }
+
+
+def compile_circuit_fit(expression: str, parameters: Mapping, target_param: str,
+                        *, model_name: str = ORAZEM_MODEL_NAME) -> CircuitFit:
+    """Compile l'expression et valide les spécifications contre ses paramètres.
+
+    Args:
+        expression: circuit (docs/CIRCUIT_UTILISATEUR.md).
+        parameters: {nom: spécification} (voir l'en-tête du module) couvrant
+            EXACTEMENT les paramètres du circuit.
+        target_param: nom du paramètre servant de signal de calibration.
+
+    Raises:
+        circuit.CircuitError: expression invalide ou refusée (liste blanche).
+        FitSpecificationError: guess/bornes invalides, paramètre cible absent.
+    """
+    Z_func, names = parse_circuit(expression)
+    if target_param not in names:
+        raise FitSpecificationError(
+            f"paramètre cible « {target_param} » absent du circuit (paramètres : {', '.join(names)})."
+        )
+    specs = normalize_specs(names, parameters)
+    return CircuitFit(expression=str(expression), Z_func=Z_func, param_names=tuple(names),
+                      specs=specs, target_param=str(target_param), model_name=model_name)

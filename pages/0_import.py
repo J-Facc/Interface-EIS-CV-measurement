@@ -1,17 +1,26 @@
 """Page 0 — Import des données expérimentales.
 
 Point d'entrée unique pour toutes les données de l'application.
-Les autres pages lisent exclusivement depuis st.session_state['experiment'].
+Produit st.session_state['experiment'] ; les pages d'analyse lisent
+st.session_state['experiment_clean'] (produit par le prétraitement). Tout nouvel
+import invalide les résultats d'analyse précédents (core/app_state.py, B-STATE).
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
 from datetime import datetime
 
 import streamlit as st
 
-from core.experiment_io import load_experiment, save_experiment, apply_exclusions
+from core.app_state import reset_for_new_experiment
+from core.experiment_io import (
+    apply_exclusions,
+    apply_point_exclusions,
+    load_experiment,
+    save_experiment,
+)
 from core.mpr_converter import is_mpr, mpr_to_csv_bytes
 
 
@@ -74,8 +83,16 @@ def _section_load_existing() -> None:
         key=_sk("zip_upload"),
     )
     if zip_file is not None:
+        zip_bytes = zip_file.getvalue()
+        digest = hashlib.sha256(zip_bytes).hexdigest()
+        # Le widget garde le fichier d'un rerun à l'autre : on ne (re)charge que si le
+        # CONTENU a changé — sinon chaque rerun écraserait les champs édités ET
+        # réinitialiserait l'analyse.
+        if st.session_state.get(_sk("zip_digest")) == digest:
+            st.caption(f"Expérience chargée depuis « {zip_file.name} ».")
+            return
         try:
-            exp = load_experiment(zip_file.read())
+            exp = load_experiment(zip_bytes)
 
             # Pré-remplir les champs du formulaire
             import math
@@ -95,9 +112,13 @@ def _section_load_existing() -> None:
                 params.append({"mantisse": mant, "exposant": exp10})
             st.session_state[_sk("conc_params")] = params
 
-            # Valider automatiquement : stocker experiment + marquer import OK
+            # Valider automatiquement : stocker experiment + marquer import OK.
+            # Nouvelle expérience → TOUS les résultats d'analyse précédents sont
+            # invalidés, prétraitement compris (B-STATE / B-STATE-b).
+            reset_for_new_experiment(st.session_state)
             st.session_state["experiment"]     = exp
             st.session_state["import_validated"] = True
+            st.session_state[_sk("zip_digest")] = digest
 
             # Restaurer exclusions et points supprimés
             if exp.get("exclusions"):
@@ -111,10 +132,11 @@ def _section_load_existing() -> None:
             # ZIP post-prétraitement → reconstruire experiment_clean directement
             if exp.get("preprocessing_done") and exp.get("exclusions"):
                 exp_clean = apply_exclusions(exp, exp["exclusions"])
+                # Points supprimés à l'éditeur : retirés comme le fait la validation du
+                # prétraitement — sinon l'analyse relancée sur un ZIP les réintégrait.
+                exp_clean = apply_point_exclusions(exp_clean, exp.get("deleted_points") or {})
                 st.session_state["experiment_clean"]  = exp_clean
                 st.session_state["preprocessing_done"] = True
-                for key in ("eis_session", "eis_validation"):
-                    st.session_state[key] = None
                 st.success(
                     f"✅ Expérience **{exp.get('name', '—')}** chargée "
                     f"avec prétraitement — vous pouvez aller directement à l'analyse."
@@ -122,8 +144,6 @@ def _section_load_existing() -> None:
                 st.page_link("pages/A_eis.py",
                              label="→ Aller à l'analyse EIS", icon="📡")
             else:
-                st.session_state.pop("experiment_clean", None)
-                st.session_state["preprocessing_done"] = False
                 st.success(
                     f"✅ Expérience **{exp.get('name', '—')}** ({exp.get('date', '—')}) chargée "
                     f"— passez au prétraitement."
@@ -565,11 +585,13 @@ def main() -> None:
             "calibration":  calibration,
             "validation":   validation,
         }
+        # Nouvel import : prétraitement ET résultats d'analyse précédents invalidés
+        # (B-STATE ; preprocessing_done remis à False — B-STATE-b, KeyError évité).
+        reset_for_new_experiment(st.session_state)
+        st.session_state.pop("exclusions", None)
+        st.session_state.pop(_sk("zip_digest"), None)
         st.session_state["experiment"] = experiment
         st.session_state["import_validated"] = True
-        # Réinitialiser les données nettoyées si elles existent déjà
-        st.session_state.pop("experiment_clean", None)
-        st.session_state.pop("exclusions", None)
         st.success("✅ Import validé ! Rendez-vous dans l'onglet **Prétraitement**.")
         st.balloons()
 

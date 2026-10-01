@@ -209,9 +209,9 @@ def test_invalid_spectra_are_rejected_before_any_fit(mutate, msg):
 # ═════════════════════════════════════════════════════════════════════════════
 # (c) DRT réelle — cas où AUDIT.md §4.4 a mesuré l'échec silencieux DRT-1
 # ═════════════════════════════════════════════════════════════════════════════
-# L'ancien moteur (fits/drt_fit.py, réglages amont) rendait sur CES spectres Rp < 0
-# (−159 Ω ; −5678…−9278 Ω) avec converged=True et warnings=[] — comportement figé par
-# tests/test_pipeline.py::test_drt_default_map_is_silently_wrong_on_randles_like_spectra.
+# L'ancien moteur (fits/drt_fit.py, réglages amont, supprimé à l'étape 5) rendait sur CES
+# spectres Rp < 0 (−159 Ω ; −5678…−9278 Ω) avec converged=True et warnings=[] ; le pipeline
+# vérifie désormais l'inverse (tests/test_pipeline.py::test_real_drt_map_is_correct_on_every_replicate_and_mean).
 # Ici, le moteur durci avec ses réglages PAR DÉFAUT doit donner le bon résultat SANS alerte.
 
 #: Tolérances — marges au-dessus des écarts mesurés (drt/VALIDATION_REGLAGES.md §6).

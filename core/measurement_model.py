@@ -1,7 +1,7 @@
 """Measurement model de Voigt : structure d'erreur et conformité Kramers-Kronig.
 
-Remplace ``fits/error_structure.py`` (conservé jusqu'à la bascule du pipeline,
-étape 5). Chaîne suivie, dans l'ordre de la méthode d'Orazem :
+A remplacé ``fits/error_structure.py`` (supprimé à l'étape 5, avec sa persistance JSON).
+Chaîne suivie, dans l'ordre de la méthode d'Orazem :
 
     réplicats ──► 1. measurement model (Voigt régressé) sur CHAQUE réplicat
               ──► 2. σ(ω) = dispersion INTER-RÉPLICATS des résidus du modèle
@@ -73,7 +73,7 @@ from scipy import stats
 from scipy.optimize import least_squares, nnls
 from scipy.special import gammaln
 
-from core.regression_stats import jacobian_statistics
+from fits.regression_stats import jacobian_statistics
 from fits.kk_validation import KK_FALSE_ALARM, KKVerdict, kk_verdict
 
 __all__ = [
@@ -101,7 +101,7 @@ class ErrorStructureUnavailable(RuntimeError):
 
     Contrat : cette exception INTERROMPT l'analyse Orazem du groupe concerné. Elle
     ne doit jamais être convertie en « fit vide » ni en poids arbitraires :
-    l'appelant (pipeline, étape 5) l'attrape POUR CE GROUPE seulement, n'y associe
+    l'appelant (``core.pipeline``) l'attrape POUR CE GROUPE seulement, n'y associe
     aucun FitResult et affiche ``user_message`` tel quel.
 
     Attributes:
@@ -554,7 +554,7 @@ def fit_voigt(
     jacobienne analytique ; repli en TRF borné si LM échoue ou fait sortir un τ de
     [0,01/ω_max, 100/ω_min]) jusqu'à deux convergences, le meilleur χ² est retenu.
 
-    Covariance utilisée pour (c) : (JᵀJ)⁺ (``core.regression_stats``) multipliée par
+    Covariance utilisée pour (c) : (JᵀJ)⁺ (``fits.regression_stats``) multipliée par
     χ²_ν si σ n'est connu qu'à un facteur près (``absolute_sigma=False``), par
     max(1, χ²_ν) sinon (un modèle qui n'atteint pas le bruit ne doit pas voir ses
     paramètres jugés plus précis qu'ils ne sont).

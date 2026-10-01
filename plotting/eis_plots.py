@@ -7,6 +7,8 @@ from plotly.subplots import make_subplots
 from core.models import EISSession, EISSpectrum
 from core.calibration import compute_calibration_all, compute_calibration_loglog
 from plotting.theme import get_theme, apply_theme_to_figure
+from drt.engine import MODEL_NAME as DRT_MODEL_NAME
+from fits.orazem_fit import ORAZEM_MODEL_NAME
 
 
 import plotly.colors as _pc
@@ -535,7 +537,9 @@ def _coerce_drt_items(results):
 # ── Parameters table ──────────────────────────────────────────────────────────
 
 def params_table_figure(session: EISSession) -> go.Figure:
-    """Table of Rct for bare, probe and each concentration, by model."""
+    """Paramètre cible (spectre MOYEN) de bare, probe et chaque concentration, par modèle :
+    fit Orazem du circuit utilisateur et DRT. Les valeurs par réplicat et les
+    incertitudes intra/inter sont dans l'onglet « Résultats par groupe »."""
     model_names: list = []
     for sp in (session.bare, session.probe):
         if sp is not None:
@@ -570,11 +574,19 @@ def params_table_figure(session: EISSession) -> go.Figure:
             return "—"
         return f"{fr.chi2_reduced:.2f}"
 
-    has_comparison = "randles_full" in model_names and "drt_bayes" in model_names
+    has_comparison = ORAZEM_MODEL_NAME in model_names and DRT_MODEL_NAME in model_names
+
+    def _target_name(model: str) -> str:
+        for fits in [sp.fit_results for sp in (session.bare, session.probe) if sp is not None] + [
+                g.fit_results for g in session.groups]:
+            fr = fits.get(model)
+            if fr is not None:
+                return fr.target_param
+        return "cible"
 
     def _delta_str(fit_results: dict) -> str:
-        r_randles = _rct_val(fit_results, "randles_full")
-        r_drt = _rct_val(fit_results, "drt_bayes")
+        r_randles = _rct_val(fit_results, ORAZEM_MODEL_NAME)
+        r_drt = _rct_val(fit_results, DRT_MODEL_NAME)
         if r_randles is None or r_drt is None:
             return "—"
         rel_err = abs(r_randles - r_drt) / abs(r_randles)
@@ -604,10 +616,10 @@ def params_table_figure(session: EISSession) -> go.Figure:
 
     n_rows = len(step_col)
     row_colors = ["#EEF0F8" if i % 2 == 0 else "#FFFFFF" for i in range(n_rows)]
-    header_values = ["Étape"] + [f"Rct — {m}" for m in model_names]
+    header_values = ["Étape"] + [f"{_target_name(m)} — {m}" for m in model_names]
     cell_values = [step_col] + model_cols
     if has_comparison:
-        header_values = header_values + ["Écart relatif Randles/DRT"]
+        header_values = header_values + ["Écart relatif circuit/DRT"]
         cell_values = cell_values + [delta_col]
     # Colonnes χ²_réduit par modèle (≈1 = adéquation en pondération sigma).
     header_values = header_values + [f"χ²ᵣ — {m}" for m in model_names]
@@ -620,7 +632,7 @@ def params_table_figure(session: EISSession) -> go.Figure:
                    fill_color=[row_colors] * len(header_values),
                    align="left", font=dict(size=11)),
     )])
-    fig.update_layout(title="Rct par étape et modèle — Randles (paramétrique) vs DRT (model-free)")
+    fig.update_layout(title="Paramètre cible du spectre moyen — circuit (Orazem) vs DRT (model-free)")
     return fig
 
 
@@ -888,17 +900,17 @@ def calibration_drt_figure(session: EISSession, model_name: str = "drt_bayes") -
     return fig
 
 
-# ── Reconstructions Nyquist (Randles vs DRT) ──────────────────────────────────
+# ── Reconstructions Nyquist (circuit Orazem vs DRT) ──────────────────────────────────
 
 def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
-    """Comparaison Randles vs DRT, mesurée sur le spectre probe de chaque électrode.
+    """Comparaison circuit (Orazem) vs DRT, mesurée sur le spectre probe de chaque électrode.
 
     Style de ligne distinct par électrode (solide E1, tirets E2…),
-    couleur distincte par méthode (Randles / DRT).
+    couleur distincte par méthode (circuit / DRT).
     """
     fig = go.Figure()
     line_dashes = ["solid", "dash", "dot", "dashdot"]
-    method_colors = {"randles_full": "#dc2626", "drt_bayes": "#1a56db"}
+    method_colors = {ORAZEM_MODEL_NAME: "#dc2626", DRT_MODEL_NAME: "#1a56db"}
 
     any_data = False
     for idx, (e, session) in enumerate(sorted(sessions.items())):
@@ -914,12 +926,12 @@ def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
         ))
         any_data = True
 
-        fr_r = probe.fit_results.get("randles_full")
+        fr_r = probe.fit_results.get(ORAZEM_MODEL_NAME)
         if fr_r is not None:
             fig.add_trace(go.Scatter(
                 x=fr_r.Zfit_re, y=fr_r.Zfit_im, mode="lines",
-                name=f"E{e} — Randles",
-                line=dict(color=method_colors["randles_full"], dash=dash, width=2),
+                name=f"E{e} — circuit (Orazem)",
+                line=dict(color=method_colors[ORAZEM_MODEL_NAME], dash=dash, width=2),
             ))
 
         fr_d = probe.fit_results.get("drt_bayes")
@@ -938,7 +950,7 @@ def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
         )
 
     fig.update_layout(
-        title="Reconstructions Nyquist — Randles vs DRT (probe)",
+        title="Reconstructions Nyquist — circuit (Orazem) vs DRT (probe)",
         xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
         yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"),
         legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
@@ -951,10 +963,10 @@ def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
 def drt_reconstruction_figure_dual(
     spectrum: EISSpectrum, fr_drt=None, fr_randles=None, label: str = "",
 ) -> go.Figure:
-    """Mesuré + reconstruction Randles + reconstruction DRT (3 séries).
+    """Mesuré + reconstruction du circuit (fit Orazem) + reconstruction DRT (3 séries).
 
     Extension de drt_reconstruction_figure pour accepter un second FitResult
-    (Randles) en plus de la DRT. fr_drt et/ou fr_randles peuvent être None.
+    (circuit, fit Orazem) en plus de la DRT. fr_drt et/ou fr_randles peuvent être None.
     """
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -965,11 +977,11 @@ def drt_reconstruction_figure_dual(
     if fr_randles is not None:
         fig.add_trace(go.Scatter(
             x=fr_randles.Zfit_re, y=fr_randles.Zfit_im, mode="lines",
-            name="Reconstruction Randles",
+            name="Reconstruction circuit (Orazem)",
             line=dict(color="#dc2626", width=2),
         ))
         if fr_randles.reconstruction_error is not None:
-            err_parts.append(f"Randles ε={fr_randles.reconstruction_error*100:.2f}%")
+            err_parts.append(f"circuit ε={fr_randles.reconstruction_error*100:.2f}%")
     if fr_drt is not None:
         fig.add_trace(go.Scatter(
             x=fr_drt.Zfit_re, y=fr_drt.Zfit_im, mode="lines",
@@ -983,7 +995,7 @@ def drt_reconstruction_figure_dual(
     fig.update_yaxes(title_text="-Z'' (Ω)", scaleanchor="x")
     err_str = " — " + ", ".join(err_parts) if err_parts else ""
     fig.update_layout(
-        title=f"Reconstruction Randles vs DRT — {label}{err_str}",
+        title=f"Reconstruction circuit (Orazem) vs DRT — {label}{err_str}",
         legend=dict(orientation="h", y=-0.15),
     )
     apply_theme_to_figure(fig, "light")
@@ -994,7 +1006,7 @@ def open_reconstruction_matplotlib_window(sessions: dict) -> None:
     """Ouvre une fenêtre matplotlib (bloquante) empilant les graphes de l'onglet 3.
 
     Empile : (a) comparaison moyenne probe toutes électrodes, (b) reconstruction
-    par électrode sur le probe moyen (Randles + DRT).
+    par électrode sur le probe moyen (circuit Orazem + DRT).
     """
     import matplotlib.pyplot as plt
 
@@ -1006,17 +1018,17 @@ def open_reconstruction_matplotlib_window(sessions: dict) -> None:
     # (a) comparaison globale
     ax = axes[0]
     line_dashes = ["-", "--", ":", "-."]
-    method_colors = {"randles_full": "#dc2626", "drt_bayes": "#1a56db"}
+    method_colors = {ORAZEM_MODEL_NAME: "#dc2626", DRT_MODEL_NAME: "#1a56db"}
     for idx, (e, session) in enumerate(sorted(sessions.items())):
         probe = session.probe
         if probe is None:
             continue
         dash = line_dashes[idx % len(line_dashes)]
         ax.plot(probe.Zre, probe.Zim, "o", color="black", markersize=4, label=f"E{e} — mesuré")
-        fr_r = probe.fit_results.get("randles_full")
+        fr_r = probe.fit_results.get(ORAZEM_MODEL_NAME)
         if fr_r is not None:
-            ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, dash, color=method_colors["randles_full"],
-                     label=f"E{e} — Randles")
+            ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, dash, color=method_colors[ORAZEM_MODEL_NAME],
+                     label=f"E{e} — circuit (Orazem)")
         fr_d = probe.fit_results.get("drt_bayes")
         if fr_d is not None:
             ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, dash, color=method_colors["drt_bayes"],
@@ -1034,9 +1046,9 @@ def open_reconstruction_matplotlib_window(sessions: dict) -> None:
             ax.set_title(f"Électrode {e} — aucune donnée")
             continue
         ax.plot(probe.Zre, probe.Zim, "o", color="black", markersize=4, label="Mesuré")
-        fr_r = probe.fit_results.get("randles_full")
+        fr_r = probe.fit_results.get(ORAZEM_MODEL_NAME)
         if fr_r is not None:
-            ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, "-", color="#dc2626", label="Randles")
+            ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, "-", color="#dc2626", label="circuit (Orazem)")
         fr_d = probe.fit_results.get("drt_bayes")
         if fr_d is not None:
             ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, "--", color="#1a56db", label="DRT")
@@ -1052,7 +1064,7 @@ def open_reconstruction_matplotlib_window(sessions: dict) -> None:
 def open_calibration_matplotlib_window(sessions: dict) -> None:
     """Ouvre une fenêtre matplotlib (bloquante) empilant les courbes de calibration EIS.
 
-    Une sous-figure par électrode présente, une courbe par méthode (randles_full,
+    Une sous-figure par électrode présente, une courbe par méthode (orazem,
     drt_bayes), reproduisant la logique de calibration_figure() en matplotlib.
     """
     import matplotlib.pyplot as plt

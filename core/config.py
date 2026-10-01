@@ -28,61 +28,72 @@ class ConditionsSettings(BaseModel):
     Fv: float = 5e-10
 
 
-class BoundsRandlesFull(BaseModel):
-    # Bornes [min, max] typees list[float] : Pydantic coerce et valide, ce qui
-    # neutralise le piege du resolveur float YAML 1.1 (ex. "1.0e+9" ou meme
-    # "1.0e9" seraient convertis en float au lieu de rester des chaines).
-    # Les cles doivent correspondre exactement a fits.randles_full._PARAM_NAMES
-    # (Re, Re_prime, Cb, Rct, Qdl, alpha, R_D, tau_d) sinon les bornes YAML de
-    # R_D/tau_d sont silencieusement ignorees au profit du fallback en dur.
-    Re: list[float] = Field(default_factory=lambda: [100.0, 100000.0])
-    Re_prime: list[float] = Field(default_factory=lambda: [1.0, 100000.0])
-    Cb: list[float] = Field(default_factory=lambda: [1e-12, 1e-4])
-    Rct: list[float] = Field(default_factory=lambda: [100.0, 1e9])
-    Qdl: list[float] = Field(default_factory=lambda: [1e-12, 1e-4])
-    alpha: list[float] = Field(default_factory=lambda: [0.6, 1.0])
-    R_D: list[float] = Field(default_factory=lambda: [10.0, 1e6])
-    tau_d: list[float] = Field(default_factory=lambda: [1e-4, 1e3])
+class CircuitParameterSettings(BaseModel):
+    """Guess et bornes d'UN paramètre du circuit (``None`` = non borné de ce côté)."""
+
+    initial: float
+    lower: Optional[float] = None
+    upper: Optional[float] = None
+    scale: Optional[float] = None
+
+
+_DEFAULT_CIRCUIT = (
+    "Re + parallel(Re_prime + parallel(R(Rct) + ZD_bounded(R_D, tau_d), Q(Qdl, alpha)), C(Cb))"
+)
+
+
+def _default_circuit_parameters() -> dict:
+    return {
+        "Re": CircuitParameterSettings(initial=100.0, lower=0.0, upper=1e5),
+        "Re_prime": CircuitParameterSettings(initial=50.0, lower=0.0, upper=1e5),
+        "Rct": CircuitParameterSettings(initial=1500.0, lower=0.0, upper=1e9),
+        "R_D": CircuitParameterSettings(initial=300.0, lower=0.0, upper=1e7),
+        "tau_d": CircuitParameterSettings(initial=0.2, lower=1e-6, upper=1e4),
+        "Qdl": CircuitParameterSettings(initial=5e-6, lower=0.0, upper=1e-2),
+        "alpha": CircuitParameterSettings(initial=0.8, lower=0.3, upper=1.0),
+        "Cb": CircuitParameterSettings(initial=3e-9, lower=0.0, upper=1e-3),
+    }
+
+
+class CircuitSettings(BaseModel):
+    """Circuit ajusté par le fit Orazem — valeurs PAR DÉFAUT proposées par l'UI.
+
+    La validation (expression sûre, paramètres couverts exactement, bornes cohérentes)
+    est faite par ``fits.orazem_fit.compile_circuit_fit`` avant toute analyse : la
+    config ne fait que transporter la saisie.
+    """
+
+    expression: str = _DEFAULT_CIRCUIT
+    target_param: str = "Rct"
+    parameters: dict[str, CircuitParameterSettings] = Field(
+        default_factory=_default_circuit_parameters)
 
 
 class DRTSettings(BaseModel):
-    # Mode DRT du plugin bayes_drt2 (fits/drt_fit.py) : 'optimize' (MAP Stan, défaut
-    # lancé par le pipeline) ou 'sample' (HMC, à la demande via recompute_drt).
-    # La grille τ n'est PAS configurée ici : bayes_drt2 la construit lui-même à
-    # partir des fréquences mesurées (une décade au-delà de chaque borne, 10 pts/déc).
+    # DRT du pipeline (drt/engine.py), sur chaque réplicat brut ET la moyenne de chaque
+    # groupe : 'optimize' (MAP, aperçu ~1 s) ou 'sample' (HMC, diagnostics de
+    # convergence et intervalles, plusieurs minutes par spectre). La grille τ n'est
+    # PAS configurée ici : bayes_drt2 la construit depuis les fréquences mesurées.
+    enabled: bool = True
     mode: str = "optimize"
+
+    @field_validator("mode")
+    @classmethod
+    def _mode_valid(cls, v: str) -> str:
+        if v not in ("optimize", "sample"):
+            raise ValueError(f"fit.drt.mode doit valoir 'optimize' ou 'sample' (reçu {v!r})")
+        return v
 
 
 class ErrorStructureSettings(BaseModel):
-    """Configuration de la structure d'erreur d'Orazem — pondération UNIQUE.
+    """Structure d'erreur d'Orazem — caractérisée par le measurement model
+    (``core/measurement_model.py``) sur les réplicats de CHAQUE groupe, à chaque
+    analyse. Aucun coefficient n'est persisté ni relu (AUDIT.md ERR-2).
 
-    Les COEFFICIENTS (α, β, γ, δ) ne figurent PAS ici : ils sont estimés sur
-    réplicats puis persistés dans `persistence_path`. Cette section ne porte que
-    les OPTIONS de la méthode.
-
-    - equal_re_im : impose α = β (hypothèse d'égalité des variances Re/Im du
-      measurement model — standard, recommandé).
-    - voigt_based : estime σ empirique par l'écart-type des résidus d'un circuit
-      de Voigt ajusté à chaque réplicat (plus fidèle à Orazem) ; sinon écart-type
-      inter-réplicats direct.
-    - R_m : résistance de mesure (Ω) ; None => terme γ·|Z|²/R_m absorbé/ignoré.
     - min_replicates : nombre minimal de réplicats pour caractériser (≥ 3 recommandé).
-    - persistence_path : fichier JSON d'historique des coefficients caractérisés
-      (None => config/error_structure.json).
     """
 
-    equal_re_im: bool = True
-    voigt_based: bool = False
-    R_m: Optional[float] = None
     min_replicates: int = 3
-    persistence_path: Optional[str] = None
-
-    @field_validator("R_m")
-    @classmethod
-    def _rm_positive(cls, v: Optional[float]) -> Optional[float]:
-        if v is not None and v <= 0:
-            raise ValueError(f"error_structure.R_m doit être > 0 ou null (reçu {v})")
-        return v
 
     @field_validator("min_replicates")
     @classmethod
@@ -93,8 +104,7 @@ class ErrorStructureSettings(BaseModel):
 
 
 class FitSettings(BaseModel):
-    # Pondération UNIQUE : structure d'erreur d'Orazem (fits/error_structure.py).
-    # Plus de weight_mode ni d'alpha_noise (supprimés).
+    # Pondération UNIQUE : structure d'erreur d'Orazem (core/measurement_model.py).
     error_structure: ErrorStructureSettings = Field(
         default_factory=ErrorStructureSettings
     )
@@ -102,7 +112,7 @@ class FitSettings(BaseModel):
     tol_parasites: float = 3.0
     max_iter: int = 10000
     n_monte_carlo: int = 1000
-    bounds_randles_full: BoundsRandlesFull = Field(default_factory=BoundsRandlesFull)
+    circuit: CircuitSettings = Field(default_factory=CircuitSettings)
     drt: DRTSettings = Field(default_factory=DRTSettings)
     drt_wiener_W: float = 1.0e-8
     drt_n_z: int = 10000

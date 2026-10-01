@@ -28,36 +28,41 @@ acquisition:
 
 # Paramètres de fit
 fit:
-  # Pondération UNIQUE du CNLS : structure d'erreur d'Orazem & Tribollet
-  # (measurement model). σ = α·|Z_re| + β·|Z_im| + γ·|Z|²/R_m + δ, poids = 1/σ².
-  # Les coefficients (α,β,γ,δ) NE SONT PAS ici : ils sont caractérisés sur
-  # réplicats (≥ 3) puis persistés dans persistence_path, et réutilisés pour les
-  # spectres sans réplicats. Cf. fits/error_structure.py.
+  # Pondération UNIQUE du CNLS : structure d'erreur d'Orazem caractérisée par le
+  # measurement model (core/measurement_model.py) sur les réplicats BRUTS de chaque
+  # groupe, à chaque analyse — jamais relue d'un fichier. Sans réplicats en nombre
+  # suffisant, l'analyse du groupe est ARRÊTÉE avec un message (AUDIT.md ERR-1).
   error_structure:
-    equal_re_im: true          # impose α = β (variances Re/Im égales — standard)
-    voigt_based: false         # true => σ via résidus de Voigt (Lin-KK) par réplicat
-    R_m: null                  # résistance de mesure (Ω) ; null => terme γ absorbé
-    min_replicates: 3          # nb minimal de réplicats pour caractériser (lu aussi par
-                               # core/measurement_model.py ; les autres clés de cette
-                               # section ne servent qu'à l'ancien fits/error_structure.py)
-    persistence_path: null     # null => config/error_structure.json
+    min_replicates: 3          # nb minimal de réplicats pour caractériser σ(ω)
   n_freqs_parasites: [50.0, 100.0]
   tol_parasites: 3.0
-  max_iter: 10000
+  max_iter: 10000              # plafond d'évaluations par départ du fit Orazem
   n_monte_carlo: 1000
-  bounds_randles_full:
-    Re:       [100.0,   100000.0]
-    Re_prime: [1.0,     100000.0]
-    Cb:       [1.0e-12, 1.0e-4]
-    Rct:      [100.0,   1.0e+9]
-    Qdl:      [1.0e-12, 1.0e-4]
-    alpha:    [0.6,     1.0]
-    R_D:      [10.0,    1.0e+6]
-    tau_d:    [1.0e-4,  1.0e+3]
+  # Circuit ajusté par le fit Orazem (fits/orazem_fit.py) — valeurs PAR DÉFAUT
+  # proposées dans l'interface, où l'utilisateur les modifie. Syntaxe :
+  # docs/CIRCUIT_UTILISATEUR.md. Ici : le Randles complet historique (ex-
+  # fits/physics.py:Z_randles_full). Guess de départ = ordres de grandeur du capteur
+  # de la thèse (le fit multi-départ les explore à ±0,5 décade) ; bornes LARGES,
+  # basse 0 pour les éléments passifs et 0,3 ≤ alpha ≤ 1 (CPE). null = non borné.
+  circuit:
+    expression: "Re + parallel(Re_prime + parallel(R(Rct) + ZD_bounded(R_D, tau_d), Q(Qdl, alpha)), C(Cb))"
+    target_param: Rct          # paramètre servant de signal de calibration
+    parameters:
+      Re:       {initial: 100.0,  lower: 0.0,    upper: 1.0e+5}
+      Re_prime: {initial: 50.0,   lower: 0.0,    upper: 1.0e+5}
+      Rct:      {initial: 1500.0, lower: 0.0,    upper: 1.0e+9}
+      R_D:      {initial: 300.0,  lower: 0.0,    upper: 1.0e+7}
+      tau_d:    {initial: 0.2,    lower: 1.0e-6, upper: 1.0e+4}
+      Qdl:      {initial: 5.0e-6, lower: 0.0,    upper: 1.0e-2}
+      alpha:    {initial: 0.8,    lower: 0.3,    upper: 1.0}
+      Cb:       {initial: 3.0e-9, lower: 0.0,    upper: 1.0e-3}
   drt:
-    # Mode DRT (plugin bayes_drt2) : 'optimize' (MAP Stan, défaut pipeline) ou
-    # 'sample' (HMC, à la demande). La grille τ est construite par bayes_drt2 depuis
-    # les fréquences mesurées (pas de n_tau/tau_min/tau_max ici).
+    # DRT (drt/engine.py) lancée par le pipeline sur CHAQUE réplicat brut ET sur la
+    # moyenne de chaque groupe. mode 'optimize' (MAP, ~1 s/spectre, sans diagnostic
+    # de convergence) ou 'sample' (HMC, 2 à 5 min/spectre, R-hat/ESS/divergences et
+    # intervalles de crédibilité — drt/VALIDATION_REGLAGES.md). Un spectre peut être
+    # recalculé en 'sample' à la demande depuis l'onglet DRT (core.pipeline.recompute_drt).
+    enabled: true
     mode: optimize
   drt_wiener_W: 1.0e-8   # filtre Wiener (plus petit = résolution plus fine)
   drt_n_z: 10000          # points de la grille log-ω

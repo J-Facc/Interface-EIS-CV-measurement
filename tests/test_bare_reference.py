@@ -23,7 +23,7 @@ from core.calibration import (
 from plotting.eis_plots import nyquist_figure_electrode
 from plotting.cv_plots import cv_current_figure
 
-MODEL = "randles_full"
+MODEL = "orazem"
 
 
 # ── Fixtures EIS (mêmes conventions que tests/test_calibration.py) ────────────

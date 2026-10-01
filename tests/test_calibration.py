@@ -20,7 +20,7 @@ from exports.exporter import (
     export_cv_calibration_csv_multi,
 )
 
-MODEL = "randles_full"
+MODEL = "orazem"
 
 
 def _fr(rct: float) -> FitResult:

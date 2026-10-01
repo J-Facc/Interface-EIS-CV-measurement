@@ -1,15 +1,16 @@
 # Measurement model, structure d'erreur, Kramers-Kronig et fit Orazem
 
 > Référence de la méthode (étape 4 de la refonte). Code : `core/measurement_model.py`,
-> `fits/kk_validation.py`, `fits/orazem_fit.py`, `core/regression_stats.py` ; tests :
+> `fits/kk_validation.py`, `fits/orazem_fit.py`, `fits/regression_stats.py` ; tests :
 > `tests/test_measurement_model.py`, `tests/test_orazem_fit.py`, `tests/test_validator.py`.
 >
-> **État de la bascule.** Le prétraitement (`core/validator.py`) utilise déjà le
-> measurement model pour le verdict Kramers-Kronig. Le pipeline d'analyse
-> (`core/pipeline.py`) ajuste encore l'ancien Randles à 8 paramètres
-> (`fits/randles_full.py`, pondéré par `fits/error_structure.py` et sa persistance
-> JSON) : il basculera sur `fits/orazem_fit.py` à l'étape 5, avec le nettoyage de ces
-> modules. Les numéros d'équation des sources n'ont pas pu être vérifiés depuis
+> **Bascule faite (étape 5).** Le prétraitement (`core/validator.py`) ET le pipeline
+> d'analyse (`core/pipeline.py`) utilisent le measurement model : pour chaque groupe,
+> structure d'erreur et verdict KK sur les réplicats BRUTS, PUIS fit Orazem
+> (`fits/orazem_fit.py`) de chaque réplicat et de la moyenne, PUIS DRT de chaque réplicat
+> et de la moyenne. `fits/randles_full.py`, `fits/error_structure.py` (et sa persistance
+> JSON), `fits/weighting.py` sont supprimés ; un groupe dont la structure d'erreur n'est
+> pas caractérisable est ARRÊTÉ avec un statut explicite (`GroupAnalysis`, ERR-1). Les numéros d'équation des sources n'ont pas pu être vérifiés depuis
 > l'environnement de développement : chaque formule est écrite en clair ci-dessous et
 > dans les docstrings.
 
@@ -191,10 +192,12 @@ intra-fit (dérive ou non-stationnarité). Valeur de calibration recommandée :
 `Rct`/`Rct_std` figés remplacés par `target_param`, `target_value`, `target_std`.
 Retirés : `Rct_sigma`, `drt_S`, `drt_lnGamma`, `chi2_is_valid_test`. Conservés :
 `chi2_reduced_ci` (la nouvelle UI doit afficher χ²ᵣ avec son intervalle attendu),
-`kk_passed`/`kk_residuals` (écrits par l'ancien pipeline jusqu'à l'étape 5, désormais
-`None` faute de structure d'erreur à cet endroit). Ajouté : `fit_diagnostics`.
+Retirés à l'étape 5 : `kk_passed`/`kk_residuals` (le verdict KK est porté par le
+GROUPE, `GroupAnalysis.validation`). Ajouté : `fit_diagnostics`. `FitResult` vit dans
+`fits/result.py` (ré-exporté par `core.models`).
 
-**À afficher par l'UI (étape 5) — pas seulement stocké.** Aujourd'hui, aucun écran ne
+**Affiché par l'UI depuis l'étape 5** (onglet « Résultats par groupe », expander
+« Diagnostics du fit du spectre moyen »). Avant l'étape 5, aucun écran ne
 lit `fit_diagnostics` : κ n'atteint l'utilisateur que sous forme d'alerte texte (rang
 déficient, ou κ > 1/√ε ≈ 6,7·10⁷), via `warnings`. Lors de la bascule, chaque fit
 affiché doit montrer à côté de ses paramètres : κ (jacobienne équilibrée), le rang

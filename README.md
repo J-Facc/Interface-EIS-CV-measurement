@@ -30,12 +30,13 @@ streamlit run app.py
 
 ## Utilisation
 
-1. **Importer** vos fichiers CSV/TXT dans la sidebar.
-2. **Assigner** chaque fichier à une étape : `bare`, `probe` ou `hybridization`.
-3. Pour les fichiers `hybridization`, saisir la concentration en mantisse × 10ˣ M.
-4. **Sélectionner** les modèles de fit.
-5. Cliquer sur **▶ Analyser**.
-6. Explorer les onglets : Validation KK · Courbes DRT · Reconstructions Nyquist · Calibration · Export.
+1. **Importer** l'expérience (probe, concentrations, réplicats par électrode).
+2. **Prétraiter** (exclusions de réplicats/points) et valider : le verdict
+   Kramers-Kronig de chaque groupe est calculé à ce stade.
+3. Page **EIS seule** : définir le circuit équivalent (expression, guess/bornes,
+   paramètre cible) et le mode DRT, puis lancer l'analyse.
+4. Explorer les onglets : Validation KK · Résultats par groupe · Courbes DRT ·
+   Reconstructions Nyquist · Calibration, puis la page Export.
 
 ## Format des fichiers d'entrée
 
@@ -44,14 +45,19 @@ streamlit run app.py
 - Séparateur auto-détecté : virgule, tabulation, point-virgule ou espace
 - Correction automatique du signe de Zim (convention EC-Lab)
 
-## Modèles de fit
+## Analyse EIS (`core/pipeline.py`)
 
-| Modèle | Description |
-|--------|-------------|
-| Fit circulaire | Lecture géométrique — aucun paramètre physique |
-| Randles contraint | Re fixé, ZD0 ∝ Fv^(−1/3), 3 paramètres libres |
-| Randles complet | 8 paramètres libres, pondération Modulus |
-| DRT (`drt_bayes`) | **DRT principale**, model-free : distribution des temps de relaxation γ(τ) par inversion hiérarchique bayésienne via la bibliothèque [bayes-drt2](https://github.com/jdhuang-csm/bayes-drt2) de Huang (classe `Inverter`, vendorée dans `vendor/bayes_drt2/`, voir `THIRD_PARTY_LICENSES.md`). Deux modes : **`optimize`** (MAP Stan, défaut, calculé par le pipeline pour tous les spectres) et **`sample`** (HMC bayésien, à la demande, avec intervalles de crédibilité). Rct extrait de l'arc de transfert de charge (pic pénultième, convention Bissessur). |
+Pour CHAQUE groupe de réplicats (probe, chaque concentration), dans cet ordre :
+
+| Étape | Module | Ce qui est produit |
+|-------|--------|--------------------|
+| 1. Measurement model + Kramers-Kronig | `core/measurement_model.py` | structure d'erreur σ(ω) et verdict KK, sur les réplicats **bruts**, avant tout fit ([MEASUREMENT_MODEL.md](MEASUREMENT_MODEL.md)) |
+| 2. Fit Orazem du circuit utilisateur | `fits/orazem_fit.py`, `circuit/` | CNLS pondéré 1/σ² de **chaque réplicat** et de la **moyenne** (σ/√n) ; paramètre cible agrégé : incertitude intra-fit vs variabilité inter-réplicats ([docs/CIRCUIT_UTILISATEUR.md](docs/CIRCUIT_UTILISATEUR.md)) |
+| 3. DRT bayésienne | `drt/engine.py` (clone identifié de [bayes-drt2](https://github.com/jdhuang-csm/bayes-drt2), `drt/PROVENANCE.md`) | γ(τ) de **chaque réplicat** et de la **moyenne** ; Rct = arc de transfert (pic pénultième, convention Bissessur) ; mode `optimize` (MAP, ~1 s) ou `sample` (HMC, R̂/divergences/ESS + intervalles, 2 à 5 min par spectre) |
+
+Un groupe dont la structure d'erreur n'est pas caractérisable (moins de 3
+réplicats…) est **arrêté** avec un message explicite : aucun fit, aucune pondération
+arbitraire.
 
 Le calcul DRT compile des modèles Stan via CmdStan : la toolchain C++ est
 installée automatiquement au premier lancement (`install_cmdstan(compiler=True)`,
@@ -60,11 +66,7 @@ de `ln(τ/τ₀)` (logarithme népérien, γ₀ = 1 Ω, τ₀ = 1 s), avec un ba
 mode (`optimize`/`sample`). Référence DRT : Bissessur, Man, Gamby, *Use of an
 approach with a distribution of relaxation times for impedance analysis of a
 channel electrode in microfluidics*, Phys. Rev. E **113**, 025502 (2026), DOI:
-10.1103/fn2s-z364
-(sections III.B et III.C respectivement). L'onglet "Reconstructions Nyquist"
-compare Rct_randles et Rct_drt (paramètre et reconstruction), l'onglet
-"Calibration" trace une régression log(Rct) vs log([c]) séparée pour chaque
-méthode.
+10.1103/fn2s-z364.
 
 ## Tests
 

@@ -1,12 +1,14 @@
 """EIS CV Analyzer v3 — point d'entrée Streamlit.
 
 Configure la navigation multipage et initialise les clés de session_state
-partagées (eis_session, experiment_clean).
+partagées (core/app_state.py : experiment_clean, eis_sessions, cv_sessions…).
 `st.set_page_config` est appelé une seule fois ici ; les pages ne doivent
 pas le rappeler.
 """
 
 import streamlit as st
+
+from core.app_state import init_shared_state
 
 st.set_page_config(
     page_title="EIS CV Analyzer",
@@ -19,30 +21,12 @@ st.set_page_config(
 # Initialisation des clés de session partagées
 # ---------------------------------------------------------------------------
 
-def _init_shared_state() -> None:
-    """Crée les clés partagées si elles n'existent pas encore."""
-    defaults = {
-        "eis_session": None,
-        "eis_config": None,
-        "eis_validation": None,
-        "experiment": None,
-        "experiment_clean": None,
-        "import_validated": False,
-        "preprocessing_done": False,
-        "exclusions": {},
-        "validation_results": None,
-    }
-    for key, default in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = default
-
-
-_init_shared_state()
+init_shared_state(st.session_state)   # crée les clés absentes, n'écrase rien
 
 # ---------------------------------------------------------------------------
 # Préparation DRT (CmdStan + Series.stan) — automatique, une fois par process
 # ---------------------------------------------------------------------------
-# La DRT (fits/drt_fit.py, bayes_drt2) compile des modèles Stan : sans toolchain,
+# La DRT (drt/engine.py, drt/bayes_drt2) compile des modèles Stan : sans toolchain,
 # aucun mode ('optimize' ni 'sample') ne fonctionne. On prépare donc CmdStan et on
 # compile Series.stan DÈS LE LANCEMENT (et non au clic de l'utilisateur), une seule
 # fois, mis en cache — aucune étape manuelle requise à l'installation.
@@ -56,10 +40,11 @@ _init_shared_state()
 def _bootstrap_drt() -> tuple:
     """Prépare la DRT une fois par process (idempotent). Ne bloque jamais l'app."""
     try:
-        from fits import drt_fit
+        from drt import engine as drt_engine
 
-        if not drt_fit.bayes_available():
-            return False, f"Extra DRT non installé ({drt_fit.import_error()})."
+        ok, why = drt_engine.library_available()
+        if not ok:
+            return False, f"Extra DRT non installé ({why})."
         from setup_drt_bayesien import ensure_drt_ready
 
         return ensure_drt_ready()

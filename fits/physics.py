@@ -1,7 +1,10 @@
-"""Shared electrochemical physics functions for EIS fit models.
+"""Fonctions électrochimiques partagées.
 
-Diffusion element follows the bounded-diffusion (Bissessur) formulation for a
-microfluidic channel; the rest of the circuit follows standard Randles theory.
+Le circuit de Randles codé en dur (``Z_randles_full``) a été supprimé à l'étape 5 de
+la refonte : le circuit ajusté est désormais défini par l'utilisateur
+(``circuit/``, ``fit.circuit`` de la config). ``Z_D`` est conservé comme référence de
+l'élément ``ZD_bounded`` (diffusion bornée, formulation Bissessur pour un canal
+microfluidique), vérifiée identique par ``tests/test_circuit_elements.py``.
 """
 
 import numpy as np
@@ -23,44 +26,6 @@ def Z_D(omega: np.ndarray, R_D: float, tau_d: float) -> np.ndarray:
     with np.errstate(divide='ignore', invalid='ignore'):
         ratio = np.where(np.abs(x) < 1e-8, 1.0, np.tanh(x) / x)
     return R_D * ratio
-
-
-def Z_randles_full(
-    omega: np.ndarray,
-    Re: float,
-    Re_prime: float,
-    Cb: float,
-    Rct: float,
-    Qdl: float,
-    alpha: float,
-    R_D: float,
-    tau_d: float,
-) -> np.ndarray:
-    """Modified Randles circuit with bounded diffusion inside the charge-transfer branch.
-
-    Z_eq = R'e + (Rct + Z_D) / [1 + Qdl·(jω)^alpha·(Rct + Z_D)]
-    Z    = Re + Z_eq / [1 + jω·Cb·Z_eq]
-
-    Args:
-        omega: Angular frequency array (rad/s).
-        Re: Solution resistance (Ω).
-        Re_prime: Series resistance inside Z_eq (Ω).
-        Cb: Bypass capacitance (F).
-        Rct: Charge-transfer resistance (Ω).
-        Qdl: CPE pre-factor (S·s^alpha).
-        alpha: CPE exponent (dimensionless, 0 < alpha <= 1).
-        R_D: Diffusion resistance (Ω).
-        tau_d: Diffusion characteristic time (s).
-
-    Returns:
-        Complex impedance array Z (Ω), shape = omega.shape.
-    """
-    jw = 1j * omega
-    Zd = Z_D(omega, R_D, tau_d)
-    num = Rct + Zd
-    denom = 1.0 + Qdl * (jw ** alpha) * (Rct + Zd)
-    Z_eq = Re_prime + num / denom
-    return Re + Z_eq / (1.0 + jw * Cb * Z_eq)
 
 
 def Rct_bare_theory(T: float, S: float, k0: float, C0: float) -> float:

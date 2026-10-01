@@ -3,7 +3,7 @@
 
 > Repo : https://github.com/J-Facc/Interface-EIS-CV-measurement
 > Navigation multipage `st.navigation` (pages/) — EIS **et** CV.
-> Dernière mise à jour : 13/07/2026 (réalignée sur l'état réel du code — audit)
+> Dernière mise à jour : 01/10/2026 (étape 5 de la refonte : pipeline, sens des dépendances)
 
 ---
 
@@ -33,32 +33,33 @@ Interface-EIS-CV-measurement/          ← racine du repo GitHub
 ├── config/
 │   └── default.yaml                   ← paramètres physiques et de fit (bornes typées list[float])
 │
-├── core/                              ← logique métier pure (JAMAIS d'import Streamlit)
-│   ├── __init__.py
-│   ├── models.py                      ← dataclasses : EISSpectrum, FitResult (+ warnings), EISSession
-│   ├── loader.py                      ← import CSV/TXT EIS, validation, moyennage réplicats
-│   ├── pipeline.py                    ← orchestrateur Import → Fit → Analyse (EIS)
-│   ├── config.py                      ← chargement YAML + Pydantic AppSettings
-│   ├── calibration.py                 ← calibration EIS/CV (signal normalisé, log-log) — source unique
-│   ├── logger.py                      ← logging centralisé
-│   ├── validator.py                   ← validation KK inter-réplicats (Lin-KK natif)
-│   ├── cv_loader.py                   ← chargement fichiers CV
-│   ├── cv_models.py                   ← CVScan, CVConcentrationGroup, CVSession
-│   ├── cv_peaks.py                    ← détection de pics CV
-│   ├── cv_pipeline.py                 ← pipeline traitement CV
-│   ├── mpr_converter.py               ← conversion .mpr (BioLogic) → CSV (eclabfiles ; galvani en secours)
-│   └── experiment_io.py               ← sauvegarde/chargement session complète (ZIP)
+├── core/                              ← logique métier et orchestration (JAMAIS d'import Streamlit)
+│   ├── models.py                      ← EISSpectrum (porte ses réplicats bruts), GroupAnalysis,
+│   │                                     ConcentrationGroup, EISSession ; ré-exporte FitResult
+│   ├── pipeline.py                    ← orchestrateur EIS : MM + KK → fit Orazem → DRT, par groupe
+│   ├── measurement_model.py           ← measurement model de Voigt : structure d'erreur + KK
+│   ├── validator.py                   ← verdict KK affiché (ValidationResult) + dérive
+│   ├── results_table.py               ← tables intra-fit / inter-réplicats / diagnostics HMC (UI + export)
+│   ├── app_state.py                   ← clés session_state partagées et leur réinitialisation (B-STATE)
+│   ├── loader.py · robust_loader.py   ← import EIS EC-Lab
+│   ├── config.py                      ← YAML + Pydantic (circuit par défaut, DRT)
+│   ├── calibration.py                 ← calibration EIS/CV — source unique
+│   ├── cv_*.py                        ← CV (chargement, pics, pipeline)
+│   ├── experiment_io.py · mpr_converter.py · logger.py
 │
-├── fits/                              ← système plugin : 1 fichier = 1 modèle (BaseFitModel)
-│   ├── __init__.py
-│   ├── base.py                        ← BaseFitModel (ABC) — interface commune
-│   ├── physics.py                     ← fonctions physiques partagées (Z_D, Z_randles_full, θ_EIS…)
-│   ├── registry.py                    ← découverte auto + discovery_errors() (modèles non chargés)
-│   ├── randles_full.py                ← Randles complet (8 paramètres, least_squares) + diagnostics
-│   ├── drt_fit.py                     ← plugin DRT (drt_bayes, wrapper bayes_drt2) : MAP « optimize » (défaut) / HMC « sample »
-│   └── kk_validation.py               ← validation Kramers-Kronig (Lin-KK, circuits de Voigt)
+├── fits/                              ← bibliothèque numérique du fit (n'importe JAMAIS core)
+│   ├── result.py                      ← FitResult (contrat commun fit Orazem / DRT)
+│   ├── orazem_fit.py                  ← fit Orazem d'un circuit LIBRE (par réplicat + moyenne, agrégation)
+│   ├── regression_stats.py            ← covariance par SVD, conditionnement, identifiabilité
+│   ├── kk_validation.py               ← critère KK unique (kk_verdict), Lin-KK indicatif
+│   └── physics.py                     ← Z_D (référence de ZD_bounded), θ_EIS…
 │
-│   (le paquet de calcul DRT lui-même est vendoré dans vendor/bayes_drt2/)
+├── drt/                               ← DRT (n'importe JAMAIS core ; seulement fits.result)
+│   ├── engine.py                      ← moteur durci (HMC/MAP, gardes, diagnostics)
+│   ├── diagnostics.py                 ← seuils R-hat / ESS / divergences / qualité
+│   └── bayes_drt2/                    ← clone identifié de bayes-drt2 (PROVENANCE.md)
+│
+├── circuit/                           ← circuit utilisateur (Python restreint, liste blanche AST)
 │
 ├── plotting/                          ← reçoit des données, ne calcule rien
 │   ├── __init__.py
@@ -155,15 +156,28 @@ Format ZIP : `experiment.yaml` + `probe/electrode_N/rep_R.bin` + `calibration/si
 
 ## 3. Règles de modularité — CRITIQUES
 
+### Sens des dépendances (AUDIT.md CPL-1)
+
+```
+pages / ui / plotting / exports ──► core ──► drt ──► fits.result
+                                     │                  ▲
+                                     └────► fits ───────┘
+                                             └──► circuit (feuille)
+```
+
 | Couche | Règle absolue |
 |--------|--------------|
-| `core/` | Jamais d'import Streamlit |
-| `fits/` | Jamais d'import UI ni Streamlit |
+| `core/` | Jamais d'import Streamlit. Importe `fits`/`drt`/`circuit` **au niveau module** (aucun import local masquant un cycle) |
+| `fits/`, `drt/`, `circuit/` | N'importent **jamais** `core`, `ui`, `pages`, `plotting`, `exports` ni Streamlit. `drt` n'importe de `fits` que `fits.result` ; `circuit` n'importe rien du projet |
 | `plotting/` | Reçoit des données, ne les calcule pas |
-| `ui/` | Appelle `core/` et `fits/`, n'implémente pas de physique |
+| `ui/` | Appelle `core/`, n'implémente pas de physique |
 | `exports/` | Doit avoir un `__init__.py` sinon Python ne le trouve pas |
 
-**Ajouter un modèle de fit** = créer un fichier dans `fits/` héritant de `BaseFitModel`. Aucun autre fichier à modifier.
+`tests/test_architecture.py` vérifie ces règles sur l'arbre d'imports réel.
+
+Il n'y a plus de registre de plugins (`fits/registry.py`, `fits/base.py` supprimés à
+l'étape 5) : un seul moteur de fit (Orazem sur circuit utilisateur), une seule DRT,
+appelés explicitement par `core/pipeline.py`.
 
 ---
 
@@ -172,115 +186,64 @@ Format ZIP : `experiment.yaml` + `probe/electrode_N/rep_R.bin` + `calibration/si
 ```
 Fichiers CSV/TXT (EC-Lab export)
         ↓
-core/loader.py
-  • auto-détection séparateur
-  • correction signe Zim (convention EC-Lab)
-  • suppression 50/100 Hz parasites
-  • tri HF → BF
-  • moyennage réplicats
+core/loader.py → réplicats BRUTS (EISSpectrum), conservés à chaque étape
+        ↓  (par groupe : probe, chaque concentration — et bare si fourni)
+core/measurement_model.analyze_replicates   ← sur les réplicats BRUTS, AVANT tout fit
+  • σ(ω) = structure d'erreur d'Orazem du groupe
+  • verdict Kramers-Kronig (réplicats + moyenne)      → ValidationResult (onglet KK)
+  • ErrorStructureUnavailable → groupe ARRÊTÉ (GroupAnalysis.status, message affiché)
         ↓
-core/models.py → EISSpectrum { label, f[], Zre[], Zim[], concentration, step }
+fits/orazem_fit.fit_replicate_group
+  • fit de CHAQUE réplicat (σ) et de la moyenne (σ/√n) du circuit utilisateur
+  • agrégation : moyenne, s inter-réplicats, √v̄ intra-fit, incertitude de la moyenne, Q de Cochran
         ↓
-core/pipeline.py → run_pipeline()
+drt/engine.fit_drt sur CHAQUE réplicat ET la moyenne (mode fit.drt.mode)
+  • Rct DRT agrégé sur les réplicats ; recompute_drt(…, mode='sample') à la demande
         ↓
-fits/ — fits paramétriques, appliqués SÉQUENTIELLEMENT (pas en parallèle)
-  randles_full   → FitResult { params, Zfit[], chi2_reduced, Rct, reconstruction_error, warnings }
+core/models.py → EISSession { probe, groups[], *_replicate_spectra, *_analysis (GroupAnalysis) }
         ↓
-core/models.py → EISSession { bare, probe, groups[] }
+core/results_table.py → tables intra/inter + diagnostics HMC   ·   core/calibration.py → régressions
         ↓
-plotting/eis_plots.py → figures Plotly  ·  core/calibration.py → régressions
-        ↓
-ui/tabs.py::render_eis_tabs → onglets Streamlit (appelé par pages/A_eis.py)
-
-DRT (plugin du pipeline) — fits/drt_fit.py::DRTBayesModel (wrapper bayes_drt2) :
-  pipeline → DRTBayesModel().fit(sp) mode 'optimize' (MAP) → FitResult(drt_tau,
-     drt_gamma, drt_mode='optimize', Rct par pic Bissessur)
-  recompute_drt(session, spectrum_id, mode='sample') → HMC → FitResult avec
-     intervalles (drt_gamma_lo/hi), à la demande depuis l'onglet DRT
+ui/tabs.py::render_eis_tabs (pages/A_eis.py)   ·   exports/exporter.py (pages/E_export.py)
 ```
+
+Erreurs : saisie invalide → `InvalidAnalysisInput` avant tout calcul ; donnée invalide →
+résultat dégradé + message rangé dans la session (`load_errors`, `GroupAnalysis.status/
+message/drt_failures`, `messages`) ; bug → l'exception remonte (affichée comme erreur
+logicielle par la page EIS). Détail : docstring de `core/pipeline.py`.
 
 ---
 
-## 5. Les modèles de fit
+## 5. Le fit (`fits/orazem_fit.py`) et la DRT (`drt/engine.py`)
 
-| Modèle | Fichier | Paramètres libres | Méthode |
-|--------|---------|-------------------|---------|
-| Randles complet (`name="randles_full"`) | `randles_full.py` | 8 (Re, R'e, Cb, Rct, Qdl, α, R_D, τ_d) | `scipy.optimize.least_squares` (pondération Modulus) + diagnostics (résidu/butée) |
-| DRT (`name="drt_bayes"`) | `drt_fit.py` | 0 — γ(τ) model-free | `bayes_drt2` / `Inverter` — MAP « optimize » (défaut) / HMC « sample » (voir §5bis) |
+| Méthode | Paramètres | Sortie (`fit_results` de chaque spectre) |
+|---------|-----------|-------------------------------------------|
+| Fit Orazem, clé `"orazem"` | circuit utilisateur (`fit.circuit` par défaut : Randles complet à 8 paramètres) ; guess/bornes par paramètre ; paramètre cible désigné | `FitResult` : `target_param/target_value/target_std` (intra-fit), χ²ᵣ et son intervalle attendu, `fit_diagnostics` (κ, rang, identifiabilité, bornes actives) |
+| DRT, clé `"drt_bayes"` | réglages documentés de `drt/engine.py` (`drt/VALIDATION_REGLAGES.md`) ; mode `fit.drt.mode` | `FitResult` : γ(τ), Rct (pic pénultième, ±3 en ln τ), `target_std` a posteriori (HMC), `drt_diagnostics` (R̂, ESS, divergences, alertes) |
 
-> Les modèles sont découverts automatiquement par `fits/registry.py`
-> (sous-classes de `BaseFitModel`). Un modèle dont l'import échoue est signalé
-> par `registry.discovery_errors()` et affiché dans l'UI, pas masqué.
-> **La DRT est de nouveau un plugin du registre** (`drt_bayes`) : elle est lancée
-> par le pipeline en mode « optimize » comme les autres fits (voir §5bis).
-
-**Circuit physique (Randles modifié) :**
-```
-Re — [ R'e // Cb ] — [ Rct // CPE(Qdl, α) ] — ZD(ω)
-```
-
-## 5bis. Le plugin DRT (`fits/drt_fit.py::DRTBayesModel`, wrapper `vendor/bayes_drt2/`)
-
-DRT unique, bâtie **exclusivement** sur le paquet **bayes_drt2** vendoré (classe
-`Inverter`, inversion hiérarchique bayésienne, Jake Huang — voir `vendor/README.md`,
-`THIRD_PARTY_LICENSES.md`). Plugin `BaseFitModel` (`name="drt_bayes"`) découvert par
-le registre et lancé par le pipeline. Deux modes, un seul paquet de calcul :
-
-- **`mode='optimize'` — MAP Stan (défaut).**
-  `Inverter.fit(freq, Z, mode='optimize')` : estimation du maximum a posteriori
-  (L-BFGS-B). **Lancée par le pipeline sur chaque spectre**, comme les autres fits.
-  Pas d'intervalles (`drt_gamma_lo/hi = None`).
-
-- **`mode='sample'` — HMC bayésien (à la demande).**
-  `Inverter.fit(freq, Z, mode='sample')` : échantillonnage HMC produisant en plus
-  les **intervalles de crédibilité** (`drt_gamma_lo/hi` à 2.5/97.5 %). Jamais
-  automatique : uniquement via `core.pipeline.recompute_drt(session, spectrum_id,
-  config, mode='sample')` (seul point d'entrée), déclenché par le bouton de l'onglet
-  DRT. Le résultat remplace le `FitResult` DRT du spectre dans la session.
-
-**Récupération** : `gamma = inv.predict_distribution('DRT')`,
-`tau = inv.distributions['DRT']['tau']` (garde-fou `KeyError`). Les deux modes
-compilent des modèles Stan → CmdStan requis (aucun chemin sans compilation).
+Méthode d'Orazem et sources : [MEASUREMENT_MODEL.md](MEASUREMENT_MODEL.md). Circuit
+utilisateur : [docs/CIRCUIT_UTILISATEUR.md](docs/CIRCUIT_UTILISATEUR.md). DRT :
+`drt/PROVENANCE.md`, `drt/VALIDATION_REGLAGES.md`.
 
 **Convention d'impédance** : le loader stocke `Zim = -Im(Z) > 0` ; bayes_drt2 attend
-`Z'' < 0`, d'où `Z = spectrum.Zre - 1j·spectrum.Zim`. Tri HF→BF sur les **vraies
-fréquences** lues (jamais reconstruites par `logspace`).
-
-**Rct (grandeur de calibration)** : extrait de l'**arc de transfert de charge** par
-la convention Bissessur (pic pénultième de γ(τ), ∫γ dlnτ sur ±3 en ln τ). Repli sur
-`Rp` (aire totale) seulement si aucun pic n'est exploitable, **toujours signalé**
-(`params['rct_source']` + `warnings`) pour ne pas confondre les deux grandeurs.
-
-**Garde-fous** :
-- L'import de `vendor.bayes_drt2` est protégé (`try/except`) : extra DRT non
-  installé (`cvxopt`/`cmdstanpy`) → DRT désactivée proprement (`bayes_available()`
-  renvoie `False`). Le fit DRT du pipeline échoue alors sans casser les autres.
-- Toolchain : `app.py` appelle `setup_drt_bayesien.ensure_drt_ready()` **au premier
-  lancement** (idempotent) → `install_cmdstan(compiler=True)` (installe mingw-w64,
-  n'exige pas RTools) + compilation de `Series.stan`, mis en cache. Aucune étape
-  manuelle ; la compilation n'a pas lieu au clic de l'utilisateur.
-
-Dépendances : `requirements-drt.txt` (`cvxopt` + `cmdstanpy`). `requirements.txt`
-de base reste léger (DRT désactivée proprement sans l'extra).
-
-Référence DRT (contexte capteur) : Bissessur, Man, Gamby, Phys. Rev. E **113**,
-025502 (2026), DOI: 10.1103/fn2s-z364.
+`Z'' < 0`, d'où `Z = Zre - 1j·Zim` dans `drt/engine.py`.
 
 ---
 
 ## 6. Onglets de l'analyse EIS (`ui/tabs.py::render_eis_tabs`)
 
-Rendus par `pages/A_eis.py` (page **EIS seule**) ; la page **CV seule** utilise
-`render_cv_tabs`. En tête de page EIS, un bandeau **« Diagnostics d'ajustement »**
-remonte les avertissements de fit (non convergé, résidu élevé, paramètre en butée).
+En tête de la page EIS : statut explicite de l'analyse (groupes arrêtés, fichiers
+écartés, moteur DRT absent — jamais « ✅ Analyse terminée » si un groupe n'a aucun fit)
+et diagnostics d'ajustement.
 
 | Onglet | Contenu |
 |--------|---------|
-| **Validation KK** | Diagnostic Kramers-Kronig (Lin-KK) par réplicat |
-| **Courbes DRT** | ln(γ/γ₀) vs ln(τ/τ₀) (ln népérien, γ₀=1 Ω, τ₀=1 s) — MAP « optimize » pour tous les spectres, badge de mode ; bouton « Recalculer en bayésien (sample) » → HMC + bande d'incertitude labellisée (`core.pipeline.recompute_drt`) |
-| **Reconstructions Nyquist** | Table Rct_randles + reconstruction Nyquist mesuré/Randles |
-| **Calibration** | Signal normalisé vs log([c]) + régression + R² (via `core/calibration.py`), une courbe par modèle |
-| **Export** (page dédiée `E_export.py`) | CSV params, PNG, HTML, YAML, ZIP session |
+| **Validation KK** | Verdict du measurement model par groupe (calculé avant le fit), résidus |
+| **Résultats par groupe** | Par groupe, côte à côte : circuit (valeur ± intra-fit par réplicat, χ²ᵣ) et DRT (Rct ± a posteriori, **R̂ max, divergences, ESS**) ; agrégats moyenne / inter-réplicats / intra-fit / incertitude de la moyenne ; diagnostics du fit de la moyenne |
+| **Courbes DRT** | ln(γ/γ₀) vs ln(τ/τ₀) des moyennes et des réplicats d'un groupe ; diagnostics HMC par spectre ; recalcul bayésien d'un spectre (`core.pipeline.recompute_drt`) |
+| **Reconstructions Nyquist** | Paramètre cible circuit vs DRT ; reconstructions moyenne et réplicat |
+| **Calibration** | Signal normalisé vs log([c]) + régression (via `core/calibration.py`), une courbe par méthode |
+| **Export** (page dédiée `E_export.py`) | paramètres (colonnes par modèle), résultats par réplicat/groupe, DRT, ZIP |
 
 ---
 

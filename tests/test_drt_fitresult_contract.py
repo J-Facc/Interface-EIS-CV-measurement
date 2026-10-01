@@ -10,9 +10,9 @@ Deux niveaux :
      log-normaux normalisés, donc Rct attendu exact) : vérifie ce que le moteur
      CONSOMME (spectrum en convention Zim = −Im(Z) > 0 → Z physique, HF → BF) et
      PRODUIT. Tourne partout, sans cvxopt ni CmdStan (job CI « validate »).
-  B. Les deux moteurs DRT RÉELS en mode MAP (``drt/engine.py`` et le plugin encore
-     utilisé par le pipeline, ``fits/drt_fit.py``) : sautés sans CmdStan, exécutés
-     par le job CI « drt ».
+  B. Le moteur DRT RÉEL en mode MAP (``drt/engine.py``, seul moteur DRT depuis
+     l'étape 5 — l'ancien plugin ``fits/drt_fit.py`` est supprimé) : sauté sans
+     CmdStan, exécuté par le job CI « drt ».
 """
 
 from dataclasses import fields
@@ -25,7 +25,8 @@ from core.models import ConcentrationGroup, EISSession, EISSpectrum, FitResult
 from drt import engine
 from tests.synthetic_data import N_POINTS_AUDIT, noisy_arrays
 
-_REMOVED = ("Rct", "Rct_std", "Rct_sigma", "drt_S", "drt_lnGamma", "chi2_is_valid_test")
+_REMOVED = ("Rct", "Rct_std", "Rct_sigma", "drt_S", "drt_lnGamma", "chi2_is_valid_test",
+            "kk_passed", "kk_residuals")   # verdict KK porté par le GROUPE depuis l'étape 5
 
 # γ(τ) factice : R1 à τ1 (transfert de charge), R2 à τ2 (diffusion), largeur s en ln τ.
 _R0, _R1, _TAU1, _R2, _TAU2, _S = 150.0, 2500.0, 1e-3, 800.0, 1.0, 0.4
@@ -172,16 +173,3 @@ def test_real_engine_map_produces_the_new_fitresult_contract():
     assert np.isnan(fr.target_std)                               # MAP : non calculée
     assert fr.converged is True and fr.drt_mode == "optimize"
     assert fr.drt_diagnostics["settings"]["mode"] == "optimize"
-
-
-@_NEEDS_ENGINE
-def test_real_legacy_plugin_still_used_by_the_pipeline_produces_the_new_contract():
-    from fits.drt_fit import DRTBayesModel
-
-    fr = DRTBayesModel().fit(_randles_spectrum(), {"fit": {"drt": {"mode": "optimize"}}})
-    _assert_new_fitresult_contract(fr)
-    assert fr.target_std == 0.0                                  # ancien plugin : jamais calculée
-    assert fr.drt_mode == "optimize"
-    # La VALEUR n'est volontairement pas vérifiée : avec les réglages amont, ce plugin rend
-    # Rct < 0 sans alerte (DRT-1, mesuré ici : −6163 Ω pour 3000 Ω), comportement figé par
-    # test_pipeline.py §E et corrigé par drt/engine.py, branché à l'étape 5.

@@ -60,7 +60,7 @@ def compute_calibration(session, model: str):
 
     Args:
         session: EISSession (doit avoir un probe fitté par `model`).
-        model: nom du modèle de fit (ex. "randles_full", "drt_bayes").
+        model: nom du modèle de fit (ex. "orazem", "drt_bayes").
 
     Returns:
         CalibrationResult, ou None si pas de fit probe valide ou < 2 points.

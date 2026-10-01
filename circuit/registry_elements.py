@@ -25,7 +25,7 @@ Seules les bornes justifiables en GÉNÉRAL sont données :
 ⚠ AUCUNE borne HAUTE n'est proposée (``None``) : les ordres de grandeur dépendent
 entièrement du système (Ω à GΩ, pF à mF, µs à ks) et aucune valeur générique ne se
 justifie. L'interface doit les faire saisir ou les estimer depuis le spectre.
-Les bornes de ``fits/randles_full.py`` (ex. alpha >= 0.6, Re >= 100 Ω) sont propres
+Les bornes de l'ancien ``fits/randles_full.py`` (supprimé ; ex. alpha >= 0.6, Re >= 100 Ω) sont propres
 à ce montage et ne sont volontairement PAS reprises ici.
 
 La cohérence de ce registre avec les signatures de ``circuit/elements.py`` et avec

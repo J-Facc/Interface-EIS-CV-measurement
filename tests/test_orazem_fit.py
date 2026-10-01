@@ -30,8 +30,8 @@ from fits.orazem_fit import (
     fit_spectrum,
     normalize_specs,
 )
-from fits.physics import Z_randles_full
 from tests.synthetic_data import (
+    Z_randles_reference,
     ORAZEM_NOISE,
     eclab_bytes,
     orazem_noisy_arrays,
@@ -77,7 +77,7 @@ def test_randles_is_rebuilt_by_the_parser_not_hard_coded():
     assert NAMES == ["Re", "Re_prime", "Rct", "R_D", "tau_d", "Qdl", "alpha", "Cb"]
     w = 2 * np.pi * np.logspace(-2, 5, 30)
     p = dict(Re=500.0, Re_prime=200.0, Cb=2e-8, Rct=5000.0, Qdl=1e-6, alpha=0.85, R_D=2000.0, tau_d=50.0)
-    np.testing.assert_allclose(Z_FUNC(w, **p), Z_randles_full(w, **p), rtol=1e-12)
+    np.testing.assert_allclose(Z_FUNC(w, **p), Z_randles_reference(w, **p), rtol=1e-12)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -88,7 +88,7 @@ def _eclab_csv(Rct: float, n: int = 100) -> bytes:
     """Export EC-Lab : colonne '-Im(Z)/Ohm' POSITIVE, comme les fichiers réels."""
     omega = np.logspace(-1, 5, n)
     f = omega / (2.0 * np.pi)
-    Z = Z_randles_full(omega, 500.0, 50.0, 1e-9, Rct, 1e-6, 0.90, 0.3 * Rct, 0.5)
+    Z = Z_randles_reference(omega, 500.0, 50.0, 1e-9, Rct, 1e-6, 0.90, 0.3 * Rct, 0.5)
     return eclab_bytes(f, Z.real, -Z.imag)
 
 
@@ -360,7 +360,7 @@ def test_unavailable_uncertainties_are_reported_never_raised_nor_invented(monkey
 
 
 def test_jacobian_statistics_refuses_a_non_finite_jacobian():
-    from core.regression_stats import jacobian_statistics
+    from fits.regression_stats import jacobian_statistics
 
     with pytest.raises(ValueError, match="jacobienne non finie"):
         jacobian_statistics(np.array([[1.0, np.nan], [0.0, 1.0]]))

@@ -1,11 +1,11 @@
-"""Tests for fits/physics.py."""
+"""Tests for fits/physics.py (Z_randles_full supprimé à l'étape 5 : le Randles complet
+est désormais une expression de circuit, testée par test_circuit_parser.py)."""
 
 import numpy as np
 import pytest
 
 from fits.physics import (
     Z_D,
-    Z_randles_full,
     theta_EIS,
     Cdl_brug,
 )
@@ -35,33 +35,6 @@ def test_theta_EIS_known_value():
 
 def test_theta_EIS_zero_when_equal():
     assert theta_EIS(1000.0, 1000.0) == pytest.approx(0.0)
-
-
-def test_Z_randles_full_shape_and_finite():
-    omega = np.logspace(1, 5, 40)
-    Z = Z_randles_full(
-        omega,
-        Re=500.0, Re_prime=50.0, Cb=1e-9,
-        Rct=5000.0, Qdl=1e-6, alpha=0.85,
-        R_D=1000.0, tau_d=1.0,
-    )
-    assert Z.shape == (40,)
-    assert np.all(np.isfinite(Z))
-
-
-def test_Z_randles_full_re_at_hf():
-    """At very high frequency, Z should converge to Re."""
-    omega = np.array([1e8])
-    Re = 500.0
-    Z = Z_randles_full(
-        omega,
-        Re=Re, Re_prime=50.0, Cb=1e-9,
-        Rct=5000.0, Qdl=1e-6, alpha=0.85,
-        R_D=1000.0, tau_d=1.0,
-    )
-    assert abs(Z.real[0] - Re) / Re < 0.05, (
-        f"HF real limit: got {Z.real[0]:.1f} Ω, expected ~{Re} Ω"
-    )
 
 
 def test_cdl_brug_positive():
