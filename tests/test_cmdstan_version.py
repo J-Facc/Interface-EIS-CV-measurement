@@ -140,7 +140,7 @@ def test_cmdstan_version_info_without_cmdstan_is_not_a_warning(monkeypatch):
 class _SeriesInverter:
     """Faux Inverter minimal et déterministe : γ(τ) gaussien, Z reconstruit exactement."""
 
-    def __init__(self):
+    def __init__(self, distributions):           # dict neuf exigé (engine._fresh_distributions)
         self.tau = np.logspace(-6, 2, 80)
         self.distributions = {engine.DIST_NAME: {"tau": self.tau}}
         self.stan_model_name = "Series_pos"

@@ -33,7 +33,9 @@ def _cvxopt_like_solver():
 
 class FailingInverter:
     stan_model_name = "Series_pos"
-    distributions = {}
+
+    def __init__(self, distributions):           # dict neuf exigé (engine._fresh_distributions)
+        self.distributions = {}
 
     def fit(self, f, Z, **kwargs):
         warnings.warn("invalid value encountered in divide", RuntimeWarning)
@@ -43,7 +45,9 @@ class FailingInverter:
 class NoDistributionInverter:
     """L'inversion « réussit » mais n'expose pas la distribution attendue."""
     stan_model_name = "Series_pos"
-    distributions = {}
+
+    def __init__(self, distributions):
+        self.distributions = {}
 
     def fit(self, f, Z, **kwargs):
         pass
