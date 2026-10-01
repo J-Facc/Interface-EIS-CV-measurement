@@ -13,6 +13,122 @@ from core.models import CVCurve
 _E_ALIASES = {"ewe", "e", "potential", "voltage"}
 _I_ALIASES = {"i", "current", "<i>"}
 
+# ── Détection de branches (CV-1) ─────────────────────────────────────────────
+#
+# Un voltammogramme cyclique est une BOUCLE : branche aller (E croissant) puis
+# branche retour (E décroissant). Trier les points par potentiel croissant
+# entrelace les deux branches et détruit la courbe (I n'est plus une fonction
+# de E). La détection est donc faite sur l'ORDRE DE MESURE :
+#
+#   1. on parcourt E dans l'ordre du fichier et on repère les points de
+#      rebroussement (zigzag avec hystérésis : E doit reculer d'au moins
+#      _BRANCH_REVERSAL_FRACTION de l'étendue totale pour compter, ce qui
+#      ignore le bruit de mesure) ;
+#   2. les points de rebroussement découpent le signal en branches monotones ;
+#   3. il y a cycle si on obtient au moins 2 branches, chacune d'au moins
+#      _BRANCH_MIN_POINTS points. Un rebroussement isolé à 1-2 points est du
+#      bruit ou un fichier désordonné, pas une branche.
+#
+# Cycle détecté  -> points gardés dans leur ordre de mesure naturel, SANS tri.
+# Pas de cycle   -> balayage simple : tri par E croissant (comportement
+#                   historique, inoffensif puisque I y est déjà fonction de E).
+#
+# Le point de rebroussement appartient à la branche qu'il termine. Un fichier à
+# plusieurs cycles donne plus de deux branches (aller, retour, aller, ...).
+
+_BRANCH_REVERSAL_FRACTION = 0.05
+_BRANCH_MIN_POINTS = 5
+
+
+def split_branches(E: np.ndarray) -> list[slice]:
+    """Découpe un signal de potentiel (ordre de mesure) en branches monotones.
+
+    Returns:
+        Liste de slices couvrant tout `E`. Un seul slice = balayage simple
+        (aucun cycle complet détecté, voir le commentaire de section).
+    """
+    E = np.asarray(E, dtype=float)
+    n = len(E)
+    whole = [slice(0, n)]
+    if n < 2 * _BRANCH_MIN_POINTS:
+        return whole
+    span = float(np.max(E) - np.min(E))
+    if span <= 0:
+        return whole
+    thr = _BRANCH_REVERSAL_FRACTION * span
+
+    # Zigzag : `turns` reçoit l'indice de chaque extremum confirmé.
+    turns: list[int] = []
+    direction = 0            # 0 = pas encore décidée, +1 monte, -1 descend
+    ext_i = 0                # indice de l'extremum courant dans le sens `direction`
+    lo_i = hi_i = 0          # extrema provisoires tant que la direction est inconnue
+    for i in range(1, n):
+        if direction == 0:
+            if E[i] > E[hi_i]:
+                hi_i = i
+            if E[i] < E[lo_i]:
+                lo_i = i
+            if E[hi_i] - E[lo_i] > thr:
+                # direction fixée par l'extremum atteint en dernier
+                direction = 1 if hi_i > lo_i else -1
+                ext_i = hi_i if direction == 1 else lo_i
+        elif direction == 1:
+            if E[i] > E[ext_i]:
+                ext_i = i
+            elif E[ext_i] - E[i] > thr:
+                turns.append(ext_i)
+                direction, ext_i = -1, i
+        else:
+            if E[i] < E[ext_i]:
+                ext_i = i
+            elif E[i] - E[ext_i] > thr:
+                turns.append(ext_i)
+                direction, ext_i = 1, i
+
+    bounds = [0, *(t + 1 for t in turns), n]
+    branches = [slice(a, b) for a, b in zip(bounds[:-1], bounds[1:])]
+    if len(branches) < 2 or any(b.stop - b.start < _BRANCH_MIN_POINTS for b in branches):
+        return whole
+    return branches
+
+
+def _order_points(E: np.ndarray, I: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Cycle complet : ordre de mesure conservé. Balayage simple : tri par E."""
+    if len(split_branches(E)) > 1:
+        return E, I
+    order = np.argsort(E, kind="stable")
+    return E[order], I[order]
+
+
+def interp_on_reference(E_target: np.ndarray, E_ref: np.ndarray, I_ref: np.ndarray) -> np.ndarray:
+    """Interpole la courbe de référence (E_ref, I_ref) aux potentiels E_target.
+
+    Balayage simple des deux côtés : `np.interp`. Boucle : chaque branche de la
+    cible est interpolée sur la branche de même rang de la référence (l'aller
+    sur l'aller, le retour sur le retour) — un `np.interp` global sur un E non
+    monotone n'a aucun sens (CV-1).
+
+    Raises:
+        ValueError: si cible et référence n'ont pas le même nombre de branches.
+    """
+    E_target = np.asarray(E_target, dtype=float)
+    E_ref = np.asarray(E_ref, dtype=float)
+    I_ref = np.asarray(I_ref, dtype=float)
+    tb, rb = split_branches(E_target), split_branches(E_ref)
+    if len(tb) == 1 and len(rb) == 1:
+        order = np.argsort(E_ref, kind="stable")
+        return np.interp(E_target, E_ref[order], I_ref[order])
+    if len(tb) != len(rb):
+        raise ValueError(
+            f"Nombre de branches CV différent ({len(tb)} contre {len(rb)}) : "
+            f"les courbes ne sont pas comparables point à point."
+        )
+    out = np.empty_like(E_target)
+    for t, r in zip(tb, rb):
+        order = np.argsort(E_ref[r], kind="stable")
+        out[t] = np.interp(E_target[t], E_ref[r][order], I_ref[r][order])
+    return out
+
 
 def _detect_separator(sample: str) -> str:
     for sep in (",", ";", "\t"):
@@ -56,7 +172,9 @@ def load_cv_file(
             robust parser is used, so callers can relay them to the UI.
 
     Returns:
-        A CVScan with E in volts and I in amperes, sorted by ascending E.
+        A CVScan with E in volts and I in amperes. A complete cycle (forward
+        + return branch) keeps its measurement order; a simple sweep is sorted
+        by ascending E (see « Détection de branches » above).
 
     Raises:
         ValueError: If E/I columns cannot be found, or if an EIS file was
@@ -71,11 +189,11 @@ def load_cv_file(
         I = np.asarray(pf.columns["I"], dtype=float)  # déjà converti en ampères
         mask = np.isfinite(E) & np.isfinite(I)
         E, I = E[mask], I[mask]
-        order = np.argsort(E)
+        E, I = _order_points(E, I)
         return CVScan(
             label=label,
-            E=E[order],
-            I=I[order],
+            E=E,
+            I=I,
             concentration=concentration,
             step=step,
             source_files=[label],
@@ -114,9 +232,8 @@ def load_cv_file(
     mask = np.isfinite(E) & np.isfinite(I)
     E, I = E[mask], I[mask]
 
-    # Sort by ascending potential
-    order = np.argsort(E)
-    E, I = E[order], I[order]
+    # Cycle complet : ordre de mesure ; balayage simple : tri par E (CV-1)
+    E, I = _order_points(E, I)
 
     return CVScan(
         label=label,
@@ -149,7 +266,9 @@ def load_cv_curve(content: bytes, label: str, warnings_out: Optional[list] = Non
 
 
 def average_cv_replicates(scans: list) -> CVScan:
-    """Interpolate all scans onto the first scan's E grid and average point-by-point."""
+    """Interpolate all scans onto the first scan's E grid and average point-by-point.
+
+    Branch-aware for cycles (see interp_on_reference)."""
     if not scans:
         raise ValueError("Liste de scans vide.")
     if len(scans) == 1:
@@ -158,7 +277,7 @@ def average_cv_replicates(scans: list) -> CVScan:
     ref = scans[0]
     E_grid = ref.E
     I_matrix = np.stack(
-        [np.interp(E_grid, s.E, s.I) for s in scans],
+        [interp_on_reference(E_grid, s.E, s.I) for s in scans],
         axis=0,
     )
     I_mean = I_matrix.mean(axis=0)

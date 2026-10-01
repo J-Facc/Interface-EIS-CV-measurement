@@ -1,5 +1,5 @@
 """Streamlit tab rendering — EIS (KK / Résultats par groupe / DRT / Reconstructions /
-Calibration) and CV (Visualisation / Pic redox / Calibration / Paramètres).
+Calibration) and CV (Visualisation / Calibration).
 """
 
 import math
@@ -10,7 +10,6 @@ import streamlit as st
 from core.models import EISSession
 from core.pipeline import DRT_MODEL_NAME, recompute_drt
 from core.results_table import drt_hmc_summary, group_rows, is_missing, replicate_rows
-from core.cv_peaks import detect_redox_peaks
 from drt import diagnostics as drt_diag
 from drt import engine as drt_engine
 from fits.orazem_fit import ORAZEM_MODEL_NAME
@@ -27,8 +26,6 @@ from plotting.eis_plots import (
 from plotting.cv_plots import (
     cv_current_figure,
     cv_calibration_figure_multi,
-    redox_peaks_figure,
-    cv_params_table_multi,
     open_cv_calibration_matplotlib_window_multi,
 )
 from plotting.kk_plots import residuals_figure, validation_summary_table
@@ -508,14 +505,12 @@ def render_eis_tabs(sessions: dict, config: dict, validations: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_cv_tabs(cv_sessions: dict) -> None:
-    """Render CV analysis tabs: Visualisation I/U, Pic redox, Calibration.
+    """Render CV analysis tabs: Visualisation I/U, Calibration.
 
     Args:
         cv_sessions: {electrode_index: CVSession}, une entrée par électrode disponible.
     """
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "1️⃣ Visualisation I/U", "2️⃣ Pic redox", "3️⃣ Calibration", "4️⃣ Paramètres",
-    ])
+    tab1, tab2 = st.tabs(["1️⃣ Visualisation I/U", "2️⃣ Calibration"])
 
     electrodes = sorted(cv_sessions.keys())
 
@@ -534,26 +529,6 @@ def render_cv_tabs(cv_sessions: dict) -> None:
                         st.info("Aucune donnée CV chargée pour cette électrode.")
 
     with tab2:
-        st.subheader("Pics redox — anodique / cathodique")
-        if not electrodes:
-            st.info("Aucune donnée CV chargée.")
-        else:
-            elec_tabs = st.tabs([f"Électrode {e}" for e in electrodes])
-            for e, elec_tab in zip(electrodes, elec_tabs):
-                with elec_tab:
-                    session = cv_sessions[e]
-                    if session.probe is not None or session.groups:
-                        if session.probe is not None:
-                            pp = detect_redox_peaks(session.probe)
-                            col1, col2, col3 = st.columns(3)
-                            col1.metric("Ipa probe", f"{pp['Ipa']*1e6:.3f} µA")
-                            col2.metric("Ipc probe", f"{pp['Ipc']*1e6:.3f} µA")
-                            col3.metric("ΔEp probe", f"{pp['delta_Ep']*1e3:.1f} mV")
-                        st.plotly_chart(redox_peaks_figure(session), width='stretch', key=f"cv_redox_e{e}")
-                    else:
-                        st.info("Aucune donnée CV chargée pour cette électrode.")
-
-    with tab3:
         st.subheader("Calibration CV — Signal normalisé")
         calibratable = {
             e: s for e, s in cv_sessions.items()
@@ -576,10 +551,3 @@ def render_cv_tabs(cv_sessions: dict) -> None:
                     mime="text/csv",
                     key="cv_calib_csv_btn",
                 )
-
-    with tab4:
-        st.subheader("Paramètres extraits par concentration et électrode")
-        if not electrodes:
-            st.info("Aucune donnée CV chargée.")
-        else:
-            st.plotly_chart(cv_params_table_multi(cv_sessions), width='stretch', key="cv_params_table")
