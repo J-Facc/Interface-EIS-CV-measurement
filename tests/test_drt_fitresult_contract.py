@@ -57,7 +57,7 @@ class _FakeInverter:
     calls = []
     stan_model_name = "Series (factice)"
 
-    def __init__(self):
+    def __init__(self, distributions):           # dict neuf exigé (engine._fresh_distributions)
         self.distributions = {engine.DIST_NAME: {"tau": _TAU}}
         self.stan_mle = _FakeMLE()
 

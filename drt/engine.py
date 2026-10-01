@@ -23,6 +23,9 @@ Ce que ce module ajoute à ``Inverter`` (et pourquoi — AUDIT.md §4)
   :class:`DRTComputationError` (``RuntimeError``) qui nomme l'étape, la cause (classe ET message)
   et la ligne d'origine, et porte le traceback complet dans ``.detail`` (écrit au journal par
   ``core.pipeline``). Un « domain error » nu ne se reproduit plus pour être compris.
+* **Aucun état partagé entre deux fits** : chaque appel crée un ``Inverter`` ET un dict
+  ``distributions`` neufs (:func:`_fresh_distributions`) — le défaut amont, mutable, gardait
+  ``tau``/``epsilon`` du spectre précédent d'une instance à l'autre.
 * **Version de CmdStan** : ``drt_diagnostics['cmdstan_version']`` ; si ce n'est pas la version
   des réglages validés (``drt.cmdstan_version``), une note le dit dans ``FitResult.warnings``.
 * ``chi2_reduced = NaN`` : la DRT ne calcule pas de χ² pondéré ; l'erreur de
@@ -145,6 +148,25 @@ def _import_inverter():
     from drt.bayes_drt2.inversion import Inverter  # noqa: WPS433 — import différé voulu
 
     return Inverter
+
+
+def _fresh_distributions() -> dict:
+    """Dict ``distributions`` NEUF pour chaque ``Inverter`` — même contenu que le défaut amont.
+
+    Ne jamais construire ``Inverter()`` sans cet argument. Le défaut amont
+    ``Inverter.__init__(distributions={'DRT': {'kernel': 'DRT'}})`` est un argument par défaut
+    MUTABLE, stocké sans copie, et ``_prep_matrices`` y écrit la grille ``tau`` et ``epsilon``
+    du spectre ajusté : ce dict est donc partagé par toutes les instances du processus,
+    même « fraîches ». Deux conséquences, mesurées (drt/PROVENANCE.md, §3, écarts non patchés) :
+
+    * **erreur silencieuse** : ``epsilon`` n'est calculé que s'il est absent du dict, donc
+      chaque spectre après le premier du processus héritait de l'epsilon de son prédécesseur
+      (jusqu'à 1,6 % d'écart sur des plages tronquées), et son γ(τ) dépendait de l'ordre des fits ;
+    * **ValueError** ``matmul … (size 80 is different from 90)`` dans ``predict_distribution``
+      quand un autre fit (autre taille de grille) écrivait ``tau`` entre le ``fit`` et la lecture
+      d'un premier — deux analyses Streamlit concurrentes dans le même processus.
+    """
+    return {DIST_NAME: {"kernel": "DRT"}}
 
 
 def library_available() -> Tuple[bool, Optional[str]]:
@@ -473,7 +495,7 @@ def _run_inversion(spectrum, freq: np.ndarray, Z: np.ndarray, settings: DRTSetti
     else:
         kw.update(max_iter=int(settings.max_iter))
 
-    inv = Inverter()
+    inv = Inverter(distributions=_fresh_distributions())
     progress.stage = f"inversion bayes_drt2 (ridge puis Stan, mode {settings.mode})"
     with _quiet_cmdstanpy(), warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
