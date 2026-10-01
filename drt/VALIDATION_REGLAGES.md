@@ -510,6 +510,20 @@ ciblées) :
   (IC), pas de validité : R-hat ≤ 1,011, 0 divergence, Rp et Rct identiques à ±0,1 % aux autres graines.
   Réponse documentée : relancer avec `samples=4000` (ou changer de graine) ; l'interface doit afficher
   l'alerte, pas la masquer.
+* **Échecs connus du test lent — à ne pas prendre pour une régression.** Constatés le 2026-10-01,
+  identiques sur `1749d98` et après l'étape 4 (Linux, 4 cœurs, CmdStan 2.36.0, cmdstanpy 1.3.0,
+  cvxopt 1.3.3), dans `tests/test_drt_engine.py::test_default_hmc_is_correct_and_converged_on_drt1_cases`,
+  graine Stan 1234 (défaut du moteur) :
+  - `[A3-60pts-sans-bruit]` (2 RC, 60 pts 1e5→1e-1 Hz, sans bruit) : **1 divergence** (R-hat max
+    1,0037) → échoue sur `divergences == 0` ;
+  - `[A4-Randles-Rct3500]` (bruit 0,5 %, graine de bruit 3500) : **`ess_tail_low`, ESS tail min 344 <
+    400** → échoue sur `alerts == []` (même alerte de précision que le point précédent).
+
+  Au §6, ces deux cas passent sans alerte à la même graine et aux mêmes versions : une graine Stan ne
+  fixe donc pas le résultat d'une machine à l'autre (cause probable : compilation de CmdStan et
+  arithmétique flottante — non démontrée). Le test s'arrête avant de vérifier Rct : dans cet
+  environnement, ces deux cas ne le couvrent pas. Un échec de ces deux seules paramétrisations, avec
+  ces symptômes, n'est pas une régression ; un autre cas, ou un autre symptôme, en est une.
 * **Coût** : 115 à 268 s par spectre sur 4 cœurs (saturation de profondeur à `adapt_delta` 0,99 sur les
   spectres à arcs nets). `mode='optimize'` (~1 s) reste disponible comme aperçu, sans diagnostic de
   convergence ni intervalle.
