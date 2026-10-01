@@ -53,6 +53,56 @@ def noisy_arrays(Rct: float, noise: float = 0.005, seed: int = 0,
     return f, zre, zim
 
 
+# ── Bruit selon la structure d'erreur d'Orazem (σ_r = σ_j) ────────────────────
+#
+# ``noisy_arrays`` ajoute un bruit RELATIF indépendant par composante (σ_re ∝ |Zre|,
+# σ_im ∝ |Zim|) : il VIOLE l'hypothèse σ_r = σ_j du measurement model (Agarwal et al.,
+# JES 142 (1995) 4149). Les tests du measurement model et du fit Orazem utilisent
+# plutôt ce générateur, conforme à la forme d'Orazem (JEC 572 (2004) 317) :
+#     σ = α·|Zj| + β·|Zr − Re| + δ     (même σ sur Re et Im).
+
+ORAZEM_NOISE = dict(alpha=0.004, beta=0.004, delta=0.5)
+
+
+def orazem_sigma(zre, zim, alpha, beta, delta, R_sol=_RANDLES_FIXED["Re"]):
+    """σ(ω) d'Orazem (même valeur sur Re et Im), convention Zim = −Im(Z) > 0."""
+    return alpha * np.abs(zim) + beta * np.abs(zre - R_sol) + delta
+
+
+def orazem_noisy_arrays(Rct: float, seed: int = 0, n_points: int = N_POINTS,
+                        drift: float = 0.0, **noise) -> tuple:
+    """(f, Zre, Zim, σ) : Randles de l'Annexe A bruité selon la structure d'Orazem.
+
+    ``drift`` : variation relative de Rct PENDANT le balayage (HF → BF, temps ∝ rang
+    du point) — spectre NON conforme Kramers-Kronig si drift ≠ 0 (non-stationnarité).
+    """
+    nz = dict(ORAZEM_NOISE, **noise)
+    f = frequencies(n_points)
+    if drift:
+        Z = np.array([
+            Z_randles_full(2 * np.pi * f[i:i + 1], Rct=Rct * (1 + drift * i / (n_points - 1)),
+                           R_D=0.3 * Rct, **_RANDLES_FIXED)[0]
+            for i in range(n_points)
+        ])
+    else:
+        Z = Z_randles_full(2 * np.pi * f, Rct=Rct, R_D=0.3 * Rct, **_RANDLES_FIXED)
+    zre, zim = Z.real, -Z.imag
+    sigma = orazem_sigma(zre, zim, **nz)
+    rng = np.random.default_rng(seed)
+    return f, zre + rng.normal(0.0, sigma), zim + rng.normal(0.0, sigma), sigma
+
+
+def orazem_replicates(Rct: float, n_rep: int = 3, seed0: int = 0, n_points: int = N_POINTS,
+                      step: str = "probe", concentration: float = 0.0, **kw) -> list:
+    """``n_rep`` EISSpectrum indépendants (bruit d'Orazem), labels ``r0``, ``r1``…"""
+    out = []
+    for k in range(n_rep):
+        f, zre, zim, _ = orazem_noisy_arrays(Rct, seed0 + k, n_points, **kw)
+        out.append(EISSpectrum(label=f"r{k}", f=f, Zre=zre, Zim=zim,
+                               concentration=concentration, step=step, n_points=len(f)))
+    return out
+
+
 def eclab_bytes(f, zre, zim) -> bytes:
     """Sérialise en texte EC-Lab minimal (tabulations, ``-Im(Z)/Ohm`` positif)."""
     lines = ["freq/Hz\tRe(Z)/Ohm\t-Im(Z)/Ohm"]
@@ -103,12 +153,13 @@ def make_spectrum(label: str = "x", n: int = 40, concentration: float = 1e-9,
     )
 
 
-def make_fit_result(model_name: str, params: dict, Rct: float, Rct_std: float = 0.0,
+def make_fit_result(model_name: str, params: dict, target_value: float, target_std: float = 0.0,
                     n: int = 40, **kwargs) -> FitResult:
     """FitResult minimal (tableaux de 1) avec les paramètres et le Rct voulus."""
     z = np.ones(n)
     return FitResult(
         model_name=model_name, params=params, params_std={}, Zfit_re=z, Zfit_im=z,
-        chi2_reduced=1.0, residuals_re=z, residuals_im=z, Rct=Rct, Rct_std=Rct_std,
+        chi2_reduced=1.0, residuals_re=z, residuals_im=z, target_param="Rct",
+        target_value=target_value, target_std=target_std,
         converged=True, **kwargs,
     )

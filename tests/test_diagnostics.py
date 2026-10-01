@@ -43,7 +43,8 @@ def test_clean_fit_has_no_warnings():
     sp.Zim = sp.Zim + rng.normal(0.0, sigma)
     fr = RandlesFullModel().fit(sp, _CFG)
     assert fr.warnings == [], fr.warnings
-    assert fr.chi2_is_valid_test
+    lo, hi = fr.chi2_reduced_ci
+    assert lo <= fr.chi2_reduced <= hi
     assert fr.reconstruction_error is not None and fr.reconstruction_error < 0.05
 
 

@@ -70,7 +70,14 @@ class FitResult:
     """Result of a fit model applied to an EIS spectrum.
 
     Zfit_im follows the same positive convention as EISSpectrum.Zim
-    (i.e. -Im(Z) > 0 for a capacitive semicircle).
+    (i.e. -Im(Z) > 0 for a capacitive semicircle). ``residuals_*`` = données − modèle,
+    dans cette même convention.
+
+    Paramètre cible (signal de calibration) : le circuit étant libre, il n'y a plus
+    de champ « Rct » figé. L'utilisateur DÉSIGNE le paramètre qui sert de signal
+    (``target_param``, un nom de ``params``) ; ``target_value``/``target_std`` en
+    sont la valeur et l'écart-type (intra-fit pour un spectre ; pour la DRT, Rct
+    extrait de la distribution et son incertitude).
     """
 
     model_name: str
@@ -78,23 +85,18 @@ class FitResult:
     params_std: dict
     Zfit_re: np.ndarray
     Zfit_im: np.ndarray
-    # χ² réduit pondéré = Σ(w·Δ²)/(2N−P), avec les poids w = 1/σ² issus de la
-    # structure d'erreur d'Orazem (fits/error_structure.py). Les poids étant de
-    # vraies 1/variance (absolute_sigma=True TOUJOURS), chi2_reduced≈1 EST un vrai
-    # test d'adéquation modèle+erreur (cf. chi2_is_valid_test / chi2_reduced_ci).
+    # χ² réduit pondéré = Σ(w·Δ²)/(2N−P), avec les poids w = 1/σ² de la structure
+    # d'erreur d'Orazem. Les poids étant de vraies 1/variance (absolute_sigma TOUJOURS),
+    # chi2_reduced≈1 EST un test d'adéquation modèle+erreur (voir chi2_reduced_ci).
     chi2_reduced: float
     residuals_re: np.ndarray
     residuals_im: np.ndarray
-    Rct: float
-    Rct_std: float
+    target_param: str
+    target_value: float
+    target_std: float
     converged: bool
-# Incertitude sur Rct propagée depuis σ(f)
-    # Renseigné dans un second temps (sprint 2)
-    Rct_sigma: Optional[float] = None
-    # Champs DRT : renseignés par le plugin fits/drt_fit.py (DRTBayesModel), qui
-    # produit un FitResult standard comme les autres modèles du pipeline.
+    # Champs DRT : renseignés par le plugin fits/drt_fit.py et par drt/engine.py.
     #   drt_tau/drt_gamma      : distribution γ(τ) (τ en s, γ en Ω).
-    #   drt_S/drt_lnGamma      : ln(τ) et ln(γ) précalculés (tracé ln/ln).
     #   drt_mode               : 'optimize' (MAP) ou 'sample' (HMC) — mode réellement
     #                            exécuté, affiché par l'UI pour ne pas comparer sans
     #                            le savoir des DRT de modes différents.
@@ -102,8 +104,6 @@ class FitResult:
     #                            uniquement ; None en 'optimize').
     drt_tau: Optional[np.ndarray] = None
     drt_gamma: Optional[np.ndarray] = None
-    drt_S: Optional[np.ndarray] = None
-    drt_lnGamma: Optional[np.ndarray] = None
     drt_mode: Optional[str] = None
     drt_gamma_lo: Optional[np.ndarray] = None
     drt_gamma_hi: Optional[np.ndarray] = None
@@ -115,23 +115,28 @@ class FitResult:
     # DRT (drt/engine.py) : réglages, diagnostics HMC (R-hat, ESS, divergences…),
     # alertes et notes — voir drt/diagnostics.py.
     drt_diagnostics: Optional[dict] = None
-    # Validation Kramers-Kronig (fits/kk_validation.py)
+    # Fit Orazem (fits/orazem_fit.py) : méthode, conditionnement de la jacobienne,
+    # identifiabilité, départs multiples, bornes actives — voir fit_spectrum().
+    fit_diagnostics: Optional[dict] = None
+    # Verdict Lin-KK attaché par l'ANCIEN pipeline (core/pipeline._run_kk). Conservés
+    # jusqu'à la bascule (étape 5) : le verdict KK de référence est désormais celui
+    # du measurement model, porté par le GROUPE (MeasurementModelAnalysis), pas par
+    # chaque fit.
     kk_passed: Optional[bool] = None
     kk_residuals: Optional[dict] = None
-    # Diagnostics d'ajustement remontés à l'UI (I7) : fit non convergé, résidu
-    # relatif élevé, paramètre en butée sur une borne. Liste de messages lisibles.
+    # Diagnostics d'ajustement remontés à l'UI (I7) : fit non convergé, χ²ᵣ hors
+    # intervalle, résidu relatif élevé, paramètre en butée… Messages lisibles.
     warnings: list = field(default_factory=list)
     # Provenance de la structure d'erreur ayant pondéré CE fit (Orazem) :
     #   "characterized_now"  → coefficients estimés sur les réplicats de ce jeu ;
-    #   "reused_persisted"   → coefficients rechargés d'une caractérisation antérieure.
-    # L'UI DOIT afficher cette provenance (savoir si σ a été mesuré sur ce jeu).
+    #   "reused_persisted"   → (ANCIEN module fits/error_structure.py uniquement)
+    #                          coefficients rechargés d'une caractérisation antérieure.
     error_structure_source: Optional[str] = None
     error_structure_timestamp: Optional[str] = None   # horodatage de la caractérisation utilisée
-    error_structure_coeffs: Optional[dict] = None      # {alpha,beta,gamma,delta,R_m}
-    # chi2_reduced est-il un vrai test d'adéquation ? TOUJOURS True désormais
-    # (poids = 1/σ² de la structure d'erreur, absolute_sigma=True).
-    chi2_is_valid_test: bool = False
-    # Intervalle attendu du χ²_red sous H0 : ~[1 − 2√(2/dof), 1 + 2√(2/dof)].
+    error_structure_coeffs: Optional[dict] = None      # coefficients de la structure
+    # Intervalle attendu de χ²ᵣ sous H0 (modèle et structure d'erreur corrects), au
+    # niveau 95,45 % (2σ). Conservé pour la nouvelle UI : afficher « χ²ᵣ = 1,31 ∈
+    # [0,71 ; 1,34] » rend le test d'adéquation lisible sans analyser un texte.
     chi2_reduced_ci: Optional[tuple] = None
 
 

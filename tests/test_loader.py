@@ -89,6 +89,31 @@ def test_average_single_returns_same():
     assert average_replicates([sp]) is sp
 
 
+def test_average_replicates_fills_raw_sigma():
+    """average_replicates renseigne σ_re/σ_im BRUTS (>1 réplicat) et None sinon.
+
+    Repris de l'ancien tests/test_fits.py (remplacé par test_orazem_fit.py) : garantie
+    du loader, indépendante du moteur de fit. Aucun plancher relatif (0,001·|Z̄|) ;
+    n_replicates et replicates sont renseignés.
+    """
+    from tests.synthetic_data import noisy_arrays
+
+    def spectrum(seed, noise):
+        f, zre, zim = noisy_arrays(5000.0, noise, seed)
+        return EISSpectrum(label=f"r{seed}", f=f, Zre=zre, Zim=zim, concentration=1e-9,
+                           step="hybridization", n_points=len(f))
+
+    single = average_replicates([spectrum(0, 0.0)])
+    assert single.sigma_re is None and single.sigma_im is None
+
+    avg = average_replicates([spectrum(k, 0.01) for k in range(3)])
+    assert avg.sigma_re is not None and avg.sigma_im is not None
+    assert len(avg.sigma_re) == len(avg.f) == len(avg.sigma_im)
+    assert np.all(avg.sigma_re > 0) and np.all(avg.sigma_im > 0)
+    assert avg.n_replicates == 3
+    assert avg.replicates is not None and len(avg.replicates) == 3
+
+
 def test_average_empty_raises():
     with pytest.raises(ValueError):
         average_replicates([])

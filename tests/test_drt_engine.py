@@ -266,7 +266,8 @@ def _assert_correct_and_silent(fr, rp_true, rct_target, tau_bounds):
     # DRT-4 : τ_Rct en SECONDES, sur l'arc de transfert de charge
     assert fr.params["rct_source"] == "peak_penultimate"
     assert tau_bounds[0] <= fr.params["tau_Rct"] <= tau_bounds[1], fr.params["tau_Rct"]
-    assert abs(fr.Rct / rct_target - 1) <= RCT_REL_TOL, f"Rct={fr.Rct:.1f} vs {rct_target:.1f}"
+    assert fr.target_param == "Rct"
+    assert abs(fr.target_value / rct_target - 1) <= RCT_REL_TOL, f"Rct={fr.target_value:.1f} vs {rct_target:.1f}"
 
 
 @_NEEDS_ENGINE
@@ -293,7 +294,7 @@ def test_default_hmc_is_correct_and_converged_on_drt1_cases(cid, make, seed, rp_
     _assert_correct_and_silent(fr, rp_true, rct_target, tau_bounds)
     # Incertitude a posteriori (HMC) : IC cohérents, jamais un écart-type nul inventé
     lo, hi = d["Rct_ci95"]
-    assert lo < fr.Rct < hi and fr.Rct_std > 0
+    assert lo < fr.target_value < hi and fr.target_std > 0
     lo, hi = d["Rp_ci95"]
     assert lo < fr.params["Rp"] < hi
     assert np.all(fr.drt_gamma_lo <= fr.drt_gamma + 1e-9) and np.all(fr.drt_gamma <= fr.drt_gamma_hi + 1e-9)
@@ -328,4 +329,4 @@ def test_explicit_seed_makes_the_hmc_reproducible():
     a = engine.fit_drt(sp, random_seed=11, **budget)
     b = engine.fit_drt(sp, random_seed=11, **budget)
     assert np.array_equal(a.drt_gamma, b.drt_gamma)
-    assert a.Rct == b.Rct and a.drt_diagnostics["sampler"]["rhat_max"] == b.drt_diagnostics["sampler"]["rhat_max"]
+    assert a.target_value == b.target_value and a.drt_diagnostics["sampler"]["rhat_max"] == b.drt_diagnostics["sampler"]["rhat_max"]

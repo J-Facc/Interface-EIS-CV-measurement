@@ -13,8 +13,6 @@ Aucun import Streamlit.
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -59,23 +57,27 @@ def _colors(theme_mode: str) -> dict:
 def residuals_figure(
     validation_result,          # ValidationResult de core/validator.py
     theme_mode: str = "light",
-    residual_threshold_pct: float = 2.0,
 ) -> go.Figure:
     """
-    Retourne une figure Plotly avec les résidus KK normalisés (%)
+    Retourne une figure Plotly avec les résidus KK normalisés (% de |Z|)
     en fonction de la fréquence, pour chaque réplicat du groupe.
 
-    Deux sous-graphes : résidus Re (haut) et résidus Im (bas).
-    Ligne en pointillés aux seuils ±threshold_pct.
+    Measurement model : en haut, écart entre Re(Z) et la partie réelle PRÉDITE
+    depuis l'ajustement de Im seule (statistique du test) ; en bas, résidu de cet
+    ajustement de Im. Pointillés : bande ±2σ de chaque réplicat (bruit caractérisé
+    + incertitude de prédiction). Sans structure d'erreur : résidus Lin-KK, sans
+    bande (aucun verdict possible).
     Zone grisée hors de la plage KK-valide commune.
     """
     c = _colors(theme_mode)
-    n_rep = len(validation_result.replicates)
+    mm = any(getattr(kk, "method", "") == "measurement_model" for kk in validation_result.replicates)
+    titles = (["Re(Z) − Re prédite depuis Im (%)", "Im(Z) − ajustement de Im (%)"] if mm
+              else ["Résidus Lin-KK Re(Z) (%) — indicatifs", "Résidus Lin-KK Im(Z) (%) — indicatifs"])
 
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
-        subplot_titles=["Résidus Re(Z) (%)", "Résidus Im(Z) (%)"],
+        subplot_titles=titles,
         vertical_spacing=0.10,
     )
 
@@ -86,7 +88,8 @@ def residuals_figure(
         color_re = rep_colors_re[i % len(rep_colors_re)]
         color_im = rep_colors_im[i % len(rep_colors_im)]
         name = kk.label or f"Réplicat {i+1}"
-        opacity = 0.9 if kk.is_valid else 0.4
+        ok = kk.is_valid is not False
+        opacity = 0.9 if ok else 0.4
 
         # Résidus Re
         fig.add_trace(go.Scatter(
@@ -95,7 +98,7 @@ def residuals_figure(
             mode="markers+lines",
             name=name,
             marker=dict(size=5, color=color_re, opacity=opacity),
-            line=dict(width=1, color=color_re, dash="solid" if kk.is_valid else "dot"),
+            line=dict(width=1, color=color_re, dash="solid" if ok else "dot"),
             legendgroup=f"rep{i}",
             showlegend=True,
         ), row=1, col=1)
@@ -107,19 +110,22 @@ def residuals_figure(
             mode="markers+lines",
             name=name,
             marker=dict(size=5, color=color_im, opacity=opacity),
-            line=dict(width=1, color=color_im, dash="solid" if kk.is_valid else "dot"),
+            line=dict(width=1, color=color_im, dash="solid" if ok else "dot"),
             legendgroup=f"rep{i}",
             showlegend=False,
         ), row=2, col=1)
 
-    # Lignes seuil ±threshold
-    for row in [1, 2]:
-        for sign in [+1, -1]:
-            fig.add_hline(
-                y=sign * residual_threshold_pct,
-                line=dict(color=c["threshold"], width=1, dash="dash"),
-                row=row, col=1,
-            )
+        # Bandes ±2σ (critère unique, fits/kk_validation.kk_verdict)
+        for row, band in ((1, getattr(kk, "band_re", None)), (2, getattr(kk, "band_im", None))):
+            if band is None:
+                continue
+            for sign in (+1, -1):
+                fig.add_trace(go.Scatter(
+                    x=kk.frequencies, y=sign * band, mode="lines",
+                    line=dict(width=1, color=c["threshold"], dash="dash"),
+                    name="±2σ", legendgroup="band", showlegend=(i == 0 and row == 1 and sign > 0),
+                    hoverinfo="skip",
+                ), row=row, col=1)
 
     # Ligne zéro
     for row in [1, 2]:
@@ -159,7 +165,8 @@ def residuals_figure(
     fig.update_yaxes(gridcolor=c["grid"])
 
     # Titre dynamique selon la validité globale
-    status = "✓ Valide" if validation_result.all_valid else "⚠ Problème détecté"
+    status = {True: "✓ Conforme KK", False: "⚠ Non conforme KK",
+              None: "? Verdict indéterminé (bruit non caractérisé)"}[validation_result.all_valid]
     drift_tag = " — drift inter-réplicats" if validation_result.drift_detected else ""
 
     fig.update_layout(
@@ -193,7 +200,8 @@ def validation_summary_table(
 ) -> go.Figure:
     """
     Tableau Plotly compact résumant la validité KK de tous les spectres.
-    Une ligne par spectre, colonnes : label, µ moyen, χ² moyen, drift, verdict.
+    Une ligne par spectre, colonnes : label, nombre d'éléments de Voigt moyen,
+    χ²ᵣ moyen de l'ajustement de Im, drift, verdict.
     Destiné à être affiché dans un expander de l'onglet Paramètres ou Nyquist.
     """
     c = _colors(theme_mode)
@@ -203,27 +211,30 @@ def validation_summary_table(
     for label, vr in validation_results.items():
         if not vr.replicates:
             continue
-        mu_mean = np.mean([kk.mu for kk in vr.replicates])
-        chi2_mean = np.mean([kk.chi2_pseudo for kk in vr.replicates])
+        k_mean = np.mean([kk.n_elements for kk in vr.replicates])
+        chi2_vals = [kk.chi2_reduced for kk in vr.replicates if np.isfinite(kk.chi2_reduced)]
 
         labels.append(label)
-        mus.append(f"{mu_mean:.3f}")
-        chi2s.append(f"{chi2_mean:.4f}")
+        mus.append(f"{k_mean:.1f}")
+        chi2s.append(f"{np.mean(chi2_vals):.2f}" if chi2_vals else "—")
         drifts.append("Oui ⚠" if vr.drift_detected else "Non ✓")
 
-        if not vr.all_valid:
-            verdicts.append("❌ Invalide")
+        if vr.all_valid is None:
+            verdicts.append("❔ Indéterminé")
+            colors_cell.append("#f3f4f6")
+        elif not vr.all_valid:
+            verdicts.append("❌ Non conforme")
             colors_cell.append("#fee2e2")
         elif vr.drift_detected:
             verdicts.append("⚠ Drift")
             colors_cell.append("#fef9c3")
         else:
-            verdicts.append("✅ Valide")
+            verdicts.append("✅ Conforme")
             colors_cell.append("#dcfce7")
 
     fig = go.Figure(data=[go.Table(
         header=dict(
-            values=["Spectre", "µ moyen", "χ² pseudo", "Drift", "Verdict"],
+            values=["Spectre", "Éléments RC (moy.)", "χ²ᵣ Im (moy.)", "Drift", "Verdict KK"],
             fill_color=c["paper"],
             font=dict(color=c["text"], size=11),
             align="left",

@@ -1,15 +1,23 @@
 """
 core/validator.py
 =================
-Validation KK des spectres EIS avant moyennage des réplicats.
+Validation Kramers-Kronig des spectres EIS avant moyennage des réplicats.
 
 Deux objectifs :
-  1. Diagnostiquer chaque réplicat individuellement (lin-KK)
-     → résidus par fréquence, plage valide [f_min, f_max], score µ
-  2. Détecter un drift inter-réplicats
-     → si les résidus KK divergent systématiquement entre réplicats
+  1. Juger la conformité KK de chaque réplicat et du groupe — verdict affiché au
+     prétraitement, donc AVANT que le fit Orazem ne soit proposé ;
+  2. Détecter un drift inter-réplicats.
 
-Implémentation Lin-KK native : fits/kk_validation.py
+Méthode (une seule, AUDIT.md ERR-6) : le verdict vient TOUJOURS du measurement
+model de Voigt pondéré par la structure d'erreur caractérisée sur les réplicats
+du groupe (``core.measurement_model.analyze_replicates``), jugé par le critère
+unique ``fits.kk_validation.kk_verdict``. Les anciens seuils sans source
+(résidu < 2 % par point, paliers 10 %/25 %, µ > 0,85) sont supprimés.
+
+Sans structure d'erreur (moins de 3 réplicats…), AUCUN verdict n'est rendu
+(``is_valid=None``) : les résidus Lin-KK (Schönleber, ``fits.kk_validation.lin_kk``)
+sont seulement AFFICHÉS, à titre indicatif.
+
 Aucun import Streamlit — logique métier pure.
 """
 
@@ -17,6 +25,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -30,26 +39,30 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class KKResult:
-    """Résultat du test Kramers-Kronig pour un spectre unique."""
+    """Résultat du test Kramers-Kronig pour un spectre unique.
+
+    Résidus en % de |Z| (fréquences croissantes) :
+      * méthode « measurement_model » : residuals_re = Re(données) − Re PRÉDITE depuis
+        l'ajustement de Im seule (c'est la statistique du test) ; residuals_im = résidu
+        de cet ajustement de Im ; band_re/band_im = ±2 écarts-types sous H0 (en %) ;
+      * méthode « lin_kk » (affichage seul, sans verdict) : résidus Lin-KK ; pas de bande.
+    """
 
     label: str
-
-    # Résidus normalisés (%) sur la plage complète
-    frequencies: np.ndarray          # Hz
-    residuals_re: np.ndarray          # (Zre_fit - Zre_exp) / |Z_exp|  en %
-    residuals_im: np.ndarray          # (Zim_fit - Zim_exp) / |Z_exp|  en %
-
-    # Qualité globale
-    mu: float                         # ratio masse RC négative / totale  (0 = parfait, <0.85 = acceptable)
-    chi2_pseudo: float                # chi² pseudo normalisé
-
-    # Plage fréquentielle valide (indices dans frequencies[])
-    f_min_valid: float                # Hz — borne basse de la plage KK-valide
-    f_max_valid: float                # Hz — borne haute
-
-    # Verdict
-    is_valid: bool                    # True si µ < seuil ET résidus < seuil
-    warning: Optional[str] = None    # message lisible si problème détecté
+    frequencies: np.ndarray           # Hz, croissantes
+    residuals_re: np.ndarray          # % de |Z|
+    residuals_im: np.ndarray          # % de |Z|
+    method: str                       # "measurement_model" | "lin_kk"
+    n_elements: int                   # K (Voigt régressé) ou M (Lin-KK)
+    chi2_reduced: float               # χ²ᵣ de l'ajustement de Im (NaN pour Lin-KK)
+    f_min_valid: float                # Hz — bloc contigu le plus large dans la bande
+    f_max_valid: float
+    is_valid: Optional[bool]          # verdict ; None = indéterminé (pas de bruit caractérisé)
+    warning: Optional[str] = None
+    band_re: Optional[np.ndarray] = None   # ±2σ (%) de residuals_re
+    band_im: Optional[np.ndarray] = None   # ±2σ (%) de residuals_im
+    n_outside: int = 0
+    n_allowed: int = 0
 
 
 @dataclass
@@ -59,8 +72,9 @@ class ValidationResult:
     label: str                                  # ex: "bare", "hyb_1nM"
     replicates: List[KKResult] = field(default_factory=list)
 
-    # Validité globale du groupe
-    all_valid: bool = True
+    # Verdict KK du GROUPE (réplicats + moyenne, core.measurement_model) ; None si
+    # la structure d'erreur n'a pas pu être caractérisée.
+    all_valid: Optional[bool] = True
     drift_detected: bool = False
     drift_warning: Optional[str] = None
 
@@ -68,148 +82,116 @@ class ValidationResult:
     f_min_common: float = 0.0
     f_max_common: float = np.inf
 
-    # Écart-type empirique inter-réplicats par fréquence (calculé dans loader.py)
-    # Stocké ici pour transmission au pipeline
-    sigma_re: Optional[np.ndarray] = None      # même grille que le spectre moyenné
+    # σ_r(ω), σ_j(ω) de la structure d'erreur (une mesure), sur la grille commune
+    # croissante, évaluées sur le spectre moyen — SANS plancher. None si non caractérisée.
+    sigma_re: Optional[np.ndarray] = None
     sigma_im: Optional[np.ndarray] = None
+
+    # Analyse complète (structure d'erreur + tests KK) et messages pour l'utilisateur.
+    measurement_model: Optional[object] = None      # MeasurementModelAnalysis
+    kk_message: Optional[str] = None
+    error_structure_message: Optional[str] = None
 
 
 # ──────────────────────────────────────
 # Paramètres par défaut
 # ──────────────────────────────────────
 
-# Seuil µ au-delà duquel le fit KK est considéré sur-ajusté (Schönleber 2014)
-MU_THRESHOLD = 0.85
-
-# Seuil résidu (%) au-delà duquel un point est considéré invalide
-RESIDUAL_THRESHOLD_PCT = 2.0
-
-# Fraction de points invalides tolérés avant de marquer le spectre comme douteux
-INVALID_FRACTION_WARN = 0.10   # 10 %
-INVALID_FRACTION_REJECT = 0.25  # 25 %
-
 # Seuil de divergence inter-réplicats pour détecter un drift
 # (écart-type des résidus KK entre réplicats / résidu moyen)
 DRIFT_CV_THRESHOLD = 0.5
+
+_UNDETERMINED = (
+    "Verdict KK indéterminé : structure d'erreur non caractérisée (résidus Lin-KK "
+    "affichés à titre indicatif seulement)."
+)
 
 
 # ──────────────────────────────────────
 # Validation d'un spectre unique
 # ──────────────────────────────────────
 
+def _kk_result_from_consistency(kk, label: str) -> KKResult:
+    """KKResult (résidus en % de |Z|) depuis un ``core.measurement_model.KKConsistency``."""
+    f = kk.frequencies
+    mod = np.abs(kk.Zre - 1j * kk.Zim)
+    v = kk.verdict
+    # Spectre conforme : aucune preuve de violation → plage complète (sous H0, ~4,5 %
+    # des points sortent de ±2σ par le seul bruit ; les compter fragmenterait la plage).
+    # Non conforme : plus grand bloc contigu de points dans la bande.
+    f_lo, f_hi = (float(f[0]), float(f[-1])) if v.conform else _find_valid_range(f, ~v.outside_re)
+    return KKResult(
+        label=label, frequencies=f,
+        residuals_re=100.0 * kk.residual_re / mod,
+        residuals_im=100.0 * kk.residual_im_fit / mod,
+        method="measurement_model", n_elements=kk.model_from_imag.n_elements,
+        chi2_reduced=kk.model_from_imag.chi2_reduced,
+        f_min_valid=f_lo, f_max_valid=f_hi, is_valid=v.conform,
+        warning=None if v.conform else v.message,
+        band_re=200.0 * kk.sd_re / mod, band_im=200.0 * kk.sigma_im / mod,
+        n_outside=v.n_outside, n_allowed=v.n_allowed,
+    )
+
+
 def validate_spectrum(
     frequencies: np.ndarray,
     z_re: np.ndarray,
     z_im: np.ndarray,
     label: str = "",
-    mu_threshold: float = MU_THRESHOLD,
-    residual_threshold_pct: float = RESIDUAL_THRESHOLD_PCT,
+    error_structure=None,
+    n_averaged: int = 1,
+    reference=None,
 ) -> KKResult:
+    """Test KK d'un spectre unique.
+
+    Args:
+        frequencies: Hz (ordre quelconque, trié ici).
+        z_re, z_im: Re(Z) et Im(Z) (Ω) — convention de l'app, Z'' > 0 en BF.
+        label: identifiant lisible.
+        error_structure: ``core.measurement_model.ErrorStructure`` du groupe. Avec
+            elle : test par measurement model et verdict. Sans elle : résidus Lin-KK
+            affichés, verdict None.
+        n_averaged: mesures moyennées dans ce spectre (σ/√n).
+        reference: measurement model complexe de ce spectre (facultatif).
+
+    Returns:
+        KKResult. Des données inexploitables (valeurs non finies, trop peu de
+        points) donnent ``is_valid=False`` avec le motif ; toute autre exception
+        remonte (ce n'est plus « Lin-KK échoué » pour n'importe quelle erreur).
     """
-    Applique le test lin-KK (Schönleber 2014) sur un spectre unique.
+    from fits.kk_validation import lin_kk
 
-    Parameters
-    ----------
-    frequencies : Hz, ordre HF → BF ou BF → HF (trié automatiquement)
-    z_re, z_im  : parties réelle et imaginaire de Z (Ω) — convention Z'' > 0 en BF
-    label       : identifiant lisible pour les messages
-
-    Returns
-    -------
-    KKResult avec résidus, µ, plage valide, verdict
-    """
-    from fits.kk_validation import linKK
-
-    # lin-KK attend les fréquences en ordre croissant et Z'' < 0 (convention impedance.py)
-    sort_idx = np.argsort(frequencies)
-    f_sorted = frequencies[sort_idx]
-    zre_sorted = z_re[sort_idx]
-    zim_sorted = -np.abs(z_im[sort_idx])   # convention : Im(Z) < 0 pour circuit R-C
-
-    Z_complex = zre_sorted + 1j * zim_sorted
+    f = np.asarray(frequencies, dtype=float)
+    zre = np.asarray(z_re, dtype=float)
+    zim = np.asarray(z_im, dtype=float)
+    order = np.argsort(f)
+    f, zre, zim = f[order], zre[order], zim[order]
 
     try:
-        M, mu, Z_fit, res_re, res_im = linKK(
-            f_sorted,
-            Z_complex,
-            c=0.85,          # critère µ de Schönleber
-            max_M=100,
-            fit_type="complex",
-            add_cap=True,
-        )
-    except Exception as exc:
-        logger.warning("lin-KK échoué pour '%s' : %s", label, exc)
-        n = len(f_sorted)
+        if error_structure is not None:
+            from core.measurement_model import check_kk_consistency
+            kk = check_kk_consistency(f, zre, zim, error_structure, n_averaged=n_averaged,
+                                      reference=reference, label=label)
+            return _kk_result_from_consistency(kk, label)
+        lk = lin_kk(f, zre - 1j * zim)
+    except ValueError as exc:
+        logger.warning("KK impossible pour '%s' : %s", label, exc)
+        n = len(f)
+        lo, hi = (float(f[0]), float(f[-1])) if n else (float("nan"), float("nan"))
         return KKResult(
-            label=label,
-            frequencies=f_sorted,
-            residuals_re=np.zeros(n),
-            residuals_im=np.zeros(n),
-            mu=1.0,
-            chi2_pseudo=np.inf,
-            f_min_valid=f_sorted[0],
-            f_max_valid=f_sorted[-1],
-            is_valid=False,
-            warning=f"lin-KK échoué : {exc}",
+            label=label, frequencies=f, residuals_re=np.zeros(n), residuals_im=np.zeros(n),
+            method="lin_kk", n_elements=0, chi2_reduced=float("nan"),
+            f_min_valid=lo, f_max_valid=hi, is_valid=False,
+            warning=f"données inexploitables pour le test KK : {exc}",
         )
-
-    # Résidus normalisés (%) : (fit - exp) / |Z_exp|
-    Z_mod = np.abs(Z_complex)
-    res_re_pct = (res_re / Z_mod) * 100.0
-    res_im_pct = (res_im / Z_mod) * 100.0
-
-    # chi² pseudo
-    chi2_pseudo = float(np.mean(res_re_pct**2 + res_im_pct**2))
-
-    # Points valides : résidu < seuil sur Re ET Im
-    valid_mask = (np.abs(res_re_pct) < residual_threshold_pct) & \
-                 (np.abs(res_im_pct) < residual_threshold_pct)
-
-    invalid_fraction = 1.0 - valid_mask.mean()
-
-    # Plage fréquentielle valide : bloc continu le plus large de points valides
-    f_min_valid, f_max_valid = _find_valid_range(f_sorted, valid_mask)
-
-    # Verdict
-    if mu > mu_threshold:
-        is_valid = False
-        warning = (
-            f"µ = {mu:.3f} > {mu_threshold} : sur-ajustement probable "
-            f"(trop d'éléments RC). Spectre possiblement non-stationnaire."
-        )
-    elif invalid_fraction >= INVALID_FRACTION_REJECT:
-        is_valid = False
-        warning = (
-            f"{invalid_fraction*100:.0f}% des points hors tolérance KK "
-            f"(seuil résidu = {residual_threshold_pct}%). Spectre invalide."
-        )
-    elif invalid_fraction >= INVALID_FRACTION_WARN:
-        is_valid = True   # acceptable mais signalé
-        warning = (
-            f"{invalid_fraction*100:.0f}% des points marginaux — "
-            f"vérifier les extrémités du spectre."
-        )
-    else:
-        is_valid = True
-        warning = None
-
-    logger.debug(
-        "KK '%s' : µ=%.3f, χ²=%.4f, invalides=%.1f%%, f_valid=[%.2f, %.2f] Hz",
-        label, mu, chi2_pseudo, invalid_fraction * 100,
-        f_min_valid, f_max_valid,
-    )
-
+    mod = np.abs(zre - 1j * zim)
     return KKResult(
-        label=label,
-        frequencies=f_sorted,
-        residuals_re=res_re_pct,
-        residuals_im=res_im_pct,
-        mu=float(mu),
-        chi2_pseudo=chi2_pseudo,
-        f_min_valid=f_min_valid,
-        f_max_valid=f_max_valid,
-        is_valid=is_valid,
-        warning=warning,
+        label=label, frequencies=f,
+        residuals_re=100.0 * lk.res_re / mod,
+        residuals_im=100.0 * (-lk.res_im) / mod,          # convention de l'app
+        method="lin_kk", n_elements=lk.M, chi2_reduced=float("nan"),
+        f_min_valid=float(f[0]), f_max_valid=float(f[-1]), is_valid=None,
+        warning=_UNDETERMINED,
     )
 
 
@@ -253,28 +235,35 @@ def validate_replicate_group(
     zre_list: List[np.ndarray],
     zim_list: List[np.ndarray],
     label: str = "",
-    mu_threshold: float = MU_THRESHOLD,
-    residual_threshold_pct: float = RESIDUAL_THRESHOLD_PCT,
     drift_cv_threshold: float = DRIFT_CV_THRESHOLD,
+    options=None,
 ) -> ValidationResult:
     """
     Valide un groupe de réplicats (même concentration / même étape).
 
-    1. Test KK individuel sur chaque réplicat
-    2. Détection de drift inter-réplicats (divergence des résidus KK)
-    3. Calcul de σ_re(f) et σ_im(f) empiriques
-    4. Plage fréquentielle commune (intersection des plages valides)
+    1. Measurement model : structure d'erreur des réplicats du groupe, puis test KK
+       de chaque réplicat et de leur moyenne (``core.measurement_model.analyze_replicates``)
+       → verdict du groupe ``all_valid`` ; σ(ω) de la structure (sans plancher) ;
+    2. Plage fréquentielle commune (intersection des plages valides) ;
+    3. Détection de drift inter-réplicats.
+
+    Si la structure d'erreur n'est pas caractérisable (moins de 3 réplicats, grilles
+    incompatibles, réplicats identiques…), ``all_valid`` vaut None, le motif est dans
+    ``error_structure_message`` et chaque réplicat n'affiche que ses résidus Lin-KK.
 
     Parameters
     ----------
     frequencies_list : liste de tableaux Hz (un par réplicat)
     zre_list, zim_list : listes correspondantes de Re(Z) et Im(Z)
     label : identifiant du groupe
+    options : core.measurement_model.MeasurementModelOptions (défaut : valeurs du module)
 
     Returns
     -------
     ValidationResult complet
     """
+    from core.measurement_model import ErrorStructureUnavailable, analyze_replicates
+
     result = ValidationResult(label=label)
 
     if not frequencies_list:
@@ -282,17 +271,36 @@ def validate_replicate_group(
         result.drift_warning = "Aucun réplicat fourni."
         return result
 
-    # ── 1. KK individuel ──
-    for i, (f, zre, zim) in enumerate(zip(frequencies_list, zre_list, zim_list)):
-        kk = validate_spectrum(
-            f, zre, zim,
-            label=f"{label}_rep{i+1}",
-            mu_threshold=mu_threshold,
-            residual_threshold_pct=residual_threshold_pct,
-        )
-        result.replicates.append(kk)
-        if not kk.is_valid:
-            result.all_valid = False
+    labels = [f"{label}_rep{i+1}" for i in range(len(frequencies_list))]
+    reps = [
+        SimpleNamespace(f=np.asarray(f, dtype=float), Zre=np.asarray(zre, dtype=float),
+                        Zim=np.asarray(zim, dtype=float), label=lab)
+        for f, zre, zim, lab in zip(frequencies_list, zre_list, zim_list, labels)
+    ]
+
+    # ── 1. Measurement model : structure d'erreur puis verdict KK ──
+    analysis = None
+    try:
+        analysis = analyze_replicates(reps, options=options, label=label)
+    except ErrorStructureUnavailable as exc:
+        result.error_structure_message = exc.user_message
+        logger.warning("'%s' : %s", label, exc.user_message)
+
+    if analysis is not None:
+        result.measurement_model = analysis
+        result.kk_message = analysis.kk_message
+        result.all_valid = analysis.kk_conform
+        result.replicates = [
+            _kk_result_from_consistency(kk, lab) for kk, lab in zip(analysis.kk_replicates, labels)
+        ]
+        result.sigma_re, result.sigma_im = analysis.error_structure.sigmas(
+            analysis.mean_Zre, analysis.mean_Zim)
+    else:
+        result.all_valid = None
+        result.kk_message = _UNDETERMINED
+        result.replicates = [validate_spectrum(r.f, r.Zre, r.Zim, label=r.label) for r in reps]
+        if any(kk.is_valid is False for kk in result.replicates):
+            result.all_valid = False           # données inexploitables : pas « indéterminé »
 
     # ── 2. Plage commune ──
     f_mins = [kk.f_min_valid for kk in result.replicates]
@@ -312,14 +320,6 @@ def validate_replicate_group(
     if len(result.replicates) >= 2:
         result.drift_detected, result.drift_warning = _detect_drift(
             result.replicates, drift_cv_threshold
-        )
-
-    # ── 4. σ(f) empirique inter-réplicats ──
-    #    On interpole tous les réplicats sur la grille du premier
-    #    (après tri fréquentiel commun)
-    if len(frequencies_list) >= 2:
-        result.sigma_re, result.sigma_im = _compute_sigma(
-            frequencies_list, zre_list, zim_list
         )
 
     return result
@@ -366,37 +366,3 @@ def _detect_drift(
         return True, msg
 
     return False, None
-
-
-def _compute_sigma(
-    frequencies_list: List[np.ndarray],
-    zre_list: List[np.ndarray],
-    zim_list: List[np.ndarray],
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Calcule σ_re(f) et σ_im(f) empiriques en interpolant les réplicats
-    sur la grille fréquentielle du premier réplicat (après tri).
-    """
-    f_ref = np.sort(frequencies_list[0])
-    zre_stack, zim_stack = [], []
-
-    for f, zre, zim in zip(frequencies_list, zre_list, zim_list):
-        sort_idx = np.argsort(f)
-        zre_i = np.interp(f_ref, f[sort_idx], zre[sort_idx])
-        zim_i = np.interp(f_ref, f[sort_idx], zim[sort_idx])
-        zre_stack.append(zre_i)
-        zim_stack.append(zim_i)
-
-    zre_stack = np.array(zre_stack)
-    zim_stack = np.array(zim_stack)
-
-    sigma_re = np.std(zre_stack, axis=0, ddof=1)
-    sigma_im = np.std(zim_stack, axis=0, ddof=1)
-
-    # Garde-fou : σ minimum à 0.1% du module moyen pour éviter poids infinis
-    Z_mean_mod = np.sqrt(np.mean(zre_stack, axis=0)**2 + np.mean(zim_stack, axis=0)**2)
-    floor = 0.001 * Z_mean_mod
-    sigma_re = np.maximum(sigma_re, floor)
-    sigma_im = np.maximum(sigma_im, floor)
-
-    return sigma_re, sigma_im

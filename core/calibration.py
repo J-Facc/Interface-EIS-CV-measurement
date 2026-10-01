@@ -41,16 +41,16 @@ class CalibrationResult:
 
 def _collect_points(session, model: str):
     """Retourne (concs, rcts, errs) triés d'apparition pour les concentrations
-    > 0 dont le fit `model` est valide (Rct > 0)."""
+    > 0 dont le fit `model` est valide (valeur cible `target_value` > 0, ex. Rct)."""
     concs, rcts, errs = [], [], []
     for grp in session.groups:
         if grp.concentration <= 0:
             continue
         fr = grp.fit_results.get(model)
-        if fr is None or fr.Rct <= 0:
+        if fr is None or fr.target_value <= 0:
             continue
         concs.append(float(grp.concentration))
-        rcts.append(float(fr.Rct))
+        rcts.append(float(fr.target_value))
         errs.append(float(getattr(fr, "reconstruction_error", 0.0) or 0.0))
     return concs, rcts, errs
 
@@ -68,9 +68,9 @@ def compute_calibration(session, model: str):
     probe = getattr(session, "probe", None)
     probe_fr = getattr(probe, "fit_results", {}) if probe is not None else {}
     probe_fit = probe_fr.get(model)
-    if probe_fit is None or probe_fit.Rct <= 0:
+    if probe_fit is None or probe_fit.target_value <= 0:
         return None
-    probe_rct = float(probe_fit.Rct)
+    probe_rct = float(probe_fit.target_value)
 
     concs, rcts, errs = _collect_points(session, model)
     if len(concs) < 2:

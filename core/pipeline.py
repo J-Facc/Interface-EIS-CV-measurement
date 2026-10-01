@@ -27,11 +27,12 @@ def validate_session(replicate_groups: dict, config) -> dict:
     -------
     dict label → ValidationResult
     """
-    # NB : les seuils KK (mu, résidu %) sont laissés aux valeurs par défaut de
-    # core/validator.py (MU_THRESHOLD, RESIDUAL_THRESHOLD_PCT), source unique.
-    # L'ancien code lisait getattr(config, "kk_mu_threshold"/"kk_residual_pct")
-    # sur un dict → renvoyait toujours le défaut, et ces clés n'existaient ni
-    # dans le YAML ni dans Pydantic. Supprimé pour éviter une config fantôme.
+    # NB : le verdict KK suit le critère UNIQUE de fits/kk_validation.kk_verdict
+    # (measurement model + structure d'erreur, core/validator.py) ; aucun seuil KK
+    # n'est lu dans la config. Seule clé lue : fit.error_structure.min_replicates.
+    from core.measurement_model import MeasurementModelOptions
+
+    mm_options = MeasurementModelOptions.from_config(config if isinstance(config, dict) else None)
     results = {}
     for label, group in replicate_groups.items():
         vr = validate_replicate_group(
@@ -39,6 +40,7 @@ def validate_session(replicate_groups: dict, config) -> dict:
             zre_list=group["zre"],
             zim_list=group["zim"],
             label=label,
+            options=mm_options,
         )
         results[label] = vr
     return results
@@ -81,10 +83,12 @@ def _characterize_error_structure_upfront(session, hybridization, config) -> Non
 
 
 def _run_kk(spectrum, config, label: str) -> Optional[dict]:
-    """Calcule la validation Kramers-Kronig (fits/kk_validation.py) pour un spectre."""
+    """Lin-KK d'un spectre (fits/kk_validation.py), SANS structure d'erreur : résidus
+    seulement, ``kk_passed`` = None (verdict indéterminé). Le verdict de référence est
+    celui du measurement model (core/validator.py) ; ce chemin disparaît à l'étape 5."""
     from fits.kk_validation import kramers_kronig_check
     try:
-        return kramers_kronig_check(spectrum, config)
+        return kramers_kronig_check(spectrum)
     except Exception as e:
         log.error(f"kramers_kronig_check [{label}] failed: {e}")
         return None
@@ -225,7 +229,7 @@ def run_pipeline(
                 sp.fit_results[model.name] = fr
                 log.info(
                     f"Fit '{model.name}' [{label}]: "
-                    f"Rct={fr.Rct:.1f} Ω chi2_red={fr.chi2_reduced:.3e} ok={fr.converged}"
+                    f"{fr.target_param}={fr.target_value:.4g} chi2_red={fr.chi2_reduced:.3e} ok={fr.converged}"
                 )
             except Exception as e:
                 log.error(f"Fit '{model.name}' [{label}] failed: {e}")
@@ -245,7 +249,7 @@ def run_pipeline(
                 fit_results[model.name] = fr
                 log.info(
                     f"Fit '{model.name}' [{conc:.2e} M]: "
-                    f"Rct={fr.Rct:.1f} Ω chi2_red={fr.chi2_reduced:.3e} ok={fr.converged}"
+                    f"{fr.target_param}={fr.target_value:.4g} chi2_red={fr.chi2_reduced:.3e} ok={fr.converged}"
                 )
             except Exception as e:
                 log.error(f"Fit '{model.name}' [{conc:.2e} M] failed: {e}")
@@ -345,6 +349,6 @@ def recompute_drt(
     spectrum.fit_results[DRT_MODEL_NAME] = fr
     log.info(
         f"recompute_drt [{getattr(spectrum, 'label', spectrum_id)}] mode={mode} "
-        f"Rct={fr.Rct:.1f} Ω source={fr.params.get('rct_source')}"
+        f"{fr.target_param}={fr.target_value:.4g} source={fr.params.get('rct_source')}"
     )
     return fr

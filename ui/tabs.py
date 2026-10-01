@@ -82,6 +82,10 @@ def _render_kk_tab(validations: dict) -> None:
             fig_res = residuals_figure(vr, theme_mode="light")
             st.plotly_chart(fig_res, width='stretch', key=f"kk_res_e{e}")
 
+            if vr.error_structure_message:
+                st.warning(vr.error_structure_message)
+            elif vr.kk_message:
+                (st.success if vr.all_valid else st.error)(vr.kk_message)
             for kk in vr.replicates:
                 if kk.warning:
                     st.warning(f"**{kk.label}** : {kk.warning}")

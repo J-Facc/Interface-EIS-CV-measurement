@@ -97,7 +97,7 @@ class _StubModel(BaseFitModel):
         return FitResult(
             model_name=self.name, params={"Rct": self.rct}, params_std={},
             Zfit_re=z, Zfit_im=z, chi2_reduced=1.0, residuals_re=z, residuals_im=z,
-            Rct=self.rct, Rct_std=0.0, converged=True,
+            target_param="Rct", target_value=self.rct, target_std=0.0, converged=True,
             drt_mode=((config or {}).get("fit", {}).get("drt", {}) or {}).get("mode"),
         )
 
@@ -198,8 +198,9 @@ def test_averaged_fits_recover_rct_and_carry_provenance(nominal):
     for fit_results, rct_true in cases:
         assert list(fit_results) == ["randles_full"]
         fr = fit_results["randles_full"]
-        assert fr.Rct == pytest.approx(rct_true, rel=0.03)
-        assert fr.Rct == fr.params["Rct"]
+        assert fr.target_param == "Rct"
+        assert fr.target_value == pytest.approx(rct_true, rel=0.03)
+        assert fr.target_value == fr.params["Rct"]
         assert set(fr.params) == set(_PARAM_NAMES)
         assert fr.converged is True
         assert isinstance(fr.warnings, list)
@@ -224,17 +225,22 @@ def test_group_fits_live_on_the_group_not_on_its_spectrum(nominal):
         assert g.spectrum.fit_results == {}
 
 
-def test_kk_verdict_is_attached_to_averaged_fits_only(nominal):
+def test_kk_residuals_are_attached_to_averaged_fits_only(nominal):
+    """ERR-6 corrigé (étape 4) : ``_run_kk`` appelle Lin-KK SANS structure d'erreur ;
+    le critère unique ne rend donc AUCUN verdict (``kk_passed`` = None) au lieu de
+    l'ancien seuil sans source « max résidu < fit.drt_kk_tol ». Le verdict de
+    référence est celui du measurement model, dans ``validation`` (voir plus bas)."""
     s = nominal.session
     averaged = [s.bare, s.probe]
     for fr in [sp.fit_results["randles_full"] for sp in averaged] + [
         g.fit_results["randles_full"] for g in s.groups
     ]:
-        assert isinstance(fr.kk_passed, bool)
+        assert fr.kk_passed is None
         assert set(fr.kk_residuals) == {
-            "kk_passed", "residuals_re", "residuals_im",
-            "Z_kk_re", "Z_kk_im", "max_residual", "mu",
+            "kk_passed", "residuals_re", "residuals_im", "Z_kk_re", "Z_kk_im",
+            "max_residual", "mu", "M", "n_outside", "n_allowed", "message",
         }
+        assert "indéterminé" in fr.kk_residuals["message"]
     # Les fits de réplicats n'ont pas de verdict KK.
     for rep in s.probe_replicate_spectra:
         assert rep.fit_results["randles_full"].kk_passed is None
@@ -256,7 +262,7 @@ def test_replicates_are_kept_and_fitted_individually(nominal):
         assert all(a is b for a, b in zip(reps, averaged.replicates))
         for r in reps:
             assert list(r.fit_results) == ["randles_full"]
-            assert r.fit_results["randles_full"].Rct == pytest.approx(rct_true, rel=0.05)
+            assert r.fit_results["randles_full"].target_value == pytest.approx(rct_true, rel=0.05)
 
 
 def test_replicate_fits_reuse_a_structure_they_did_not_characterize(nominal):
@@ -314,6 +320,11 @@ def test_validation_results_cover_every_replicate_group(nominal):
         assert [r.label for r in vr.replicates] == [f"{label}_rep{i}" for i in (1, 2, 3)]
         assert vr.sigma_re.shape == (N_POINTS,)
         assert vr.f_min_common < vr.f_max_common
+        # Verdict KK du measurement model (étape 4), affiché au prétraitement AVANT le fit.
+        # Le bruit synthétique (relatif, par composante) viole σ_r = σ_j : le test de
+        # la structure d'erreur le rejette et estime deux structures.
+        assert vr.all_valid is True and vr.error_structure_message is None
+        assert vr.measurement_model.error_structure.equal_re_im is False
 
 
 def test_drt_is_never_run_on_replicates(nominal, stub_registry):
@@ -419,7 +430,7 @@ def test_bare_only_run_has_no_probe(tmp_path):
     session, val = run_pipeline(fa, cfg, active_models=["randles_full"])
     assert session.probe is None and session.groups == []
     assert list(val) == ["bare"]
-    assert session.bare.fit_results["randles_full"].Rct == pytest.approx(_RCT_BARE, rel=0.03)
+    assert session.bare.fit_results["randles_full"].target_value == pytest.approx(_RCT_BARE, rel=0.03)
 
 
 def test_validate_session_maps_each_group_to_a_validation_result():
@@ -438,12 +449,15 @@ def test_validate_session_maps_each_group_to_a_validation_result():
     assert validate_session({}, config={}) == {}
 
 
-def test_run_kk_returns_a_verdict_dict_for_a_spectrum():
+def test_run_kk_returns_lin_kk_residuals_without_a_verdict():
+    """Sans structure d'erreur, pas de verdict (critère unique, ERR-6) ; les résidus
+    Lin-KK (M choisi par le critère µ de Schönleber, ERR-5) restent calculés."""
     f, zre, zim = noisy_arrays(_RCT_PROBE, 0.0, 0)
     sp = load_spectrum(eclab_bytes(f, zre, zim), "kk.txt")
     kk = _run_kk(sp, {}, "kk")
-    assert kk["kk_passed"] is True
+    assert kk["kk_passed"] is None
     assert kk["max_residual"] < 0.05
+    assert kk["M"] >= 20
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -532,7 +546,7 @@ def test_err1_disappears_as_soon_as_a_structure_is_persisted(caplog):
     ]:
         assert fr.error_structure_source == "reused_persisted"
         assert fr.converged is True
-    assert session.groups[1].fit_results["randles_full"].Rct == pytest.approx(_RCT_C2, rel=0.05)
+    assert session.groups[1].fit_results["randles_full"].target_value == pytest.approx(_RCT_C2, rel=0.05)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -568,7 +582,7 @@ def test_err3_a_crashing_kk_check_only_removes_the_kk_verdict(tmp_path, stub_reg
     """COMPORTEMENT ACTUEL BOGUÉ — cf AUDIT.md ERR-3, à corriger à l'étape 5."""
     stub_registry["randles_full"] = _StubModel("randles_full")
 
-    def boom(spectrum, config):
+    def boom(spectrum, *args, **kwargs):
         raise RuntimeError("kk exploded")
 
     monkeypatch.setattr("fits.kk_validation.kramers_kronig_check", boom)
@@ -731,7 +745,7 @@ def test_drt_default_map_is_silently_wrong_on_randles_like_spectra(drt_run):
     fits = [s.probe.fit_results["drt_bayes"]] + [g.fit_results["drt_bayes"] for g in s.groups]
     assert len(fits) == 3
     for fr in fits:
-        assert fr.Rct < 0
+        assert fr.target_value < 0
         assert fr.params["Rp"] < 0
         assert fr.params["rct_source"] == "peak_penultimate"
         assert fr.converged is True            # codé en dur (DRT-2)
@@ -758,7 +772,7 @@ def test_recompute_drt_real_optimize_is_deterministic_and_replaces_the_result(dr
     assert fr is not previous
     assert s.probe.fit_results["drt_bayes"] is fr
     assert fr.drt_mode == "optimize"
-    assert fr.Rct == pytest.approx(previous.Rct, rel=1e-6)   # même graine, même optimum
+    assert fr.target_value == pytest.approx(previous.target_value, rel=1e-6)   # même graine, même optimum
 
 
 @_NEEDS_CMDSTAN
