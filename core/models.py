@@ -1,13 +1,38 @@
-"""Data models for EIS Analyzer."""
+"""Data models for EIS Analyzer.
 
-from dataclasses import dataclass, field
+``FitResult`` est défini dans ``fits/result.py`` et ré-exporté ici : ``core`` dépend de
+``fits``, jamais l'inverse (AUDIT.md CPL-1, voir ``core/pipeline.py``).
+"""
+
+from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from typing import Optional
+
 import numpy as np
+
+from fits.result import FitResult
+
+__all__ = [
+    "EISSpectrum",
+    "CVCurve",
+    "FitResult",
+    "GroupAnalysis",
+    "ConcentrationGroup",
+    "EISSession",
+    "GROUP_OK",
+    "GROUP_ERROR_STRUCTURE_UNAVAILABLE",
+    "GROUP_INVALID_INPUT",
+]
+
 
 @dataclass
 class EISSpectrum:
     """Single EIS spectrum with metadata.
+
+    Un spectre est soit un RÉPLICAT BRUT (un fichier, ``replicates`` vide), soit la
+    MOYENNE d'un groupe de réplicats : il porte alors la liste de ses réplicats bruts
+    (``replicates``), conservés tels que chargés — chacun avec ses propres
+    ``fit_results`` (fit Orazem et DRT par réplicat, remplis par core/pipeline.py).
 
     Attributes:
         label: Display name.
@@ -19,6 +44,8 @@ class EISSpectrum:
         n_points: Number of frequency points.
         source_files: Original filenames contributing to this spectrum.
         fit_results: Dict mapping model name to FitResult (populated by pipeline).
+        replicates: réplicats BRUTS (EISSpectrum) dont ce spectre est la moyenne ;
+            vide pour un réplicat brut.
     """
 
     label: str
@@ -34,13 +61,15 @@ class EISSpectrum:
     validation: Optional[object] = None       # ValidationResult (évite import circulaire)
     sigma_re: Optional[object] = None         # np.ndarray σ_re(f) inter-réplicats (BRUT, sans plancher)
     sigma_im: Optional[object] = None         # np.ndarray σ_im(f) inter-réplicats (BRUT, sans plancher)
-    n_replicates: Optional[int] = None        # nb de réplicats moyennés (caractérisation structure d'erreur)
-    replicates: Optional[list] = None         # réplicats individuels (option voigt_based ; None si non conservés)
+    n_replicates: Optional[int] = None        # nb de réplicats moyennés
+    replicates: list = field(default_factory=list)   # réplicats BRUTS (vide pour un réplicat)
     f_min_valid: Optional[float] = None       # Hz — borne basse KK-valide
     f_max_valid: Optional[float] = None       # Hz — borne haute KK-valide
 
     def __post_init__(self):
         self.n_points = len(self.f)
+        if self.replicates is None:
+            self.replicates = []
 
 
 @dataclass
@@ -65,111 +94,151 @@ class CVCurve:
     label: str
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Analyse d'un groupe de réplicats (bare, probe ou une concentration)
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Groupe analysé jusqu'au bout (measurement model, verdict KK, fits).
+GROUP_OK = "ok"
+#: Structure d'erreur non caractérisable (AUDIT.md ERR-1) : l'analyse du groupe est
+#: ARRÊTÉE avant tout fit ; ``GroupAnalysis.message`` dit pourquoi et comment y remédier.
+GROUP_ERROR_STRUCTURE_UNAVAILABLE = "error_structure_unavailable"
+#: Saisie incompatible avec les données de ce groupe (ex. plus de paramètres que
+#: d'observations) : aucun fit n'est rendu pour le groupe.
+GROUP_INVALID_INPUT = "invalid_input"
+
+
 @dataclass
-class FitResult:
-    """Result of a fit model applied to an EIS spectrum.
+class GroupAnalysis:
+    """Tout ce que le pipeline a produit pour UN groupe de réplicats, dans l'ordre.
 
-    Zfit_im follows the same positive convention as EISSpectrum.Zim
-    (i.e. -Im(Z) > 0 for a capacitive semicircle). ``residuals_*`` = données − modèle,
-    dans cette même convention.
+    1. ``validation`` — measurement model + verdict Kramers-Kronig sur les réplicats
+       BRUTS, calculés AVANT tout fit (``core.validator.ValidationResult``) ;
+    2. ``orazem`` — fit Orazem de chaque réplicat et de la moyenne, et agrégation
+       (``fits.orazem_fit.OrazemGroupResult`` : valeurs par réplicat, incertitude
+       intra-fit, variabilité inter-réplicats) ;
+    3. ``drt_target`` — Rct DRT agrégé sur les réplicats (``AggregatedParameter``) ; les
+       DRT elles-mêmes sont dans ``fit_results['drt_bayes']`` de chaque spectre.
 
-    Paramètre cible (signal de calibration) : le circuit étant libre, il n'y a plus
-    de champ « Rct » figé. L'utilisateur DÉSIGNE le paramètre qui sert de signal
-    (``target_param``, un nom de ``params``) ; ``target_value``/``target_std`` en
-    sont la valeur et l'écart-type (intra-fit pour un spectre ; pour la DRT, Rct
-    extrait de la distribution et son incertitude).
+    Les ``FitResult`` individuels restent rangés dans ``EISSpectrum.fit_results`` (de
+    chaque réplicat brut et du spectre moyen) ; ce conteneur porte le STATUT du groupe
+    et les résultats AGRÉGÉS.
+
+    Attributes:
+        label: identifiant ('bare', 'probe', 'hyb_1.00e-09').
+        status: ``GROUP_OK`` ou un statut d'erreur (aucun fit produit pour le groupe).
+        message: phrase destinée à l'utilisateur quand ``status`` n'est pas OK.
+        validation: ValidationResult (verdict KK, structure d'erreur).
+        orazem: OrazemGroupResult, ou None.
+        drt_target: AggregatedParameter du Rct DRT sur les réplicats, ou None.
+        drt_failures: {label du spectre: motif} des DRT non calculées (donnée invalide,
+            échec de CmdStan) — le reste du groupe est conservé.
+        warnings: alertes non bloquantes du groupe.
     """
 
-    model_name: str
-    params: dict
-    params_std: dict
-    Zfit_re: np.ndarray
-    Zfit_im: np.ndarray
-    # χ² réduit pondéré = Σ(w·Δ²)/(2N−P), avec les poids w = 1/σ² de la structure
-    # d'erreur d'Orazem. Les poids étant de vraies 1/variance (absolute_sigma TOUJOURS),
-    # chi2_reduced≈1 EST un test d'adéquation modèle+erreur (voir chi2_reduced_ci).
-    chi2_reduced: float
-    residuals_re: np.ndarray
-    residuals_im: np.ndarray
-    target_param: str
-    target_value: float
-    target_std: float
-    converged: bool
-    # Champs DRT : renseignés par le plugin fits/drt_fit.py et par drt/engine.py.
-    #   drt_tau/drt_gamma      : distribution γ(τ) (τ en s, γ en Ω).
-    #   drt_mode               : 'optimize' (MAP) ou 'sample' (HMC) — mode réellement
-    #                            exécuté, affiché par l'UI pour ne pas comparer sans
-    #                            le savoir des DRT de modes différents.
-    #   drt_gamma_lo/drt_gamma_hi : bornes de crédibilité 2.5 / 97.5 % (mode 'sample'
-    #                            uniquement ; None en 'optimize').
-    drt_tau: Optional[np.ndarray] = None
-    drt_gamma: Optional[np.ndarray] = None
-    drt_mode: Optional[str] = None
-    drt_gamma_lo: Optional[np.ndarray] = None
-    drt_gamma_hi: Optional[np.ndarray] = None
-    reconstruction_error: Optional[float] = None
-    # DRT (drt/engine.py) : erreur de reconstruction relative MAX, max_i |Z_fit − Z|/|Z|.
-    # Champ DISTINCT de chi2_reduced (AUDIT.md DRT-5) : ce n'est pas un χ² pondéré ;
-    # le moteur DRT met chi2_reduced = NaN.
-    reconstruction_error_relative: Optional[float] = None
-    # DRT (drt/engine.py) : réglages, diagnostics HMC (R-hat, ESS, divergences…),
-    # alertes et notes — voir drt/diagnostics.py.
-    drt_diagnostics: Optional[dict] = None
-    # Fit Orazem (fits/orazem_fit.py) : méthode, conditionnement de la jacobienne,
-    # identifiabilité, départs multiples, bornes actives — voir fit_spectrum().
-    fit_diagnostics: Optional[dict] = None
-    # Verdict Lin-KK attaché par l'ANCIEN pipeline (core/pipeline._run_kk). Conservés
-    # jusqu'à la bascule (étape 5) : le verdict KK de référence est désormais celui
-    # du measurement model, porté par le GROUPE (MeasurementModelAnalysis), pas par
-    # chaque fit.
-    kk_passed: Optional[bool] = None
-    kk_residuals: Optional[dict] = None
-    # Diagnostics d'ajustement remontés à l'UI (I7) : fit non convergé, χ²ᵣ hors
-    # intervalle, résidu relatif élevé, paramètre en butée… Messages lisibles.
+    label: str
+    status: str = GROUP_OK
+    message: Optional[str] = None
+    validation: Optional[object] = None
+    orazem: Optional[object] = None
+    drt_target: Optional[object] = None
+    drt_failures: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
-    # Provenance de la structure d'erreur ayant pondéré CE fit (Orazem) :
-    #   "characterized_now"  → coefficients estimés sur les réplicats de ce jeu ;
-    #   "reused_persisted"   → (ANCIEN module fits/error_structure.py uniquement)
-    #                          coefficients rechargés d'une caractérisation antérieure.
-    error_structure_source: Optional[str] = None
-    error_structure_timestamp: Optional[str] = None   # horodatage de la caractérisation utilisée
-    error_structure_coeffs: Optional[dict] = None      # coefficients de la structure
-    # Intervalle attendu de χ²ᵣ sous H0 (modèle et structure d'erreur corrects), au
-    # niveau 95,45 % (2σ). Conservé pour la nouvelle UI : afficher « χ²ᵣ = 1,31 ∈
-    # [0,71 ; 1,34] » rend le test d'adéquation lisible sans analyser un texte.
-    chi2_reduced_ci: Optional[tuple] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == GROUP_OK
 
 
 @dataclass
 class ConcentrationGroup:
-    """A spectrum and its fit results, grouped by analyte concentration."""
+    """A spectrum and its fit results, grouped by analyte concentration.
+
+    ``fit_results`` est un ALIAS de ``spectrum.fit_results`` (même dictionnaire) : les
+    fits du spectre moyen ne vivent qu'à un seul endroit, quel que soit le chemin
+    d'accès (corrige l'asymétrie où un recalcul DRT écrivait dans
+    ``group.spectrum.fit_results`` sans atteindre ``group.fit_results``). Le
+    constructeur accepte toujours ``fit_results=`` : son contenu est versé dans
+    ``spectrum.fit_results``.
+
+    Attributes:
+        concentration: mol/L.
+        spectrum: spectre MOYEN du groupe (porte aussi ses réplicats bruts).
+        replicate_spectra: réplicats BRUTS (les mêmes objets que ``spectrum.replicates``),
+            chacun avec ses propres ``fit_results``.
+        analysis: GroupAnalysis (statut, verdict KK, résultats agrégés).
+    """
 
     concentration: float
     spectrum: EISSpectrum
-    fit_results: dict = field(default_factory=dict)
-    # NOTE (ajout hors périmètre initial — réorganisation onglets EIS) :
-    # liste des spectres individuels (réplicats, avant moyenne), chacun avec
-    # son propre `fit_results` rempli par core/pipeline.py. Champ optionnel,
-    # vide par défaut, pour ne casser aucun code existant qui ignore ce champ.
+    fit_results: InitVar[Optional[dict]] = None
     replicate_spectra: list = field(default_factory=list)
+    analysis: Optional[GroupAnalysis] = None
+
+    def __post_init__(self, fit_results):
+        if fit_results:
+            self.spectrum.fit_results.update(fit_results)
+
+
+def _group_fit_results_get(self) -> dict:
+    return self.spectrum.fit_results
+
+
+def _group_fit_results_set(self, value) -> None:
+    self.spectrum.fit_results = value
+
+
+# Propriété posée après la création de la dataclass : le paramètre ``fit_results`` du
+# constructeur (InitVar) reste disponible, et l'attribut devient un alias.
+ConcentrationGroup.fit_results = property(_group_fit_results_get, _group_fit_results_set)
 
 
 @dataclass
 class EISSession:
-    """Full analysis session state, stored in st.session_state['session']."""
+    """Full analysis session state (one electrode), stored in st.session_state['eis_sessions'].
+
+    Attributes:
+        bare, probe: spectres MOYENS (chacun porte ses réplicats bruts).
+        groups: ConcentrationGroup triés par concentration croissante.
+        bare_replicate_spectra, probe_replicate_spectra: réplicats BRUTS de bare/probe.
+        bare_analysis, probe_analysis: GroupAnalysis de bare/probe (statut, agrégats).
+        circuit: description du circuit ajusté (expression, cible, guess/bornes).
+        drt_mode: mode DRT demandé ('sample'/'optimize'), None si DRT non lancée.
+        load_errors: fichiers écartés au chargement ({"filename", "message"}).
+        messages: messages de niveau session (ex. DRT indisponible).
+    """
 
     created_at: datetime = field(default_factory=datetime.now)
     bare: Optional[EISSpectrum] = None
     probe: Optional[EISSpectrum] = None
     groups: list = field(default_factory=list)
     config: dict = field(default_factory=dict)
-    # NOTE (ajout hors périmètre initial) : réplicats individuels (avant moyenne)
-    # pour bare/probe, avec fit_results par réplicat. Optionnel, vide par défaut.
     bare_replicate_spectra: list = field(default_factory=list)
     probe_replicate_spectra: list = field(default_factory=list)
+    bare_analysis: Optional[GroupAnalysis] = None
+    probe_analysis: Optional[GroupAnalysis] = None
+    circuit: Optional[dict] = None
+    drt_mode: Optional[str] = None
+    load_errors: list = field(default_factory=list)
+    messages: list = field(default_factory=list)
     # Référence « électrode nue » — AFFICHAGE SEUL, JAMAIS utilisée dans les
     # calculs (ni fit, ni θ_EIS, ni normalisation, ni calibration, ni export de
     # valeurs calculées). Champ dédié et séparé de `bare`/`probe`/`groups` afin
     # que le pipeline soit structurellement incapable de la lire : elle est
     # attachée à la session APRÈS l'analyse et seulement superposée au Nyquist.
     bare_reference: Optional[EISSpectrum] = None
+
+    def iter_groups(self):
+        """(libellé d'affichage, spectre moyen, réplicats bruts, GroupAnalysis) de chaque
+        groupe présent : bare, probe, puis concentrations croissantes."""
+        if self.bare is not None:
+            yield "Bare", self.bare, self.bare_replicate_spectra, self.bare_analysis
+        if self.probe is not None:
+            yield "Probe", self.probe, self.probe_replicate_spectra, self.probe_analysis
+        for grp in self.groups:
+            yield f"{grp.concentration:.2e} M", grp.spectrum, grp.replicate_spectra, grp.analysis
+
+    def failed_groups(self) -> list:
+        """[(libellé, GroupAnalysis)] des groupes ARRÊTÉS (statut non OK)."""
+        return [(lbl, an) for lbl, _sp, _reps, an in self.iter_groups()
+                if an is not None and not an.ok]

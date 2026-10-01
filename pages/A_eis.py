@@ -1,69 +1,143 @@
 """Page A — Analyse EIS seule.
 
-Charge les spectres d'impédance depuis experiment_clean (session_state),
-effectue les fits Randles/DRT, valide par Kramers-Kronig, et produit
-une calibration OLS log(Rct) vs log([c]).
+Charge les spectres d'impédance depuis experiment_clean (session_state), puis lance
+core.pipeline.run_pipeline par électrode : pour chaque groupe de réplicats, measurement
+model + verdict Kramers-Kronig AVANT le fit, fit Orazem du circuit défini ici (chaque
+réplicat + la moyenne) et DRT (chaque réplicat + la moyenne). Les groupes arrêtés
+(structure d'erreur non caractérisable, AUDIT.md ERR-1) sont signalés explicitement.
 """
 
+import math
+
 import numpy as np
+import pandas as pd
 import streamlit as st
 
+from circuit import CircuitError, parse_circuit
+from core.app_state import preprocessing_ready
 from core.config import load_config, config_to_dict
 from core.loader import load_spectrum, average_replicates
-from core.pipeline import run_pipeline
+from core.pipeline import InvalidAnalysisInput, build_circuit_fit, run_pipeline
 from plotting.eis_plots import nyquist_figure_electrode, nyquist_normalized_figure, _spectrum_label
 from ui.tabs import render_eis_tabs
 
 _DEFAULT_CONFIG = config_to_dict(load_config())
 
-# Méthodes de fit affichées dans les graphes et tableaux EIS. La DRT (drt_bayes,
-# fits/drt_fit.py, wrapper bayes_drt2) est de nouveau un plugin du pipeline : elle
-# est calculée en 'optimize' par défaut et doit donc figurer ici pour que ses
-# FitResult survivent au filtrage de la session d'affichage (deepcopy).
-METHODS_TO_DISPLAY = ["randles_full", "drt_bayes"]
-
-
-def _filter_session_display(session):
-    """Retourne une copie légère de la session avec seulement les méthodes à afficher."""
-    from copy import deepcopy
-    s = deepcopy(session)
-    for sp in (s.bare, s.probe):
-        if sp is not None:
-            sp.fit_results = {k: v for k, v in sp.fit_results.items() if k in METHODS_TO_DISPLAY}
-    for grp in s.groups:
-        grp.fit_results = {k: v for k, v in grp.fit_results.items() if k in METHODS_TO_DISPLAY}
-        for rep in grp.replicate_spectra:
-            rep.fit_results = {k: v for k, v in rep.fit_results.items() if k in METHODS_TO_DISPLAY}
-    for rep in s.bare_replicate_spectra:
-        rep.fit_results = {k: v for k, v in rep.fit_results.items() if k in METHODS_TO_DISPLAY}
-    for rep in s.probe_replicate_spectra:
-        rep.fit_results = {k: v for k, v in rep.fit_results.items() if k in METHODS_TO_DISPLAY}
-    return s
+#: Clés de st.session_state des résultats EIS (sous-ensemble de core.app_state).
+_EIS_RESULT_KEYS = ("eis_sessions", "eis_validations", "eis_normalized")
 
 
 def _collect_fit_diagnostics(sessions: dict) -> list:
-    """Rassemble les avertissements d'ajustement (I7) de tous les fits d'une
-    session, pour affichage : `warnings` posés par le modèle (résidu élevé,
-    paramètre en butée) + non-convergence, pour chaque électrode/spectre/modèle.
-    """
+    """Alertes d'ajustement à remonter à l'utilisateur (I7) : alertes de chaque fit du
+    spectre MOYEN (circuit et DRT) et alertes de groupe (verdict KK, réplicats écartés,
+    hétérogénéité, DRT non calculée…). Les groupes arrêtés sont signalés à part."""
     out = []
     for e, session in sorted(sessions.items()):
-        spectra = []
-        if session.bare is not None:
-            spectra.append(("bare", session.bare))
-        if session.probe is not None:
-            spectra.append(("probe", session.probe))
-        for grp in session.groups:
-            spectra.append((f"{grp.concentration:.2e} M", grp.spectrum))
-
-        for label, sp in spectra:
-            for model, fr in sp.fit_results.items():
+        for label, mean_sp, _reps, an in session.iter_groups():
+            if an is not None and not an.ok:
+                continue
+            for model, fr in mean_sp.fit_results.items():
                 msgs = list(getattr(fr, "warnings", []) or [])
                 if not fr.converged and not any("convergé" in m for m in msgs):
                     msgs.append("ajustement non convergé")
                 for m in msgs:
-                    out.append(f"E{e} · {label} · {model} : {m}")
+                    out.append(f"E{e} · {label} (moyenne) · {model} : {m}")
+            for m in (an.warnings if an is not None else []):
+                out.append(f"E{e} · {label} : {m}")
     return out
+
+
+def _render_analysis_status(sessions: dict) -> None:
+    """Statut EXPLICITE de l'analyse : groupes arrêtés, fichiers écartés, moteur DRT.
+
+    Jamais « ✅ Analyse terminée » quand un groupe n'a produit aucun fit (ERR-1).
+    """
+    n_total = n_failed = 0
+    for e, session in sorted(sessions.items()):
+        for msg in session.messages:
+            st.warning(f"Électrode {e} : {msg}")
+        for le in session.load_errors:
+            st.warning(f"Électrode {e} : fichier « {le['filename']} » écarté — {le['message']}")
+        for _lbl, _sp, _reps, an in session.iter_groups():
+            n_total += 1
+            if an is not None and not an.ok:
+                n_failed += 1
+                st.error(f"Électrode {e} — {an.message}")
+    if n_total == 0:
+        st.warning("⚠️ Aucun spectre EIS exploitable. Vérifiez le prétraitement.")
+    elif n_failed:
+        st.error(
+            f"❌ Analyse terminée avec **{n_failed} groupe(s) ARRÊTÉ(S)** sur {n_total} : "
+            "aucun fit (ni circuit ni DRT) pour ces groupes — voir les messages ci-dessus."
+        )
+    else:
+        st.success(f"✅ Analyse terminée — {n_total} groupe(s) analysé(s) sur "
+                   f"{len(sessions)} électrode(s).")
+
+
+def _num_or_none(v):
+    """Cellule du tableau → float, ou None si vide / NaN."""
+    if v is None:
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(x) else x
+
+
+def _circuit_editor(defaults: dict):
+    """Saisie du circuit, des guess/bornes et du paramètre cible.
+
+    Returns:
+        (CircuitFit ou None si la saisie est invalide — l'erreur est affichée, description
+        sérialisable de la saisie pour détecter une modification après l'analyse).
+    """
+    c = defaults["fit"]["circuit"]
+    expr = st.text_area(
+        "Circuit équivalent (syntaxe : docs/CIRCUIT_UTILISATEUR.md)",
+        value=c["expression"], key="eis_circuit_expr", height=80,
+        help="Ex. Re + parallel(R(Rct), Q(Qdl, alpha)). `+` = série, parallel(a, b, …) = "
+             "parallèle ; tout nom autre que w et les éléments est un paramètre ajusté.",
+    )
+    try:
+        _z, names = parse_circuit(expr)
+    except CircuitError as exc:
+        st.error(f"Circuit invalide : {exc}")
+        return None, None
+    params_cfg = c.get("parameters") or {}
+    table = pd.DataFrame([
+        {"paramètre": n,
+         "initial": (params_cfg.get(n) or {}).get("initial"),
+         "borne basse": (params_cfg.get(n) or {}).get("lower"),
+         "borne haute": (params_cfg.get(n) or {}).get("upper")}
+        for n in names
+    ])
+    st.caption(
+        "Guess de départ et bornes de chaque paramètre (case vide = non borné). Valeurs "
+        "proposées : config/default.yaml (`fit.circuit`) ; un paramètre nouveau doit être "
+        "renseigné. Le fit part de ce guess puis de 7 perturbations (±0,5 décade)."
+    )
+    edited = st.data_editor(table, key=f"eis_circuit_params_{'_'.join(names)}",
+                            disabled=["paramètre"], hide_index=True, width='stretch')
+    default_target = c.get("target_param")
+    target = st.selectbox("Paramètre cible (signal de calibration)", names,
+                          index=names.index(default_target) if default_target in names else 0,
+                          key="eis_circuit_target")
+    params = {}
+    for _i, row in edited.iterrows():
+        lo, hi = _num_or_none(row["borne basse"]), _num_or_none(row["borne haute"])
+        params[row["paramètre"]] = {
+            "initial": _num_or_none(row["initial"]),
+            "lower": -math.inf if lo is None else lo,
+            "upper": math.inf if hi is None else hi,
+        }
+    fingerprint = {"expression": expr, "parameters": params, "target": target}
+    try:
+        return build_circuit_fit(expr, params, target), fingerprint
+    except InvalidAnalysisInput as exc:
+        st.error(str(exc))
+        return None, fingerprint
 
 
 def _merge_overrides(base: dict, overrides: dict) -> dict:
@@ -324,162 +398,130 @@ def _build_file_assignments_electrode(experiment: dict, elec_idx: int) -> list:
 
 def main() -> None:
     st.title("📡 Analyse EIS — Spectroscopie d'impédance")
-    st.caption("Fit Randles · DRT · Validation Kramers-Kronig · Calibration OLS")
+    st.caption("Measurement model & Kramers-Kronig · Fit Orazem du circuit · DRT · Calibration")
 
-    # Vérification que les données sont disponibles
-    if not st.session_state.get("preprocessing_done", False):
+    # Vérification que les données sont disponibles (B-STATE-b : jamais de KeyError)
+    if not preprocessing_ready(st.session_state):
         st.warning(
             "⚠️ Aucune donnée disponible. "
             "Importez et prétraitez vos données d'abord."
         )
         st.page_link("pages/0_import.py", label="→ Aller à l'import", icon="📂")
         st.stop()
-        return
 
-    # Récupérer les données prétraitées
     experiment = st.session_state["experiment_clean"]
 
-    # Récupérer les résultats de validation KK si disponibles
-    validation_results = st.session_state.get("validation_results", None)
+    with st.expander("⚙️ Circuit, DRT et paramètres physiques", expanded=False):
+        circuit_fit, circuit_inputs = _circuit_editor(_DEFAULT_CONFIG)
 
-    # Paramètres de fit
-    with st.expander("⚙️ Modèles et paramètres physiques", expanded=False):
-        col_models, col_phys = st.columns(2)
-        with col_models:
-            st.markdown("**Modèles de fit**")
-            model_choices = {
-                "circular":            "Fit circulaire",
-                "randles_constrained": "Randles contraint",
-                "randles_full":        "Randles complet",
-            }
-            _displayed = {"randles_full"}
-            st.caption(
-                "La DRT (bayes_drt2 : MAP 'optimize' par défaut, recalcul "
-                "bayésien 'sample' à la demande) est présentée dans l'onglet "
-                "**Courbes DRT**."
-            )
-            active_models = [
-                m for m, label in model_choices.items()
-                if st.checkbox(label, value=(m in _displayed), key=f"eis_model_{m}")
-            ]
-            # La DRT (drt_bayes) n'a pas de case à cocher : elle est lancée par le
-            # pipeline en 'optimize' sur chaque spectre, comme les autres fits
-            # (ARCHITECTURE.md §5bis). Ajoutée inconditionnellement ; filtrée par
-            # le garde-fou I6 ci-dessous si l'extra DRT n'est pas installé.
-            active_models.append("drt_bayes")
-        with col_phys:
-            st.markdown("**Paramètres physiques**")
-            phys_overrides = {
-                "Fv": st.number_input("Fv (m³/s)", value=5e-10, format="%.2e", key="eis_Fv"),
-                "xe": st.number_input("xe (m)",    value=30e-6, format="%.2e", key="eis_xe"),
-                "h":  st.number_input("h (m)",     value=60e-6, format="%.2e", key="eis_h"),
-                "d":  st.number_input("d (m)",     value=300e-6, format="%.2e", key="eis_d"),
-                "T":  st.number_input("T (K)",     value=298.0, format="%.1f",  key="eis_T"),
-                "C0": st.number_input("C0 (M)",    value=0.02,  format="%.4f",  key="eis_C0"),
-            }
+        st.markdown("**DRT** (drt/engine.py — chaque réplicat ET la moyenne de chaque groupe)")
+        drt_cfg = _DEFAULT_CONFIG["fit"]["drt"]
+        run_drt = st.checkbox("Calculer la DRT", value=bool(drt_cfg.get("enabled", True)),
+                              key="eis_drt_enabled")
+        drt_mode = st.radio(
+            "Mode DRT", ["optimize", "sample"],
+            index=0 if drt_cfg.get("mode", "optimize") == "optimize" else 1,
+            format_func=lambda m: ("MAP (optimize) — ~1 s/spectre, sans diagnostic de convergence"
+                                   if m == "optimize" else
+                                   "HMC (sample) — 2 à 5 min/spectre, R̂/divergences/ESS + intervalles"),
+            key="eis_drt_mode", disabled=not run_drt,
+        )
+
+        st.markdown("**Paramètres physiques**")
+        phys_overrides = {
+            "Fv": st.number_input("Fv (m³/s)", value=5e-10, format="%.2e", key="eis_Fv"),
+            "xe": st.number_input("xe (m)",    value=30e-6, format="%.2e", key="eis_xe"),
+            "h":  st.number_input("h (m)",     value=60e-6, format="%.2e", key="eis_h"),
+            "d":  st.number_input("d (m)",     value=300e-6, format="%.2e", key="eis_d"),
+            "T":  st.number_input("T (K)",     value=298.0, format="%.1f",  key="eis_T"),
+            "C0": st.number_input("C0 (M)",    value=0.02,  format="%.4f",  key="eis_C0"),
+        }
 
         st.markdown("**Pondération du fit**")
         st.caption(
-            "⚖️ Méthode UNIQUE : structure d'erreur d'Orazem & Tribollet "
-            "(measurement model). σ = α·|Z_re| + β·|Z_im| + γ·|Z|²/R_m + δ, "
-            "poids = 1/σ². Les coefficients (α,β,γ,δ) sont **caractérisés sur "
-            "réplicats** (≥ 3) puis réutilisés pour les spectres sans réplicats. "
-            "χ²_réduit ≈ 1 est un vrai test d'adéquation. Sans caractérisation ni "
-            "réplicats, le fit est **refusé** (pas de repli arbitraire)."
+            "⚖️ Méthode UNIQUE : structure d'erreur d'Orazem σ = α|Zj| + β|Zr − R_sol| + "
+            "γ|Z|² + δ, caractérisée par le measurement model sur les réplicats BRUTS de "
+            "CHAQUE groupe (≥ 3), à chaque analyse ; poids = 1/σ² (σ/√n pour la moyenne). "
+            "χ²ᵣ ≈ 1 est un vrai test d'adéquation. Sans réplicats en nombre suffisant, le "
+            "groupe est **arrêté** avec un message (aucun repli arbitraire)."
         )
 
     cfg = _merge_overrides(_DEFAULT_CONFIG, phys_overrides)
-    cfg.setdefault("fit", {})
-
-    # I6 : un fit paramétrique sélectionné mais non chargé (import échoué) ou
-    # non implémenté ne doit pas disparaître en silence — on le signale et on
-    # le retire de la liste avant l'analyse.
-    from fits.registry import all_models as _all_models, discovery_errors as _discovery_errors
-    _available = {m.name for m in _all_models()}
-    _load_errors = _discovery_errors()
-    _unavailable = [m for m in active_models if m not in _available]
-    if _unavailable:
-        _model_labels = {**model_choices, "drt_bayes": "DRT (bayes_drt2)"}
-        for m in _unavailable:
-            reason = _load_errors.get(m) or "modèle non disponible dans cette installation"
-            st.warning(f"⚠️ Modèle « {_model_labels.get(m, m)} » indisponible : {reason}")
-        active_models = [m for m in active_models if m in _available]
+    inputs = {"circuit": circuit_inputs, "run_drt": run_drt, "drt_mode": drt_mode}
 
     if st.button("↺ Relancer l'analyse", key="eis_rerun_btn"):
-        st.session_state["eis_sessions"]    = None
-        st.session_state["eis_validations"] = None
+        for key in _EIS_RESULT_KEYS:
+            st.session_state[key] = None
         st.rerun()
 
     if not st.session_state.get("eis_sessions"):
-        if not active_models:
-            st.warning("⚠️ Sélectionnez au moins un modèle de fit dans les paramètres ci-dessus.")
+        if circuit_fit is None:
+            st.warning("⚠️ Corrigez le circuit ou ses paramètres (section ⚙️ ci-dessus) "
+                       "pour lancer l'analyse.")
             return
         n_elec = experiment.get("n_electrodes", 2)
         sessions = {}
         validations = {}
-        with st.spinner("Analyse EIS en cours…"):
+        with st.spinner("Analyse EIS en cours…" + (" (DRT HMC : plusieurs minutes par spectre)"
+                                                   if run_drt and drt_mode == "sample" else "")):
             try:
                 for e in range(1, n_elec + 1):
                     file_assignments = _build_file_assignments_electrode(experiment, e)
                     if not file_assignments:
                         continue
                     session, vr_pipeline = run_pipeline(
-                        file_assignments=file_assignments,
-                        config=cfg,
-                        active_models=active_models,
+                        file_assignments, cfg, circuit_fit, run_drt=run_drt, drt_mode=drt_mode,
                     )
                     # Référence « électrode nue » — attachée APRÈS l'analyse,
                     # jamais lue par run_pipeline (affichage seul).
                     session.bare_reference = _load_bare_eis(experiment, e)
                     sessions[e] = session
                     validations[e] = vr_pipeline or None
-            except Exception as exc:
-                st.error(f"❌ Erreur lors de l'analyse EIS : {exc}")
+            except InvalidAnalysisInput as exc:          # saisie invalide : message clair
+                st.error(f"❌ {exc}")
                 return
-
-        if not sessions:
-            st.warning("⚠️ Aucun spectre EIS trouvé dans l'expérience. Vérifiez le prétraitement.")
-            return
+            except Exception as exc:                     # bug logiciel : jamais avalé
+                st.error(
+                    "❌ Erreur LOGICIELLE pendant l'analyse EIS — elle ne vient pas de vos "
+                    "données. Merci de la signaler avec le détail ci-dessous."
+                )
+                st.exception(exc)
+                return
 
         st.session_state["eis_sessions"]    = sessions
         st.session_state["eis_config"]      = cfg
         st.session_state["eis_validations"] = validations
-        n_groups = sum(len(s.groups) for s in sessions.values())
-        st.success(f"✅ Analyse terminée — {n_groups} groupe(s) au total sur {len(sessions)} électrode(s).")
+        st.session_state["eis_inputs"]      = inputs
 
     sessions = st.session_state.get("eis_sessions")
     if not sessions:
+        st.warning("⚠️ Aucun spectre EIS trouvé dans l'expérience. Vérifiez le prétraitement.")
         return
 
-    # I7 : remonter les diagnostics d'ajustement (non convergé, résidu relatif
-    # élevé, paramètre en butée sur une borne) à l'utilisateur — au lieu de les
-    # laisser dans les logs. Ces gardes auraient signalé B1 immédiatement.
+    if st.session_state.get("eis_inputs") != inputs:
+        st.info("ℹ️ Le circuit ou les réglages DRT ont changé depuis cette analyse : "
+                "cliquez sur **↺ Relancer l'analyse** pour les appliquer.")
+
+    _render_analysis_status(sessions)
+
+    # I7 : remonter les diagnostics d'ajustement à l'utilisateur, pas dans les logs.
     diags = _collect_fit_diagnostics(sessions)
     if diags:
-        with st.expander(f"⚠️ Diagnostics d'ajustement ({len(diags)})", expanded=True):
+        with st.expander(f"⚠️ Diagnostics d'ajustement ({len(diags)})", expanded=False):
             for line in diags:
                 st.warning(line)
 
-    # --- Diagrammes Nyquist par électrode ---
     st.markdown("### Diagrammes de Nyquist")
     _render_three_nyquist(experiment, sessions)
 
     st.divider()
 
-    validations = st.session_state.get("eis_validations") or {}
-    if not validations and validation_results:
-        main_elec = next(iter(sorted(sessions)), None)
-        if main_elec is not None:
-            validations = {main_elec: validation_results}
-
-    display_sessions = {e: _filter_session_display(s) for e, s in sessions.items()}
     normalized = _build_normalized_session(sessions)
     st.session_state["eis_normalized"] = normalized
     render_eis_tabs(
-        display_sessions,
-        normalized,
+        sessions,
         st.session_state.get("eis_config", cfg),
-        validations,
+        st.session_state.get("eis_validations") or {},
     )
 
 

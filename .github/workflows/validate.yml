@@ -16,12 +16,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile all sources
-        run: python -m compileall app.py core fits circuit plotting exports ui pages
+        run: python -m compileall app.py core fits drt circuit plotting exports ui pages
       - name: Run tests
         run: python -m pytest tests/ -v
 
   # Tests DRT RÉELS (AUDIT.md §8.3). Le job `validate` n'installe ni cvxopt ni CmdStan :
-  # tests/test_drt.py::test_*optimize / *sample et les tests « DRT réelle » de
+  # les tests « DRT réelle » de tests/test_drt_engine.py, tests/test_drt_fitresult_contract.py et
   # tests/test_pipeline.py y sont donc SAUTÉS. Ce job les exécute pour de vrai.
   drt:
     name: DRT réelle (cvxopt + CmdStan)
@@ -45,7 +45,7 @@ jobs:
           pip install cvxopt==1.3.3 cmdstanpy==1.3.0
       # CmdStan (téléchargement + compilation, plusieurs minutes) va dans ~/.cmdstan, où
       # cmdstanpy le retrouve seul. Seul CmdStan est mis en cache : les modèles Stan de
-      # vendor/ (Series.stan) sont recompilés à chaque run, ~1-3 min.
+      # drt/bayes_drt2 (Series.stan, Series_pos.stan) sont recompilés à chaque run, ~1-3 min.
       - name: Cache CmdStan
         id: cmdstan-cache
         uses: actions/cache@v4
@@ -60,9 +60,8 @@ jobs:
       # job resterait vert en ne vérifiant rien — exactement le défaut de la CI actuelle.
       - name: Check the DRT stack is really available
         run: |
-          python -c "import fits.drt_fit as d; assert d.bayes_available(), d.import_error(); assert d.cmdstan_available(), 'CmdStan introuvable'; print('Pile DRT OK')"
           python -c "import drt.engine as e; ok, why = e.engine_available(); assert ok, why; print('Moteur drt/ OK')"
       # tests/test_drt_engine.py : moteur durci drt/ (HMC par défaut, ~2-5 min par spectre sur
       # 4 cœurs — les 7 cas DRT-1 + reproductibilité, marqués slow, sont exécutés ici).
       - name: Run DRT tests (MAP + HMC)
-        run: python -m pytest tests/test_drt.py tests/test_pipeline.py tests/test_drt_engine.py -v -rs
+        run: python -m pytest tests/test_pipeline.py tests/test_drt_engine.py tests/test_drt_fitresult_contract.py -v -rs

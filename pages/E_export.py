@@ -10,9 +10,11 @@ import streamlit as st
 
 from exports.exporter import (
     export_drt_csv,
+    export_group_results_csv,
     export_normalization_csv,
     export_params_csv,
     export_reconstruction_csv,
+    export_replicate_results_csv,
     export_calibration_csv,
     export_full_zip,
 )
@@ -49,9 +51,21 @@ def main() -> None:
             mime="text/csv",
         )
         st.download_button(
-            "🔧 Paramètres fit Randles (CSV)",
+            "🔧 Paramètres des fits — circuit et DRT, réplicats et moyennes (CSV)",
             export_params_csv(sessions),
-            file_name="parametres_randles.csv",
+            file_name="parametres_fits.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            "🧮 Résultats par groupe — intra-fit vs inter-réplicats (CSV)",
+            export_group_results_csv(sessions),
+            file_name="resultats_par_groupe.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            "🧪 Résultats par réplicat — avec diagnostics HMC (CSV)",
+            export_replicate_results_csv(sessions),
+            file_name="resultats_par_replicat.csv",
             mime="text/csv",
         )
         st.download_button(

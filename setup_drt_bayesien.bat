@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 :: ============================================================================
 ::  setup_drt_bayesien.bat
 ::  Installe l'extra "DRT bayesien" : cvxopt + cmdstanpy, puis cmdstan AVEC sa
-::  toolchain C++ (mingw-w64), et precompile le modele Stan vendore pour que la
+::  toolchain C++ (mingw-w64), et precompile les modeles Stan (drt/bayes_drt2) pour que la
 ::  premiere analyse ne paie pas la compilation.
 ::
 ::  IMPORTANT : script SEPARE de launch.bat. Il n'est JAMAIS appele au demarrage
@@ -103,7 +103,7 @@ echo ============================================
 echo  SUCCES : DRT bayesien pret a l'emploi.
 echo   - cvxopt + cmdstanpy installes
 echo   - cmdstan + toolchain C++ installes
-echo   - modele Stan vendore precompile (cache)
+echo   - modeles Stan drt/bayes_drt2 precompiles (cache)
 echo ============================================
 echo.
 pause

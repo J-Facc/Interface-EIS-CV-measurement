@@ -271,7 +271,7 @@ return 1.0 - Rct_bare / Rct_ap
 
 ## 5. Fit du circuit de Randles — `fits/randles_full.py`
 
-> ⚠ **Section périmée (étape 4 de la refonte)** : la méthode de référence est décrite dans `MEASUREMENT_MODEL.md` (measurement model, structure d'erreur, critère KK unique, fit Orazem sur circuit libre). Ce qui suit décrit l'ANCIEN code, encore utilisé par `core/pipeline.py` jusqu'à l'étape 5.
+> ⚠ **Section périmée (étape 4 de la refonte)** : la méthode de référence est décrite dans `MEASUREMENT_MODEL.md` (measurement model, structure d'erreur, critère KK unique, fit Orazem sur circuit libre). Ce qui suit décrit l'ANCIEN code, SUPPRIMÉ à l'étape 5 (conservé ici pour l'historique ; les citations `fichier:ligne` renvoient à l'historique git).
 
 
 ### 5.1 Paramètres, valeurs initiales, bornes
@@ -404,7 +404,7 @@ Un paramètre est signalé « collé à la borne » si
 
 ## 6. Pondération du CNLS — `fits/weighting.py`
 
-> ⚠ **Section périmée (étape 4 de la refonte)** : la méthode de référence est décrite dans `MEASUREMENT_MODEL.md` (measurement model, structure d'erreur, critère KK unique, fit Orazem sur circuit libre). Ce qui suit décrit l'ANCIEN code, encore utilisé par `core/pipeline.py` jusqu'à l'étape 5.
+> ⚠ **Section périmée (étape 4 de la refonte)** : la méthode de référence est décrite dans `MEASUREMENT_MODEL.md` (measurement model, structure d'erreur, critère KK unique, fit Orazem sur circuit libre). Ce qui suit décrit l'ANCIEN code, SUPPRIMÉ à l'étape 5 (conservé ici pour l'historique ; les citations `fichier:ligne` renvoient à l'historique git).
 
 
 Deux modes sélectionnés par `config.fit.weight_mode` (`weighting.py:resolve_weights:24-56`).

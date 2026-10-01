@@ -1,12 +1,12 @@
 # Extra DRT — dépendances du moteur de distribution des temps de relaxation.
 #
-# Le paquet de calcul lui-même (bayes-drt2) est VENDORÉ dans vendor/bayes_drt2/
-# (voir vendor/README.md, THIRD_PARTY_LICENSES.md) : rien à installer pour le
-# code, seulement ses dépendances runtime ci-dessous.
+# Le paquet de calcul lui-même (bayes-drt2) est copié dans drt/bayes_drt2/
+# (clone identifié, voir drt/PROVENANCE.md, THIRD_PARTY_LICENSES.md) : rien à
+# installer pour le code, seulement ses dépendances runtime ci-dessous.
 #
 # Installer avec :  pip install -r requirements-drt.txt
 #
-# cvxopt    : dépendance de vendor.bayes_drt2.inversion (importée au niveau module).
+# cvxopt    : dépendance de drt.bayes_drt2.inversion (importée au niveau module).
 # cmdstanpy : interface Python de CmdStan, requise par les DEUX modes DRT
 #             (fit mode='optimize' MAP et mode='sample' HMC — tous deux compilent
 #             un modèle Stan).
@@ -15,6 +15,6 @@
 # C++ + modèles Stan compilés). Elle est installée AUTOMATIQUEMENT au premier
 # lancement par setup_drt_bayesien.ensure_drt_ready() → install_cmdstan(compiler=True)
 # (installe mingw-w64, n'exige pas RTools). Sans toolchain, la DRT est désactivée
-# proprement — voir fits/drt_fit.py et app.py.
+# proprement — voir drt/engine.py (engine_available) et app.py.
 cvxopt>=1.3.0
 cmdstanpy>=1.2.0

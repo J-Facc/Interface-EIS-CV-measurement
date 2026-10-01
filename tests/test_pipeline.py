@@ -1,129 +1,90 @@
-"""Tests de CARACTÉRISATION de core/pipeline.py (filet de sécurité avant refonte).
+"""Tests de core/pipeline.py — pipeline de l'étape 5 (measurement model AVANT le fit,
+fit Orazem et DRT sur CHAQUE réplicat brut ET sur la moyenne).
 
-Ces tests figent le comportement RÉEL du code à l'instant T (HEAD audité par
-AUDIT.md), y compris ses défauts connus. Ils ne disent pas que ce comportement est
-correct : ils détectent qu'il a CHANGÉ. Quand un défaut documenté est corrigé, le
-test qui le fige doit échouer — c'est le signal voulu, on met alors le test à jour
-en même temps que le correctif.
+Ce fichier remplace les tests de CARACTÉRISATION de l'étape 1, qui figeaient le
+comportement de l'ancien pipeline, défauts compris. Chaque test qui figeait un défaut
+(« COMPORTEMENT ACTUEL BOGUÉ ») vérifie désormais le comportement CORRIGÉ ; son nom ou
+sa docstring dit « corrigé » et rappelle l'ancien comportement :
 
-Défauts figés ici (chacun est signalé par un commentaire « COMPORTEMENT ACTUEL
-BOGUÉ ») : ERR-1, ERR-2, ERR-3, DRT-1/DRT-2, plus deux observations non listées
-dans l'audit (asymétrie ``group.fit_results`` / ``group.spectrum.fit_results``,
-et ``recompute_drt`` sur un groupe).
+  * ERR-1 — sans structure d'erreur, l'ancien pipeline rendait des ``fit_results`` vides
+    sans rien signaler : le groupe est maintenant ARRÊTÉ avec un statut et un message
+    explicites, portés par la session (section B) et affichés par l'UI (section H) ;
+  * ERR-2 — les réplicats étaient pondérés par la structure « persistée » d'un AUTRE
+    groupe, et un JSON grossissait à chaque run : chaque groupe est pondéré par SA
+    structure, rien n'est écrit sur disque (section A) ;
+  * ERR-3 — tout ``except Exception`` convertissait un bug en « spectre sans fit » :
+    donnée invalide → résultat dégradé avec message ; bug → l'exception REMONTE (C) ;
+  * DRT absente des réplicats, KK calculé APRÈS les fits (AUDIT.md §5.5) : sections A, D ;
+  * ``recompute_drt`` sur un groupe n'atteignait pas ``group.fit_results`` (E) ;
+  * DRT MAP fausse en silence avec les réglages amont (DRT-1/DRT-2) : section G.
 
 Organisation
-    A. run_pipeline, cas normal (réplicats + structure d'erreur caractérisable)
-    B. ERR-1 : ni réplicats ni structure persistée → fits vides sans exception
-    C. ERR-3 : toute erreur est convertie en « spectre sans fit »
-    D. recompute_drt (modèle DRT factice, sans CmdStan)
-    E. DRT réelle de bout en bout (sautée sans CmdStan ; exécutée par le job CI « drt »)
-
-Aucun test n'écrit dans config/error_structure.json : chaque run reçoit son propre
-``persistence_path`` (tests/synthetic_data.make_config).
+    A. Cas nominal (réplicats, structure d'erreur caractérisable), DRT désactivée
+    B. ERR-1 corrigé : groupe arrêté, statut explicite
+    C. ERR-3 corrigé : donnée invalide vs bug logiciel
+    D. DRT par réplicat et sur la moyenne (moteur DRT factice, sans CmdStan)
+    E. recompute_drt (moteur factice)
+    F. Tables de résultats (intra-fit vs inter-réplicats) et export
+    G. DRT réelle de bout en bout (sautée sans CmdStan ; job CI « drt »)
+    H. Propagation jusqu'à l'UI (Streamlit AppTest)
 """
 
-import json
-import logging
-from datetime import datetime
+import copy
+import dataclasses
+import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-import fits.drt_fit as drt
-import fits.registry as registry
-from core.config import config_to_dict, load_config
-from core.loader import load_spectrum
-from core.models import EISSession, EISSpectrum, FitResult
+import core.pipeline as pipeline
+import drt.engine as drt_engine
+from core.models import (
+    GROUP_ERROR_STRUCTURE_UNAVAILABLE,
+    GROUP_INVALID_INPUT,
+    GROUP_OK,
+    EISSession,
+    EISSpectrum,
+    FitResult,
+)
 from core.pipeline import (
     DRT_MODEL_NAME,
+    InvalidAnalysisInput,
     _iter_session_spectra,
     _resolve_spectrum,
-    _run_kk,
+    aggregate_drt_target,
+    build_circuit_fit,
     recompute_drt,
     run_pipeline,
-    validate_session,
 )
+from core.results_table import drt_hmc_summary, group_rows, replicate_rows
 from core.validator import ValidationResult
-from fits.base import BaseFitModel
-from fits.randles_full import _PARAM_NAMES
+from fits.orazem_fit import ORAZEM_MODEL_NAME
 from tests.synthetic_data import (
     N_POINTS,
     N_POINTS_AUDIT,
-    eclab_bytes,
+    RANDLES_EXPRESSION,
     make_config,
-    noisy_arrays,
     randles_file,
     replicate_assignments,
 )
 
-_HAVE_CMDSTAN = drt.bayes_available() and drt.cmdstan_available()
-_NEEDS_CMDSTAN = pytest.mark.skipif(
-    not _HAVE_CMDSTAN,
-    reason="DRT réelle : exige cvxopt + cmdstanpy + une installation CmdStan (job CI « drt »)",
-)
+REPO = Path(__file__).resolve().parents[1]
 
-# Rct vrais des jeux synthétiques (fixture `nominal`).
+_HAVE_CMDSTAN, _WHY_NOT = drt_engine.engine_available()
+_NEEDS_CMDSTAN = pytest.mark.skipif(
+    not _HAVE_CMDSTAN, reason=f"DRT réelle : {_WHY_NOT} (job CI « drt »)")
+
+# Rct vrais des jeux synthétiques.
 _RCT_BARE, _RCT_PROBE, _RCT_C1, _RCT_C2 = 2500.0, 3000.0, 3500.0, 4200.0
 _C1, _C2 = 1e-9, 1e-8
+_NO_DRT = dict(enabled=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Outils
 # ─────────────────────────────────────────────────────────────────────────────
-
-class _StubModel(BaseFitModel):
-    """Modèle de fit factice : remplace un plugin du registre sans rien calculer.
-
-    Enregistre chaque appel (label du spectre, config reçue) et renvoie un
-    FitResult minimal, ou lève ``raises``. Sert à tester l'orchestration du pipeline
-    indépendamment de la numérique de Randles et de CmdStan.
-    """
-
-    label = "stub"
-
-    def __init__(self, name, rct=1234.0, raises=None):
-        self.name = name
-        self.rct = rct
-        self.raises = raises
-        self.calls = []
-
-    def fit(self, spectrum, config, weights=None):
-        self.calls.append((spectrum.label, config))
-        if self.raises is not None:
-            raise self.raises
-        n = len(spectrum.f)
-        z = np.ones(n)
-        return FitResult(
-            model_name=self.name, params={"Rct": self.rct}, params_std={},
-            Zfit_re=z, Zfit_im=z, chi2_reduced=1.0, residuals_re=z, residuals_im=z,
-            target_param="Rct", target_value=self.rct, target_std=0.0, converged=True,
-            drt_mode=((config or {}).get("fit", {}).get("drt", {}) or {}).get("mode"),
-        )
-
-    def initial_guess(self, spectrum, config):
-        return {}
-
-    def bounds(self, config):
-        return ({}, {})
-
-
-@pytest.fixture
-def stub_registry(monkeypatch):
-    """Permet d'injecter des modèles factices : ``stubs["drt_bayes"] = _StubModel(...)``.
-
-    Les noms absents de ``stubs`` retombent sur le vrai registre. run_pipeline et
-    recompute_drt importent ``get_model`` à l'appel, donc le patch est vu.
-    """
-    stubs = {}
-    real_get = registry.get_model
-
-    def fake_get(name):
-        return stubs[name] if name in stubs else real_get(name)
-
-    monkeypatch.setattr(registry, "get_model", fake_get)
-    return stubs
-
 
 def _full_assignments():
     """bare + probe + 2 concentrations, 3 réplicats chacun.
@@ -139,333 +100,8 @@ def _full_assignments():
     return fa
 
 
-@pytest.fixture
-def nominal(tmp_path):
-    """Run complet réplicats + structure d'erreur caractérisable, Randles seul."""
-    path = tmp_path / "es.json"
-    cfg = make_config(path)
-    session, validation = run_pipeline(_full_assignments(), cfg, active_models=["randles_full"])
-    return SimpleNamespace(session=session, validation=validation, cfg=cfg, path=path)
-
-
-def _persisted(path):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _coeffs(fr):
-    """(α, β, γ, δ) de la structure d'erreur qui a pondéré ce fit."""
-    c = fr.error_structure_coeffs
-    return (c["alpha"], c["beta"], c["gamma"], c["delta"])
-
-
-def _error_messages(caplog):
-    return [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# A. Cas normal
-# ═════════════════════════════════════════════════════════════════════════════
-
-def test_session_structure(nominal):
-    s = nominal.session
-    assert isinstance(s, EISSession)
-    assert s.config is nominal.cfg           # la config passée est conservée telle quelle
-    assert isinstance(s.created_at, datetime)
-    assert s.bare_reference is None          # jamais posée par le pipeline (affichage seul)
-
-    # Le spectre moyenné porte le label du premier réplicat + " (avg)".
-    assert s.bare.label == "bare_r0.txt (avg)"
-    assert s.probe.label == "probe_r0.txt (avg)"
-    for sp in (s.bare, s.probe):
-        assert sp.n_replicates == 3
-        assert sp.n_points == N_POINTS
-        assert sp.sigma_re is not None and sp.sigma_im is not None
-
-    # Groupes triés par concentration croissante, quel que soit l'ordre d'entrée.
-    assert [g.concentration for g in s.groups] == [_C1, _C2]
-    assert [g.spectrum.label for g in s.groups] == ["c1_r0.txt (avg)", "c2_r0.txt (avg)"]
-
-
-def test_averaged_fits_recover_rct_and_carry_provenance(nominal):
-    s = nominal.session
-    cases = [
-        (s.bare.fit_results, _RCT_BARE),
-        (s.probe.fit_results, _RCT_PROBE),
-        (s.groups[0].fit_results, _RCT_C1),
-        (s.groups[1].fit_results, _RCT_C2),
-    ]
-    for fit_results, rct_true in cases:
-        assert list(fit_results) == ["randles_full"]
-        fr = fit_results["randles_full"]
-        assert fr.target_param == "Rct"
-        assert fr.target_value == pytest.approx(rct_true, rel=0.03)
-        assert fr.target_value == fr.params["Rct"]
-        assert set(fr.params) == set(_PARAM_NAMES)
-        assert fr.converged is True
-        assert isinstance(fr.warnings, list)
-        # Le spectre moyenné porte des réplicats : sa structure d'erreur est
-        # caractérisée sur lui-même.
-        assert fr.error_structure_source == "characterized_now"
-        assert _coeffs(fr) != (0.0, 0.0, 0.0, 0.0)
-
-
-def test_group_fits_live_on_the_group_not_on_its_spectrum(nominal):
-    """Asymétrie (observation non listée dans l'audit).
-
-    bare/probe rangent leurs fits dans ``spectrum.fit_results`` ; les groupes de
-    concentration dans ``group.fit_results`` — et ``group.spectrum.fit_results``
-    reste VIDE. Conséquence vérifiée dans test_exporter_full : les exports qui lisent
-    ``grp.spectrum.fit_results`` (DRT, reconstructions) omettent les groupes.
-    """
-    s = nominal.session
-    assert "randles_full" in s.probe.fit_results
-    for g in s.groups:
-        assert "randles_full" in g.fit_results
-        assert g.spectrum.fit_results == {}
-
-
-def test_kk_residuals_are_attached_to_averaged_fits_only(nominal):
-    """ERR-6 corrigé (étape 4) : ``_run_kk`` appelle Lin-KK SANS structure d'erreur ;
-    le critère unique ne rend donc AUCUN verdict (``kk_passed`` = None) au lieu de
-    l'ancien seuil sans source « max résidu < fit.drt_kk_tol ». Le verdict de
-    référence est celui du measurement model, dans ``validation`` (voir plus bas)."""
-    s = nominal.session
-    averaged = [s.bare, s.probe]
-    for fr in [sp.fit_results["randles_full"] for sp in averaged] + [
-        g.fit_results["randles_full"] for g in s.groups
-    ]:
-        assert fr.kk_passed is None
-        assert set(fr.kk_residuals) == {
-            "kk_passed", "residuals_re", "residuals_im", "Z_kk_re", "Z_kk_im",
-            "max_residual", "mu", "M", "n_outside", "n_allowed", "message",
-        }
-        assert "indéterminé" in fr.kk_residuals["message"]
-    # Les fits de réplicats n'ont pas de verdict KK.
-    for rep in s.probe_replicate_spectra:
-        assert rep.fit_results["randles_full"].kk_passed is None
-        assert rep.fit_results["randles_full"].kk_residuals is None
-
-
-def test_replicates_are_kept_and_fitted_individually(nominal):
-    s = nominal.session
-    families = [
-        (s.bare_replicate_spectra, s.bare, _RCT_BARE),
-        (s.probe_replicate_spectra, s.probe, _RCT_PROBE),
-        (s.groups[0].replicate_spectra, s.groups[0].spectrum, _RCT_C1),
-        (s.groups[1].replicate_spectra, s.groups[1].spectrum, _RCT_C2),
-    ]
-    for reps, averaged, rct_true in families:
-        assert [r.label[-6:] for r in reps] == ["r0.txt", "r1.txt", "r2.txt"]
-        # Ce sont les MÊMES objets que ceux conservés dans le spectre moyenné.
-        assert len(averaged.replicates) == 3
-        assert all(a is b for a, b in zip(reps, averaged.replicates))
-        for r in reps:
-            assert list(r.fit_results) == ["randles_full"]
-            assert r.fit_results["randles_full"].target_value == pytest.approx(rct_true, rel=0.05)
-
-
-def test_replicate_fits_reuse_a_structure_they_did_not_characterize(nominal):
-    """COMPORTEMENT ACTUEL BOGUÉ — cf AUDIT.md ERR-2, à revoir à l'étape 5.
-
-    Un réplicat individuel n'a pas de σ propre : il est pondéré par la « dernière
-    structure persistée » au moment de son fit (source « reused_persisted »).
-      * réplicats de bare/probe → structure du PREMIER spectre caractérisé (ici bare,
-        via _characterize_error_structure_upfront), pas la leur ;
-      * réplicats d'une concentration → structure de leur groupe, persistée juste
-        avant par le fit du spectre moyenné.
-    Le résultat d'un fit dépend donc de l'ordre et de l'historique des analyses.
-    """
-    s = nominal.session
-    bare_avg = _coeffs(s.bare.fit_results["randles_full"])
-    probe_avg = _coeffs(s.probe.fit_results["randles_full"])
-
-    for rep in s.bare_replicate_spectra + s.probe_replicate_spectra:
-        assert rep.fit_results["randles_full"].error_structure_source == "reused_persisted"
-    for rep in s.probe_replicate_spectra:
-        used = _coeffs(rep.fit_results["randles_full"])
-        assert used == pytest.approx(bare_avg)      # structure de bare…
-        assert used != pytest.approx(probe_avg)     # …et non celle de probe
-    for g in s.groups:
-        group_avg = _coeffs(g.fit_results["randles_full"])
-        for rep in g.replicate_spectra:
-            assert _coeffs(rep.fit_results["randles_full"]) == pytest.approx(group_avg)
-
-
-def test_error_structure_history_grows_on_every_run(nominal):
-    """COMPORTEMENT ACTUEL BOGUÉ — cf AUDIT.md ERR-2, à revoir à l'étape 5.
-
-    La persistance est un JSON en append, jamais purgé : 1 entrée pour la
-    caractérisation préalable + 1 par spectre moyenné porteur de réplicats fitté
-    (bare, probe, 2 groupes) = 5 par run, et 10 après un second run identique.
-    """
-    entries = _persisted(nominal.path)
-    assert len(entries) == 5
-    assert all(e["source"] == "characterized_now" for e in entries)
-    assert entries[0]["campaign_id"] == "bare_r0.txt (avg)"   # caractérisation préalable
-
-    run_pipeline(_full_assignments(), nominal.cfg, active_models=["randles_full"])
-    assert len(_persisted(nominal.path)) == 10
-
-
-def test_validation_results_cover_every_replicate_group(nominal):
-    val = nominal.validation
-    # Clés dans l'ordre d'ARRIVÉE des fichiers (ici 1e-8 avant 1e-9, cf.
-    # _full_assignments), contrairement à ``session.groups`` qui est trié.
-    assert list(val) == ["bare", "probe", "hyb_1.00e-08", "hyb_1.00e-09"]
-    for label, vr in val.items():
-        assert isinstance(vr, ValidationResult)
-        assert vr.label == label
-        assert len(vr.replicates) == 3
-        assert [r.label for r in vr.replicates] == [f"{label}_rep{i}" for i in (1, 2, 3)]
-        assert vr.sigma_re.shape == (N_POINTS,)
-        assert vr.f_min_common < vr.f_max_common
-        # Verdict KK du measurement model (étape 4), affiché au prétraitement AVANT le fit.
-        # Le bruit synthétique (relatif, par composante) viole σ_r = σ_j : le test de
-        # la structure d'erreur le rejette et estime deux structures.
-        assert vr.all_valid is True and vr.error_structure_message is None
-        assert vr.measurement_model.error_structure.equal_re_im is False
-
-
-def test_drt_is_never_run_on_replicates(nominal, stub_registry):
-    """La DRT n'est calculée que sur les spectres MOYENNÉS (pipeline.py:_fit_replicates)."""
-    stub = stub_registry["drt_bayes"] = _StubModel("drt_bayes")
-    session, _ = run_pipeline(
-        _full_assignments(), nominal.cfg, active_models=["randles_full", "drt_bayes"]
-    )
-
-    assert [label for label, _cfg in stub.calls] == [
-        "bare_r0.txt (avg)", "probe_r0.txt (avg)", "c1_r0.txt (avg)", "c2_r0.txt (avg)",
-    ]
-    # L'ordre des fit_results suit celui de active_models.
-    assert list(session.probe.fit_results) == ["randles_full", "drt_bayes"]
-    assert [list(g.fit_results) for g in session.groups] == [["randles_full", "drt_bayes"]] * 2
-    for rep in session.probe_replicate_spectra + session.groups[0].replicate_spectra:
-        assert list(rep.fit_results) == ["randles_full"]
-
-
-def test_all_models_run_when_active_models_is_none_and_drt_stack_is_absent(tmp_path, caplog):
-    """active_models=None lance tous les plugins du registre, DRT comprise.
-
-    Sans pile DRT complète (cvxopt/cmdstanpy/CmdStan), le fit DRT échoue, l'exception
-    est avalée (cf. ERR-3) et le modèle disparaît en silence des résultats.
-    """
-    if _HAVE_CMDSTAN:
-        pytest.skip("la pile DRT est présente : le fit DRT réussirait (voir section E)")
-    assert "drt_bayes" in [m.name for m in registry.all_models()]   # découvert quand même
-
-    cfg = make_config(tmp_path / "es.json")
-    fa = replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
-    with caplog.at_level(logging.ERROR):
-        session, _ = run_pipeline(fa, cfg, active_models=None)
-
-    assert list(session.probe.fit_results) == ["randles_full"]
-    assert any("Fit 'drt_bayes' [probe] failed" in m for m in _error_messages(caplog))
-
-
-def test_upfront_characterization_uses_first_eligible_spectrum(tmp_path):
-    """Ordre de choix : bare, puis probe, puis la plus petite concentration."""
-    # Sans bare → probe.
-    path = tmp_path / "a.json"
-    fa = (replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
-          + replicate_assignments("hybridization", _C1, _RCT_C1, 3, 10, "c1"))
-    run_pipeline(fa, make_config(path), active_models=["randles_full"])
-    assert _persisted(path)[0]["campaign_id"] == "probe_r0.txt (avg)"
-
-    # Probe sans réplicats (donc sans σ) → la première concentration porteuse de réplicats.
-    path = tmp_path / "b.json"
-    fa = (replicate_assignments("probe", 0.0, _RCT_PROBE, 1, 0, "probe")
-          + replicate_assignments("hybridization", _C2, _RCT_C2, 3, 16, "c2")
-          + replicate_assignments("hybridization", _C1, _RCT_C1, 3, 10, "c1"))
-    run_pipeline(fa, make_config(path), active_models=["randles_full"])
-    assert _persisted(path)[0]["campaign_id"] == "c1_r0.txt (avg)"
-
-
-def test_groups_are_keyed_by_step_and_float_concentration(tmp_path):
-    """Un même couple (step, concentration) fusionne ses fichiers ; concentration
-    absente = 0.0, ce qui donne un groupe « hyb_0.00e+00 »."""
-    cfg = make_config(tmp_path / "es.json")
-    fa = replicate_assignments("hybridization", 1e-9, _RCT_C1, 2, 10, "a")
-    fa += replicate_assignments("hybridization", 1e-9, _RCT_C1, 1, 20, "b")   # même clé
-    fa.append(dict(content=randles_file(_RCT_C2, seed=30), filename="noconc.txt",
-                   step="hybridization"))                                     # pas de "concentration"
-
-    session, val = run_pipeline(fa, cfg, active_models=["randles_full"])
-
-    assert [g.concentration for g in session.groups] == [0.0, 1e-9]
-    assert session.groups[1].spectrum.n_replicates == 3
-    assert list(val) == ["hyb_1.00e-09", "hyb_0.00e+00"]   # ordre d'apparition des fichiers
-
-
-def test_unreadable_file_is_skipped_and_the_rest_is_used(tmp_path, caplog):
-    cfg = make_config(tmp_path / "es.json")
-    fa = replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
-    fa.append(dict(content=b"ceci n'est pas un spectre", filename="bad.txt",
-                   step="probe", concentration=0.0))
-    with caplog.at_level(logging.ERROR):
-        session, val = run_pipeline(fa, cfg, active_models=["randles_full"])
-
-    assert session.probe.n_replicates == 3                       # bad.txt ignoré
-    assert len(val["probe"].replicates) == 3
-    assert any("Skipped 'bad.txt'" in m for m in _error_messages(caplog))
-
-
-def test_nothing_loadable_gives_an_empty_session_without_error(tmp_path):
-    cfg = make_config(tmp_path / "es.json")
-    for fa in ([], [dict(content=b"junk", filename="bad.txt", step="probe", concentration=0.0)]):
-        session, val = run_pipeline(fa, cfg, active_models=["randles_full"])
-        assert session.bare is None and session.probe is None
-        assert session.groups == []
-        assert val == {}
-
-
-def test_unknown_model_name_raises_before_any_work(tmp_path):
-    with pytest.raises(KeyError, match="not found"):
-        run_pipeline([], make_config(tmp_path / "es.json"), active_models=["nope"])
-
-
-def test_bare_only_run_has_no_probe(tmp_path):
-    cfg = make_config(tmp_path / "es.json")
-    fa = replicate_assignments("bare", 0.0, _RCT_BARE, 3, 100, "bare")
-    session, val = run_pipeline(fa, cfg, active_models=["randles_full"])
-    assert session.probe is None and session.groups == []
-    assert list(val) == ["bare"]
-    assert session.bare.fit_results["randles_full"].target_value == pytest.approx(_RCT_BARE, rel=0.03)
-
-
-def test_validate_session_maps_each_group_to_a_validation_result():
-    groups = {}
-    for label, seed0 in (("g1", 0), ("g2", 5)):
-        arrays = [noisy_arrays(_RCT_PROBE, 0.0, seed0 + k) for k in range(2)]
-        groups[label] = {
-            "f": [a[0] for a in arrays],
-            "zre": [a[1] for a in arrays],
-            "zim": [a[2] for a in arrays],
-        }
-    out = validate_session(groups, config={})
-    assert list(out) == ["g1", "g2"]
-    assert all(isinstance(v, ValidationResult) and len(v.replicates) == 2 for v in out.values())
-    assert out["g1"].label == "g1"
-    assert validate_session({}, config={}) == {}
-
-
-def test_run_kk_returns_lin_kk_residuals_without_a_verdict():
-    """Sans structure d'erreur, pas de verdict (critère unique, ERR-6) ; les résidus
-    Lin-KK (M choisi par le critère µ de Schönleber, ERR-5) restent calculés."""
-    f, zre, zim = noisy_arrays(_RCT_PROBE, 0.0, 0)
-    sp = load_spectrum(eclab_bytes(f, zre, zim), "kk.txt")
-    kk = _run_kk(sp, {}, "kk")
-    assert kk["kk_passed"] is None
-    assert kk["max_residual"] < 0.05
-    assert kk["M"] >= 20
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# B. ERR-1 — ni réplicats ni structure persistée
-# ═════════════════════════════════════════════════════════════════════════════
-
 def _single_file_assignments():
-    """Le cas du premier usage : un fichier par condition, aucun réplicat."""
+    """Le cas du premier usage (ERR-1) : un fichier par condition, aucun réplicat."""
     return (
         replicate_assignments("probe", 0.0, _RCT_PROBE, 1, 0, "probe")
         + replicate_assignments("hybridization", _C1, _RCT_C1, 1, 10, "c1")
@@ -473,157 +109,558 @@ def _single_file_assignments():
     )
 
 
-def test_err1_no_replicates_and_no_persisted_structure_gives_empty_fits(tmp_path, caplog):
-    """COMPORTEMENT ACTUEL BOGUÉ — cf AUDIT.md ERR-1, à corriger à l'étape 5.
+def _groups(session):
+    """[(label d'affichage, spectre moyen, réplicats, GroupAnalysis)]."""
+    return list(session.iter_groups())
 
-    Reproduit l'Annexe A.7. Sans réplicats ET sans structure d'erreur persistée
-    (premier usage, ou après une mise à jour de launch.bat qui efface
-    config/error_structure.json), ``resolve_error_structure`` lève
-    ErrorStructureUnavailable. run_pipeline l'attrape et se contente de
-    journaliser : AUCUNE exception, les groupes sont créés, mais TOUS les
-    ``fit_results`` sont vides. L'UI affiche pourtant « ✅ Analyse terminée ».
 
-    Le jour où ce cas lèvera une erreur ou remontera un diagnostic explicite,
-    ce test devra changer — c'est le signal que ERR-1 est corrigé.
+class _FakeDRT:
+    """Remplace ``drt.engine.fit_drt`` : enregistre chaque appel, rend un FitResult DRT
+    plausible (Rct = étendue de Zre, std a posteriori 5 Ω en 'sample', NaN en MAP), ou
+    lève l'exception prévue pour un label donné."""
+
+    def __init__(self, fail=None):
+        self.calls = []
+        self.fail = dict(fail or {})
+
+    def __call__(self, spectrum, *, mode, **kwargs):
+        self.calls.append((spectrum.label, mode))
+        if spectrum.label in self.fail:
+            raise self.fail[spectrum.label]
+        n = len(spectrum.f)
+        hmc = mode == "sample"
+        rct = float(np.max(spectrum.Zre) - np.min(spectrum.Zre))
+        std = 5.0 if hmc else float("nan")
+        sampler = ({"rhat_max": 1.002, "divergences": 0, "ess_bulk_min": 900.0, "ess_tail_min": 800.0}
+                   if hmc else {"optimizer_converged": True})
+        return FitResult(
+            model_name=DRT_MODEL_NAME, params={"Rct": rct, "drt_mode": mode},
+            params_std={"Rct": std}, Zfit_re=np.asarray(spectrum.Zre, float),
+            Zfit_im=np.asarray(spectrum.Zim, float), chi2_reduced=float("nan"),
+            residuals_re=np.zeros(n), residuals_im=np.zeros(n), target_param="Rct",
+            target_value=rct, target_std=std, converged=True, drt_mode=mode,
+            drt_tau=np.geomspace(1e-6, 10.0, 20), drt_gamma=np.ones(20),
+            drt_diagnostics={"sampler": sampler, "alerts": []},
+        )
+
+
+@pytest.fixture
+def fake_drt(monkeypatch):
+    fake = _FakeDRT()
+    monkeypatch.setattr(drt_engine, "fit_drt", fake)
+    monkeypatch.setattr(drt_engine, "engine_available", lambda: (True, None))
+    return fake
+
+
+@pytest.fixture(scope="module")
+def nominal():
+    """Run complet réplicats + structure d'erreur caractérisable, DRT désactivée."""
+    cfg = make_config(**_NO_DRT)
+    session, validation = run_pipeline(_full_assignments(), cfg)
+    return SimpleNamespace(session=session, validation=validation, cfg=cfg)
+
+
+@pytest.fixture(scope="module")
+def _fake_drt_run():
+    """probe + 1 concentration, 3 réplicats, DRT FACTICE en mode MAP (config)."""
+    fake = _FakeDRT()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(drt_engine, "fit_drt", fake)
+        mp.setattr(drt_engine, "engine_available", lambda: (True, None))
+        cfg = make_config(enabled=True, mode="optimize")
+        fa = (replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
+              + replicate_assignments("hybridization", _C1, _RCT_C1, 3, 10, "c1"))
+        session, validation = run_pipeline(fa, cfg)
+    return SimpleNamespace(session=session, validation=validation, cfg=cfg, fake=fake)
+
+
+@pytest.fixture
+def with_fake_drt(_fake_drt_run):
+    """Copie PROFONDE du run à DRT factice : un test peut recalculer sans toucher aux
+    autres (deepcopy conserve les alias internes : group.fit_results, réplicats)."""
+    return copy.deepcopy(_fake_drt_run)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# A. Cas nominal
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_session_structure(nominal):
+    s = nominal.session
+    assert isinstance(s, EISSession)
+    assert s.config is nominal.cfg
+    assert s.bare_reference is None                       # jamais posée par le pipeline
+    assert s.circuit["expression"] == RANDLES_EXPRESSION and s.circuit["target_param"] == "Rct"
+    assert s.drt_mode is None and s.messages == [] and s.load_errors == []
+
+    assert s.bare.label == "bare_r0.txt (avg)"
+    assert s.probe.label == "probe_r0.txt (avg)"
+    # Groupes triés par concentration croissante, quel que soit l'ordre d'entrée.
+    assert [g.concentration for g in s.groups] == [_C1, _C2]
+    assert [g.spectrum.label for g in s.groups] == ["c1_r0.txt (avg)", "c2_r0.txt (avg)"]
+    assert [an.status for *_x, an in _groups(s)] == [GROUP_OK] * 4
+    assert s.failed_groups() == []
+
+
+def test_the_mean_spectrum_carries_the_raw_replicates_at_every_step(nominal):
+    """Les réplicats BRUTS sont conservés tels que chargés, et le spectre moyen les porte
+    (avant : seule la moyenne était propagée après average_replicates)."""
+    for _lbl, mean_sp, reps, _an in _groups(nominal.session):
+        assert [r.label[-6:] for r in reps] == ["r0.txt", "r1.txt", "r2.txt"]
+        assert all(a is b for a, b in zip(reps, mean_sp.replicates))       # mêmes objets
+        assert all(r.replicates == [] for r in reps)                        # un réplicat est brut
+        assert mean_sp not in reps
+        assert mean_sp.n_replicates == 3 and mean_sp.n_points == N_POINTS
+        assert np.all(np.diff(mean_sp.f) < 0)                               # HF → BF
+        stack = np.array([r.Zre for r in reps])
+        np.testing.assert_allclose(mean_sp.Zre, stack.mean(axis=0))
+        np.testing.assert_allclose(mean_sp.sigma_re, stack.std(axis=0, ddof=1))
+
+
+def test_the_measurement_model_runs_on_raw_replicates_before_any_fit(monkeypatch):
+    """Ordre imposé : measurement model + KK sur les réplicats BRUTS, PUIS fit Orazem, PUIS
+    DRT — et le fit reçoit EXACTEMENT l'analyse et les réplicats bruts (avant : la
+    validation KK était calculée après tous les fits, AUDIT.md §5.5)."""
+    events = []
+    real_mm, real_fit = pipeline.analyze_replicates, pipeline.fit_replicate_group
+
+    def spy_mm(reps, **kw):
+        out = real_mm(reps, **kw)
+        events.append(("mm", kw["label"], out, list(reps)))
+        return out
+
+    def spy_fit(Z, names, reps, analysis, specs, target, **kw):
+        events.append(("fit", analysis.label, analysis, list(reps)))
+        return real_fit(Z, names, reps, analysis, specs, target, **kw)
+
+    fake = _FakeDRT()
+
+    def spy_drt(sp, **kw):
+        events.append(("drt", sp.label, None, None))
+        return fake(sp, **kw)
+
+    monkeypatch.setattr(pipeline, "analyze_replicates", spy_mm)
+    monkeypatch.setattr(pipeline, "fit_replicate_group", spy_fit)
+    monkeypatch.setattr(drt_engine, "engine_available", lambda: (True, None))
+    monkeypatch.setattr(drt_engine, "fit_drt", spy_drt)
+    fa = (replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
+          + replicate_assignments("hybridization", _C1, _RCT_C1, 3, 10, "c1"))
+    session, validation = run_pipeline(fa, make_config(mode="optimize"))
+
+    kinds = [e[0] for e in events]
+    assert kinds == ["mm", "fit"] + ["drt"] * 4 + ["mm", "fit"] + ["drt"] * 4
+    for (k1, lbl1, mm, mm_reps), (k2, lbl2, fit_analysis, fit_reps), sp_reps in (
+            (events[0], events[1], session.probe_replicate_spectra),
+            (events[6], events[7], session.groups[0].replicate_spectra)):
+        assert lbl1 == lbl2
+        assert fit_analysis is mm                                         # MÊME analyse
+        assert all(a is b for a, b in zip(mm_reps, sp_reps))              # réplicats BRUTS
+        assert all(a is b for a, b in zip(fit_reps, sp_reps))
+    # Le verdict KK rendu est celui de cette même analyse.
+    assert validation["probe"].measurement_model is events[0][2]
+    assert session.probe_analysis.orazem.analysis is events[0][2]
+
+
+def test_every_raw_replicate_and_the_mean_are_fitted(nominal):
+    """Fit Orazem sur CHAQUE réplicat (σ d'une mesure) ET sur la moyenne (σ/√n)."""
+    truths = [_RCT_BARE, _RCT_PROBE, _RCT_C1, _RCT_C2]
+    for (_lbl, mean_sp, reps, an), rct in zip(_groups(nominal.session), truths):
+        for r in reps:
+            fr = r.fit_results[ORAZEM_MODEL_NAME]
+            assert list(r.fit_results) == [ORAZEM_MODEL_NAME]               # DRT désactivée
+            assert fr.target_param == "Rct" and fr.converged
+            assert fr.target_value == pytest.approx(rct, rel=0.05)
+            assert fr is an.orazem.replicate_fits[reps.index(r)]
+        fm = mean_sp.fit_results[ORAZEM_MODEL_NAME]
+        assert fm.target_value == pytest.approx(rct, rel=0.03)
+        assert fm.target_value == an.orazem.mean_fit.target_value
+        assert set(fm.params) == {"Re", "Re_prime", "Rct", "R_D", "tau_d", "Qdl", "alpha", "Cb"}
+        # Le fit de la moyenne est pondéré par σ/√n : incertitude intra-fit plus petite.
+        assert fm.target_std < np.mean([r.fit_results[ORAZEM_MODEL_NAME].target_std for r in reps])
+
+
+def test_mean_fit_arrays_follow_the_mean_spectrum_frequency_order(nominal):
+    """Le measurement model travaille sur une grille CROISSANTE ; le FitResult rangé sur
+    le spectre moyen est remis en ordre HF → BF, aligné point à point sur ``f``."""
+    for _lbl, mean_sp, _reps, an in _groups(nominal.session):
+        fm = mean_sp.fit_results[ORAZEM_MODEL_NAME]
+        np.testing.assert_allclose(fm.Zfit_re, an.orazem.mean_fit.Zfit_re[::-1])
+        np.testing.assert_allclose(mean_sp.Zre - fm.Zfit_re, fm.residuals_re, atol=1e-9)
+        np.testing.assert_allclose(mean_sp.Zim - fm.Zfit_im, fm.residuals_im, atol=1e-9)
+
+
+def test_aggregates_separate_intra_fit_and_inter_replicate_uncertainty(nominal):
+    for _lbl, _mean, reps, an in _groups(nominal.session):
+        t = an.orazem.target
+        values = [r.fit_results[ORAZEM_MODEL_NAME].target_value for r in reps]
+        stds = [r.fit_results[ORAZEM_MODEL_NAME].target_std for r in reps]
+        assert t.n == 3 and t.n_excluded == 0
+        assert t.mean == pytest.approx(np.mean(values))
+        assert t.std_between == pytest.approx(np.std(values, ddof=1))        # inter-réplicats
+        assert t.std_within == pytest.approx(np.sqrt(np.mean(np.square(stds))))  # intra-fit
+        assert t.sem == pytest.approx(math.sqrt(max(t.std_between ** 2, t.std_within ** 2) / 3))
+        assert set(an.orazem.aggregate) == set(an.orazem.param_names)
+
+
+def test_err2_fixed_each_group_is_weighted_by_its_own_error_structure(nominal):
+    """CORRIGÉ (était « COMPORTEMENT ACTUEL BOGUÉ — ERR-2 ») : les réplicats de bare/probe
+    étaient pondérés par la structure du PREMIER spectre caractérisé (« reused_persisted »).
+    Chaque fit d'un groupe — réplicats ET moyenne — l'est désormais par la structure
+    caractérisée sur CE groupe, dans cette analyse."""
+    seen = []
+    for _lbl, mean_sp, reps, an in _groups(nominal.session):
+        own = an.validation.measurement_model.error_structure.to_dict()
+        for sp in reps + [mean_sp]:
+            fr = sp.fit_results[ORAZEM_MODEL_NAME]
+            assert fr.error_structure_source == "characterized_now"
+            assert fr.error_structure_coeffs == own
+        seen.append((own["alpha"], own["beta"], own["delta"]))
+    assert len(set(seen)) == 4                                              # 4 structures distinctes
+
+
+def test_err2_fixed_nothing_is_written_to_disk(tmp_path, monkeypatch):
+    """CORRIGÉ : l'ancien pipeline ajoutait 5 entrées par run à config/error_structure.json
+    (jamais purgé). Plus aucune persistance : deux runs identiques donnent le même
+    résultat et n'écrivent rien."""
+    monkeypatch.chdir(tmp_path)
+    fa = replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
+    s1, _ = run_pipeline(fa, make_config(**_NO_DRT))
+    s2, _ = run_pipeline(fa, make_config(**_NO_DRT))
+    assert not (REPO / "config" / "error_structure.json").exists()
+    assert [p.name for p in tmp_path.iterdir()] == []
+    assert (s1.probe.fit_results[ORAZEM_MODEL_NAME].target_value
+            == s2.probe.fit_results[ORAZEM_MODEL_NAME].target_value)
+
+
+def test_group_fit_results_is_the_mean_spectrum_dict(nominal):
+    """CORRIGÉ (asymétrie relevée à l'étape 1) : ``group.fit_results`` et
+    ``group.spectrum.fit_results`` étaient deux dictionnaires (le second vide). C'est
+    désormais LE MÊME objet."""
+    for g in nominal.session.groups:
+        assert g.fit_results is g.spectrum.fit_results
+        assert ORAZEM_MODEL_NAME in g.fit_results
+        assert g.analysis is not None and g.replicate_spectra == g.spectrum.replicates
+
+
+def test_validation_results_cover_every_group_and_come_from_the_same_analysis(nominal):
+    val = nominal.validation
+    # Ordre d'ARRIVÉE des fichiers (1e-8 avant 1e-9), contrairement à session.groups (trié).
+    assert list(val) == ["bare", "probe", "hyb_1.00e-08", "hyb_1.00e-09"]
+    analyses = {an.label: an for *_x, an in _groups(nominal.session)}
+    for label, vr in val.items():
+        assert isinstance(vr, ValidationResult)
+        assert vr is analyses[label].validation
+        assert [r.label for r in vr.replicates] == [f"{label}_rep{i}" for i in (1, 2, 3)]
+        assert vr.sigma_re.shape == (N_POINTS,)
+        # Le bruit synthétique (relatif, par composante) viole σ_r = σ_j : le test de la
+        # structure d'erreur le rejette et estime deux structures.
+        assert vr.all_valid is True and vr.error_structure_message is None
+        assert vr.measurement_model.error_structure.equal_re_im is False
+
+
+def test_groups_are_keyed_by_step_and_float_concentration():
+    """Un même couple (step, concentration) fusionne ses fichiers ; concentration
+    absente = 0.0 (groupe « hyb_0.00e+00 »)."""
+    fa = replicate_assignments("hybridization", 1e-9, _RCT_C1, 2, 10, "a")
+    fa += replicate_assignments("hybridization", 1e-9, _RCT_C1, 1, 20, "b")   # même clé
+    fa.append(dict(content=randles_file(_RCT_C2, seed=30), filename="noconc.txt",
+                   step="hybridization"))                                     # pas de "concentration"
+
+    session, val = run_pipeline(fa, make_config(**_NO_DRT))
+
+    assert [g.concentration for g in session.groups] == [0.0, 1e-9]
+    assert len(session.groups[1].replicate_spectra) == 3
+    assert list(val) == ["hyb_1.00e-09", "hyb_0.00e+00"]
+    assert session.groups[1].analysis.ok and not session.groups[0].analysis.ok
+
+
+def test_bare_only_run_has_no_probe():
+    fa = replicate_assignments("bare", 0.0, _RCT_BARE, 3, 100, "bare")
+    session, val = run_pipeline(fa, make_config(**_NO_DRT))
+    assert session.probe is None and session.groups == []
+    assert list(val) == ["bare"]
+    assert session.bare.fit_results[ORAZEM_MODEL_NAME].target_value == pytest.approx(_RCT_BARE, rel=0.03)
+
+
+def test_nothing_loadable_gives_an_empty_session():
+    for fa in ([], [dict(content=b"junk", filename="bad.txt", step="probe", concentration=0.0)]):
+        session, val = run_pipeline(fa, make_config(**_NO_DRT))
+        assert session.bare is None and session.probe is None
+        assert session.groups == [] and val == {}
+
+
+def test_an_explicit_circuit_overrides_the_config_and_its_target_is_used():
+    """Le circuit passé par l'UI prime sur ``fit.circuit`` ; le paramètre cible désigné
+    (ici un AUTRE que Rct) est celui de target_value et de l'agrégat."""
+    cf = build_circuit_fit(
+        "Re + parallel(R(Rct) + ZD_bounded(R_D, tau_d), Q(Qdl, alpha))",
+        {"Re": (100.0, 0.0, 1e5), "Rct": (1500.0, 0.0, 1e9), "R_D": (300.0, 0.0, 1e7),
+         "tau_d": (0.2, 1e-6, 1e4), "Qdl": (5e-6, 0.0, 1e-2), "alpha": (0.8, 0.3, 1.0)},
+        "R_D")
+    fa = replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
+    session, _ = run_pipeline(fa, make_config(**_NO_DRT), cf)
+    fr = session.probe.fit_results[ORAZEM_MODEL_NAME]
+    assert fr.target_param == "R_D" and fr.target_value == fr.params["R_D"]
+    assert session.probe_analysis.orazem.target.name == "R_D"
+    assert session.circuit["target_param"] == "R_D"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# B. ERR-1 corrigé — groupe arrêté, statut explicite
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_err1_fixed_no_replicates_stops_every_group_with_an_explicit_status(fake_drt):
+    """CORRIGÉ (était « COMPORTEMENT ACTUEL BOGUÉ — ERR-1 », Annexe A.7).
+
+    Avant : ``ErrorStructureUnavailable`` était attrapée et journalisée seulement ; les
+    groupes existaient avec des ``fit_results`` VIDES, sans aucune trace dans la valeur
+    de retour, et l'UI affichait « ✅ Analyse terminée ». Maintenant chaque groupe porte
+    ``status = GROUP_ERROR_STRUCTURE_UNAVAILABLE`` et le message destiné à l'utilisateur ;
+    aucun fit — ni Orazem, ni DRT — n'est produit pour lui.
     """
-    path = tmp_path / "never_written.json"      # n'existe pas → premier usage
-    cfg = make_config(path)
+    session, val = run_pipeline(_single_file_assignments(), make_config(mode="optimize"))
 
-    with caplog.at_level(logging.ERROR):
-        session, val = run_pipeline(_single_file_assignments(), cfg, active_models=["randles_full"])
-
-    # Les 2 groupes existent bel et bien…
-    assert [g.concentration for g in session.groups] == [_C1, _C2]
-    assert session.probe is not None
-    # …mais aucun fit n'a abouti, nulle part : ni sur les moyennes, ni sur les réplicats.
-    assert session.probe.fit_results == {}
-    assert [g.fit_results for g in session.groups] == [{}, {}]
-    assert [g.spectrum.fit_results for g in session.groups] == [{}, {}]
-    assert [r.fit_results for r in session.probe_replicate_spectra] == [{}]
-    assert [[r.fit_results for r in g.replicate_spectra] for g in session.groups] == [[{}], [{}]]
-    # Rien n'a jamais été caractérisé ni persisté.
-    assert not path.exists()
-    # La seule trace est dans les logs, jamais dans la valeur de retour.
-    errors = _error_messages(caplog)
-    assert errors
-    assert all("structure d'erreur non caractérisée" in m for m in errors)
-    assert any("Fit 'randles_full' [probe] failed" in m for m in errors)
-    # La validation KK, elle, aboutit (sans σ : pas de réplicats).
+    groups = _groups(session)
+    assert [lbl for lbl, *_x in groups] == ["Probe", "1.00e-09 M", "1.00e-08 M"]
+    for _lbl, mean_sp, reps, an in groups:
+        assert an.status == GROUP_ERROR_STRUCTURE_UNAVAILABLE and not an.ok
+        assert "structure d'erreur non caractérisable" in an.message
+        assert "Aucun fit n'a été réalisé pour ce groupe" in an.message
+        assert an.orazem is None and an.drt_target is None
+        assert mean_sp.fit_results == {} and [r.fit_results for r in reps] == [{}]
+        assert mean_sp.replicates == reps and mean_sp is not reps[0]
+    assert fake_drt.calls == []                                            # DRT arrêtée aussi
+    assert [lbl for lbl, _an in session.failed_groups()] == ["Probe", "1.00e-09 M", "1.00e-08 M"]
+    # Le verdict KK rendu porte le MÊME message (onglet Validation KK).
     assert list(val) == ["probe", "hyb_1.00e-09", "hyb_1.00e-08"]
-    assert all(v.sigma_re is None for v in val.values())
+    for (_l, _m, _r, an), vr in zip(groups, val.values()):
+        assert vr is an.validation
+        assert vr.all_valid is None and vr.error_structure_message == an.message
 
 
-def test_err1_two_replicates_are_not_enough_either(tmp_path):
-    """COMPORTEMENT ACTUEL BOGUÉ — cf AUDIT.md ERR-1, à corriger à l'étape 5.
-
-    Variante non listée dans l'audit : la caractérisation exige ≥ 3 réplicats
-    (_MIN_REPLICATES_DEFAULT). Avec 2 réplicats par condition, on retombe dans
-    exactement le même silence : fits vides, aucune exception.
-    """
-    path = tmp_path / "never_written.json"
+def test_err1_fixed_two_replicates_are_not_enough_either():
+    """CORRIGÉ : la caractérisation exige ≥ 3 réplicats ; avec 2, même arrêt EXPLICITE."""
     fa = (replicate_assignments("probe", 0.0, _RCT_PROBE, 2, 0, "probe")
           + replicate_assignments("hybridization", _C1, _RCT_C1, 2, 10, "c1"))
-    session, _ = run_pipeline(fa, make_config(path), active_models=["randles_full"])
-
-    assert session.probe.n_replicates == 2       # les réplicats existent bien…
-    assert session.probe.fit_results == {}       # …mais ne suffisent pas à caractériser
-    assert session.groups[0].fit_results == {}
-    assert not path.exists()
-
-
-def test_err1_disappears_as_soon_as_a_structure_is_persisted(caplog):
-    """Contre-épreuve : les MÊMES fichiers, avec une structure persistée, sont fittés.
-
-    Le ``conftest.py`` (autouse) pré-remplit la persistance PAR DÉFAUT : c'est la
-    raison pour laquelle aucun test hérité ne voit ERR-1 (AUDIT.md §8.3). Ici la
-    config ne fixe pas de persistence_path, donc cette structure de référence sert.
-    """
-    cfg = config_to_dict(load_config())          # pas de persistence_path → défaut (conftest)
-    session, _ = run_pipeline(_single_file_assignments(), cfg, active_models=["randles_full"])
-
-    for fr in [session.probe.fit_results["randles_full"]] + [
-        g.fit_results["randles_full"] for g in session.groups
-    ]:
-        assert fr.error_structure_source == "reused_persisted"
-        assert fr.converged is True
-    assert session.groups[1].fit_results["randles_full"].target_value == pytest.approx(_RCT_C2, rel=0.05)
+    session, _ = run_pipeline(fa, make_config(**_NO_DRT))
+    assert len(session.probe_replicate_spectra) == 2
+    for _lbl, mean_sp, _reps, an in _groups(session):
+        assert an.status == GROUP_ERROR_STRUCTURE_UNAVAILABLE
+        assert "2 réplicat(s) fourni(s), 3 requis" in an.message
+        assert mean_sp.fit_results == {}
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# C. ERR-3 — toute erreur devient « spectre sans fit »
-# ═════════════════════════════════════════════════════════════════════════════
+def test_err1_only_the_failing_group_is_stopped():
+    """Un groupe sans réplicats n'empêche pas l'analyse des autres."""
+    fa = (replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
+          + replicate_assignments("hybridization", _C1, _RCT_C1, 1, 10, "c1"))
+    session, _ = run_pipeline(fa, make_config(**_NO_DRT))
+    assert session.probe_analysis.ok and ORAZEM_MODEL_NAME in session.probe.fit_results
+    g = session.groups[0]
+    assert g.analysis.status == GROUP_ERROR_STRUCTURE_UNAVAILABLE and g.fit_results == {}
+    assert [lbl for lbl, _an in session.failed_groups()] == ["1.00e-09 M"]
 
-def test_err3_a_crashing_model_is_swallowed_everywhere(tmp_path, stub_registry, caplog):
-    """COMPORTEMENT ACTUEL BOGUÉ — cf AUDIT.md ERR-3, à corriger à l'étape 5.
 
-    Un modèle qui lève (ici un RuntimeError, donc un vrai bug de programmation)
-    est indiscernable d'un fichier invalide : chaque ``except Exception`` du
-    pipeline le convertit en « spectre sans fit ». Aucune exception ne remonte.
-    """
-    stub = stub_registry["randles_full"] = _StubModel("randles_full", raises=RuntimeError("boom"))
-    cfg = make_config(tmp_path / "es.json")
-
-    with caplog.at_level(logging.ERROR):
-        session, val = run_pipeline(_full_assignments(), cfg, active_models=["randles_full"])
-
-    assert len(session.groups) == 2
-    assert session.bare.fit_results == {} and session.probe.fit_results == {}
-    assert [g.fit_results for g in session.groups] == [{}, {}]
+def test_a_circuit_incompatible_with_a_groups_data_stops_that_group_as_invalid_input():
+    """``FitSpecificationError`` levée PENDANT le fit d'un groupe (ici Z(ω) non fini au
+    guess : capacité initiale nulle) → statut ``GROUP_INVALID_INPUT`` et message ; pas
+    de FitResult partiel."""
+    cf = build_circuit_fit("Re + parallel(R(Rct), C(Cdl))",
+                           {"Re": (100.0, 0.0, 1e5), "Rct": (1e3, 0.0, 1e9), "Cdl": (0.0, 0.0, 1.0)},
+                           "Rct")
+    fa = replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
+    session, val = run_pipeline(fa, make_config(**_NO_DRT), cf)
+    an = session.probe_analysis
+    assert an.status == GROUP_INVALID_INPUT
+    assert "fit du circuit impossible" in an.message and "n'est pas fini au guess" in an.message
+    assert session.probe.fit_results == {}
     assert all(r.fit_results == {} for r in session.probe_replicate_spectra)
-    assert len(val) == 4                               # la validation n'est pas affectée
-    errors = _error_messages(caplog)
-    assert any("Fit 'randles_full' [probe] failed: boom" in m for m in errors)
-    assert any("Fit réplicat 'randles_full' [probe_r0.txt] failed: boom" in m for m in errors)
-    # bare, probe, 2 groupes (moyennes) + 12 réplicats
-    assert len(stub.calls) == 4 + 12
-
-
-def test_err3_a_crashing_kk_check_only_removes_the_kk_verdict(tmp_path, stub_registry, monkeypatch, caplog):
-    """COMPORTEMENT ACTUEL BOGUÉ — cf AUDIT.md ERR-3, à corriger à l'étape 5."""
-    stub_registry["randles_full"] = _StubModel("randles_full")
-
-    def boom(spectrum, *args, **kwargs):
-        raise RuntimeError("kk exploded")
-
-    monkeypatch.setattr("fits.kk_validation.kramers_kronig_check", boom)
-    cfg = make_config(tmp_path / "es.json")
-    fa = replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
-
-    with caplog.at_level(logging.ERROR):
-        session, _ = run_pipeline(fa, cfg, active_models=["randles_full"])
-
-    fr = session.probe.fit_results["randles_full"]
-    assert fr.kk_passed is None and fr.kk_residuals is None
-    assert any("kramers_kronig_check [probe] failed: kk exploded" in m for m in _error_messages(caplog))
-    assert _run_kk(session.probe, cfg, "x") is None
-
-
-def test_err3_a_crashing_validation_gives_an_empty_dict(tmp_path, monkeypatch, caplog):
-    """COMPORTEMENT ACTUEL BOGUÉ — cf AUDIT.md ERR-3, à corriger à l'étape 5."""
-    import core.pipeline as pipeline_mod
-
-    def boom(groups, config):
-        raise RuntimeError("validation exploded")
-
-    monkeypatch.setattr(pipeline_mod, "validate_session", boom)
-    cfg = make_config(tmp_path / "es.json")
-    fa = replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
-
-    with caplog.at_level(logging.ERROR):
-        session, val = run_pipeline(fa, cfg, active_models=["randles_full"])
-
-    assert val == {}
-    assert "randles_full" in session.probe.fit_results        # le reste de la session est intact
-    assert any("validate_session failed: validation exploded" in m for m in _error_messages(caplog))
+    assert val["probe"].all_valid is True                     # le verdict KK, lui, a été rendu
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# D. recompute_drt — avec un modèle DRT factice (aucune dépendance à CmdStan)
+# C. ERR-3 corrigé — donnée invalide (résultat dégradé + message) vs bug (remonte)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_drt_model_name_is_the_registry_name():
-    assert DRT_MODEL_NAME == "drt_bayes" == drt.DRTBayesModel.name
+def test_err3_an_unreadable_file_is_reported_in_the_session_not_only_in_the_logs():
+    fa = replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
+    fa.append(dict(content=b"ceci n'est pas un spectre", filename="bad.txt",
+                   step="probe", concentration=0.0))
+    session, val = run_pipeline(fa, make_config(**_NO_DRT))
+    assert len(session.probe_replicate_spectra) == 3                    # bad.txt écarté
+    assert [e["filename"] for e in session.load_errors] == ["bad.txt"]
+    assert session.load_errors[0]["message"]
+    assert session.probe_analysis.ok and len(val["probe"].replicates) == 3
 
+
+def test_err3_fixed_a_crashing_fit_is_a_bug_and_propagates(monkeypatch):
+    """CORRIGÉ (était « COMPORTEMENT ACTUEL BOGUÉ — ERR-3 ») : un fit qui lève une erreur
+    de programmation était avalé partout (« spectre sans fit »). Il REMONTE."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pipeline, "fit_replicate_group", boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        run_pipeline(_full_assignments(), make_config(**_NO_DRT))
+
+
+def test_err3_fixed_a_crashing_measurement_model_is_a_bug_and_propagates(monkeypatch):
+    """Seule ``ErrorStructureUnavailable`` (donnée insuffisante) arrête un groupe en
+    douceur ; toute autre exception du measurement model remonte."""
+    def boom(*args, **kwargs):
+        raise ZeroDivisionError("bug numérique")
+
+    monkeypatch.setattr(pipeline, "analyze_replicates", boom)
+    with pytest.raises(ZeroDivisionError):
+        run_pipeline(replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe"),
+                     make_config(**_NO_DRT))
+
+
+def test_err3_a_crashing_loader_is_a_bug_and_propagates(monkeypatch):
+    """Le contrat du loader est ``ValueError`` pour un fichier invalide ; toute autre
+    exception (ici TypeError) est un bug et remonte."""
+    def boom(**kwargs):
+        raise TypeError("bug du loader")
+
+    monkeypatch.setattr(pipeline, "load_spectrum", boom)
+    with pytest.raises(TypeError, match="bug du loader"):
+        run_pipeline(replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe"),
+                     make_config(**_NO_DRT))
+
+
+@pytest.mark.parametrize("exc", [ValueError("spectre invalide"), RuntimeError("CmdStan a échoué")])
+def test_err3_a_drt_data_or_engine_failure_degrades_only_that_spectrum(fake_drt, exc):
+    """DRT impossible pour UN spectre (contrat de ``drt.engine.fit_drt`` : ValueError =
+    spectre invalide, RuntimeError = échec de CmdStan) → motif dans ``drt_failures`` et
+    les alertes du groupe ; le reste du groupe est conservé."""
+    fake_drt.fail = {"probe_r1.txt": exc}
+    session, _ = run_pipeline(replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe"),
+                              make_config(mode="optimize"))
+    an = session.probe_analysis
+    assert an.ok
+    assert an.drt_failures == {"probe_r1.txt": str(exc)}
+    assert any(w.startswith("DRT de « probe_r1.txt » non calculée") for w in an.warnings)
+    reps = session.probe_replicate_spectra
+    assert [DRT_MODEL_NAME in r.fit_results for r in reps] == [True, False, True]
+    assert DRT_MODEL_NAME in session.probe.fit_results
+    assert an.drt_target.n == 2 and an.drt_target.n_excluded == 1
+    assert all(ORAZEM_MODEL_NAME in r.fit_results for r in reps)
+
+
+def test_err3_a_drt_bug_propagates(fake_drt):
+    fake_drt.fail = {"probe_r0.txt": KeyError("distribution absente")}
+    with pytest.raises(KeyError):
+        run_pipeline(replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe"),
+                     make_config(mode="optimize"))
+
+
+def test_a_missing_drt_engine_is_reported_once_at_session_level(monkeypatch):
+    calls = []
+    monkeypatch.setattr(drt_engine, "engine_available", lambda: (False, "CmdStan introuvable"))
+    monkeypatch.setattr(drt_engine, "fit_drt", lambda *a, **k: calls.append(a))
+    session, _ = run_pipeline(replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe"),
+                              make_config(mode="optimize"))
+    assert calls == [] and session.drt_mode is None
+    assert len(session.messages) == 1 and "CmdStan introuvable" in session.messages[0]
+    assert session.probe_analysis.ok and ORAZEM_MODEL_NAME in session.probe.fit_results
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    (dict(circuit_expr="Re + __import__('os')"), "Circuit ou paramètres invalides"),
+    (dict(target="Nope"), "paramètre cible « Nope » absent"),
+    (dict(params={"Re": (100.0, 0.0, 1e5)}), "sans guess/bornes"),
+])
+def test_invalid_circuit_input_is_refused_before_any_work(monkeypatch, kwargs, match):
+    loaded = []
+    monkeypatch.setattr(pipeline, "load_spectrum", lambda **kw: loaded.append(kw))
+    params = kwargs.get("params", {"Re": (100.0, 0.0, 1e5), "Rct": (1e3, 0.0, 1e9),
+                                   "Cdl": (1e-6, 0.0, 1.0)})
+    with pytest.raises(InvalidAnalysisInput, match=match):
+        cf = build_circuit_fit(kwargs.get("circuit_expr", "Re + parallel(R(Rct), C(Cdl))"),
+                               params, kwargs.get("target", "Rct"))
+        run_pipeline(replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe"),
+                     make_config(**_NO_DRT), cf)
+    assert loaded == []
+
+
+def test_invalid_config_circuit_drt_mode_or_step_are_refused_before_any_work(monkeypatch):
+    loaded = []
+    monkeypatch.setattr(pipeline, "load_spectrum", lambda **kw: loaded.append(kw))
+    fa = replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe")
+    cfg = make_config(**_NO_DRT)
+    cfg["fit"]["circuit"]["parameters"]["Rct"]["initial"] = None            # case vide dans l'UI
+    with pytest.raises(InvalidAnalysisInput, match="Rct"):
+        run_pipeline(fa, cfg)
+    with pytest.raises(InvalidAnalysisInput, match="Réglages DRT invalides"):
+        run_pipeline(fa, make_config(), run_drt=True, drt_mode="nuts")
+    with pytest.raises(InvalidAnalysisInput, match="Étape inconnue"):
+        run_pipeline([dict(fa[0], step="sonde")], make_config(**_NO_DRT))
+    assert loaded == []
+
+
+def test_unknown_model_names_no_longer_exist_as_an_api():
+    """Le registre (``active_models``) a disparu : un seul moteur de fit, une DRT."""
+    with pytest.raises(TypeError):
+        run_pipeline([], make_config(), active_models=["randles_full"])
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# D. DRT sur chaque réplicat ET sur la moyenne (moteur factice)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_drt_runs_on_every_raw_replicate_and_on_the_mean(with_fake_drt):
+    """CORRIGÉ : la DRT était « volontairement exclue » des réplicats."""
+    s = with_fake_drt.session
+    assert with_fake_drt.fake.calls == [
+        ("probe_r0.txt", "optimize"), ("probe_r1.txt", "optimize"), ("probe_r2.txt", "optimize"),
+        ("probe_r0.txt (avg)", "optimize"),
+        ("c1_r0.txt", "optimize"), ("c1_r1.txt", "optimize"), ("c1_r2.txt", "optimize"),
+        ("c1_r0.txt (avg)", "optimize"),
+    ]
+    assert s.drt_mode == "optimize"
+    for _lbl, mean_sp, reps, _an in _groups(s):
+        for sp in reps + [mean_sp]:
+            assert list(sp.fit_results) == [ORAZEM_MODEL_NAME, DRT_MODEL_NAME]
+
+
+def test_drt_aggregate_in_map_mode_reports_inter_replicate_spread_only(with_fake_drt):
+    """En MAP, pas d'incertitude a posteriori : l'intra-fit est NaN (« non calculé »,
+    jamais 0) et l'incertitude de la moyenne vient de la seule dispersion."""
+    for _lbl, _m, reps, an in _groups(with_fake_drt.session):
+        d = an.drt_target
+        values = [r.fit_results[DRT_MODEL_NAME].target_value for r in reps]
+        assert d.name == "Rct" and d.n == 3
+        assert d.mean == pytest.approx(np.mean(values))
+        assert d.std_between == pytest.approx(np.std(values, ddof=1))
+        assert math.isnan(d.std_within) and math.isnan(d.q_pvalue)
+        assert d.sem == pytest.approx(d.std_between / math.sqrt(3))
+
+
+def test_drt_aggregate_with_posterior_uncertainty_uses_the_orazem_aggregation():
+    reps = []
+    for k, v in enumerate((100.0, 104.0, 98.0)):
+        sp = EISSpectrum(label=f"r{k}", f=np.ones(3), Zre=np.ones(3), Zim=np.ones(3),
+                         concentration=0.0, step="probe", n_points=3)
+        sp.fit_results[DRT_MODEL_NAME] = dataclasses.replace(
+            _FakeDRT()(sp, mode="sample"), target_value=v)
+        reps.append(sp)
+    d = aggregate_drt_target(reps)
+    assert d.std_within == pytest.approx(5.0) and not math.isnan(d.q_pvalue)
+    assert aggregate_drt_target([EISSpectrum("x", np.ones(2), np.ones(2), np.ones(2), 0, "p", 2)]) is None
+
+
+def test_drt_mode_comes_from_the_argument_before_the_config(fake_drt):
+    session, _ = run_pipeline(replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe"),
+                              make_config(mode="optimize"), drt_mode="sample")
+    assert {m for _l, m in fake_drt.calls} == {"sample"} and session.drt_mode == "sample"
+    session, _ = run_pipeline(replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe"),
+                              make_config(mode="sample"), run_drt=False)
+    assert session.drt_mode is None and DRT_MODEL_NAME not in session.probe.fit_results
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# E. recompute_drt (moteur factice)
+# ═════════════════════════════════════════════════════════════════════════════
 
 def test_iter_session_spectra_order_and_labels(nominal):
     labels = [label for label, _sp in _iter_session_spectra(nominal.session)]
@@ -636,170 +673,244 @@ def test_iter_session_spectra_order_and_labels(nominal):
     assert list(_iter_session_spectra(EISSession())) == []
 
 
-@pytest.mark.parametrize("label", [
-    "bare", "bare#0", "probe", "probe#2", "1.00e-09", "1.00e-09#1", "1.00e-08", "1.00e-08#2",
-])
-def test_recompute_drt_resolves_a_spectrum_by_session_label(nominal, stub_registry, label):
-    stub = stub_registry["drt_bayes"] = _StubModel("drt_bayes")
-    expected = dict(_iter_session_spectra(nominal.session))[label]
+@pytest.mark.parametrize("label", ["probe", "probe#2", "1.00e-09", "1.00e-09#1"])
+def test_recompute_drt_resolves_a_spectrum_by_session_label(with_fake_drt, fake_drt, label):
+    s = with_fake_drt.session
+    expected = dict(_iter_session_spectra(s))[label]
 
-    fr = recompute_drt(nominal.session, label, nominal.cfg)
+    fr = recompute_drt(s, label, with_fake_drt.cfg)
 
-    assert _resolve_spectrum(nominal.session, label) is expected
-    assert len(stub.calls) == 1
-    assert expected.fit_results["drt_bayes"] is fr          # le résultat REMPLACE/PLACE l'entrée
-    assert stub.calls[0][0] == expected.label
+    assert _resolve_spectrum(s, label) is expected
+    assert fake_drt.calls == [(expected.label, "sample")]
+    assert expected.fit_results[DRT_MODEL_NAME] is fr
 
 
-def test_recompute_drt_accepts_a_spectrum_object_even_outside_the_session(nominal, stub_registry):
-    stub_registry["drt_bayes"] = _StubModel("drt_bayes")
-    foreign = EISSpectrum(
-        label="hors session", f=np.logspace(5, -1, 10), Zre=np.ones(10), Zim=np.ones(10),
-        concentration=0.0, step="probe", n_points=10,
-    )
-    assert _resolve_spectrum(nominal.session, foreign) is foreign   # aucune vérification d'appartenance
-    fr = recompute_drt(nominal.session, foreign, nominal.cfg)
-    assert foreign.fit_results["drt_bayes"] is fr
+def test_recompute_drt_on_a_group_label_now_reaches_group_fit_results(with_fake_drt, fake_drt):
+    """CORRIGÉ (était « COMPORTEMENT ACTUEL BOGUÉ ») : le recalcul sur un groupe écrivait
+    dans ``group.spectrum.fit_results`` sans atteindre ``group.fit_results`` ; les deux
+    copies divergeaient. Ce n'est plus qu'un seul dictionnaire."""
+    group = with_fake_drt.session.groups[0]
+    fr = recompute_drt(with_fake_drt.session, "1.00e-09", with_fake_drt.cfg, mode="optimize")
+    assert group.fit_results[DRT_MODEL_NAME] is fr is group.spectrum.fit_results[DRT_MODEL_NAME]
 
 
-def test_recompute_drt_unknown_spectrum_raises_value_error(nominal, stub_registry):
-    stub = stub_registry["drt_bayes"] = _StubModel("drt_bayes")
+def test_recompute_drt_on_a_replicate_refreshes_the_group_aggregate(fake_drt):
+    session, _ = run_pipeline(replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe"),
+                              make_config(mode="optimize"))
+    an = session.probe_analysis
+    before = an.drt_target
+    rep = session.probe_replicate_spectra[1]
+
+    fr = recompute_drt(session, rep, session.config, mode="sample")
+
+    assert rep.fit_results[DRT_MODEL_NAME] is fr and fr.drt_mode == "sample"
+    assert an.drt_target is not before and an.drt_target.n == 3
+    assert any("modes DRT différents" in w for w in an.warnings)
+    for r in session.probe_replicate_spectra:                       # tous en 'sample'
+        recompute_drt(session, r, session.config, mode="sample")
+    assert not any("modes DRT différents" in w for w in an.warnings)
+    assert an.drt_target.std_within == pytest.approx(5.0)          # a posteriori disponible
+
+
+def test_recompute_drt_clears_a_recorded_drt_failure(fake_drt):
+    fake_drt.fail = {"probe_r0.txt": RuntimeError("CmdStan a échoué")}
+    session, _ = run_pipeline(replicate_assignments("probe", 0.0, _RCT_PROBE, 3, 0, "probe"),
+                              make_config(mode="optimize"))
+    an = session.probe_analysis
+    assert "probe_r0.txt" in an.drt_failures and an.drt_target.n == 2
+    fake_drt.fail = {}
+    recompute_drt(session, "probe#0", session.config, mode="optimize")
+    assert an.drt_failures == {} and an.drt_target.n == 3
+    assert not any(w.startswith("DRT de « probe_r0.txt »") for w in an.warnings)
+
+
+def test_recompute_drt_accepts_a_spectrum_object_even_outside_the_session(with_fake_drt, fake_drt):
+    foreign = EISSpectrum(label="hors session", f=np.logspace(5, -1, 10), Zre=np.ones(10),
+                          Zim=np.ones(10), concentration=0.0, step="probe", n_points=10)
+    assert _resolve_spectrum(with_fake_drt.session, foreign) is foreign
+    fr = recompute_drt(with_fake_drt.session, foreign, with_fake_drt.cfg)
+    assert foreign.fit_results[DRT_MODEL_NAME] is fr
+
+
+def test_recompute_drt_unknown_spectrum_or_mode_raises(with_fake_drt, fake_drt):
     with pytest.raises(ValueError, match="Spectre introuvable dans la session : 'probe#9'"):
-        recompute_drt(nominal.session, "probe#9", nominal.cfg)
-    assert stub.calls == []
+        recompute_drt(with_fake_drt.session, "probe#9", with_fake_drt.cfg)
+    with pytest.raises(InvalidAnalysisInput):
+        recompute_drt(with_fake_drt.session, "probe", with_fake_drt.cfg, mode="nuts")
+    assert fake_drt.calls == []
 
 
-def test_recompute_drt_forces_the_mode_without_mutating_the_shared_config(nominal, stub_registry):
-    stub = stub_registry["drt_bayes"] = _StubModel("drt_bayes")
-    cfg = nominal.cfg
-    assert cfg["fit"]["drt"]["mode"] == "optimize"        # défaut du YAML
-
-    fr = recompute_drt(nominal.session, "probe", cfg)                  # mode par défaut = 'sample'
-    received = stub.calls[-1][1]
-    assert received["fit"]["drt"]["mode"] == "sample"
-    assert fr.drt_mode == "sample"
-    assert received["fit"]["error_structure"] == cfg["fit"]["error_structure"]   # reste préservé
-
-    recompute_drt(nominal.session, "probe", cfg, mode="optimize")
-    assert stub.calls[-1][1]["fit"]["drt"]["mode"] == "optimize"
-
-    # La config partagée n'a jamais été modifiée (copie des dicts imbriqués).
+def test_recompute_drt_forces_the_mode_without_mutating_the_config(with_fake_drt, fake_drt):
+    cfg = with_fake_drt.cfg
     assert cfg["fit"]["drt"]["mode"] == "optimize"
-    assert received is not cfg and received["fit"] is not cfg["fit"]
-    assert received["fit"]["drt"] is not cfg["fit"]["drt"]
+    fr = recompute_drt(with_fake_drt.session, "probe", cfg)          # défaut = 'sample'
+    assert fake_drt.calls[-1][1] == "sample" and fr.drt_mode == "sample"
+    recompute_drt(with_fake_drt.session, "probe", None, mode="optimize")   # config absente tolérée
+    assert fake_drt.calls[-1][1] == "optimize"
+    assert cfg["fit"]["drt"]["mode"] == "optimize"
 
 
-def test_recompute_drt_tolerates_a_missing_config(nominal, stub_registry):
-    stub = stub_registry["drt_bayes"] = _StubModel("drt_bayes")
-    recompute_drt(nominal.session, "probe", None, mode="optimize")
-    assert stub.calls[0][1] == {"fit": {"drt": {"mode": "optimize"}}}
-
-
-def test_recompute_drt_on_a_group_label_does_not_touch_group_fit_results(nominal, stub_registry):
-    """COMPORTEMENT ACTUEL BOGUÉ (observation non listée dans l'audit).
-
-    Pour un label de groupe (« 1.00e-09 »), le résultat est rangé dans
-    ``group.spectrum.fit_results`` alors que le pipeline avait rangé les fits du
-    groupe dans ``group.fit_results`` : le recalcul n'atteint jamais ce dernier.
-    Voir aussi la version DRT réelle (section E), où les deux copies divergent.
-    """
-    stub_registry["drt_bayes"] = _StubModel("drt_bayes")
-    group = nominal.session.groups[0]
-
-    fr = recompute_drt(nominal.session, "1.00e-09", nominal.cfg, mode="optimize")
-
-    assert group.spectrum.fit_results["drt_bayes"] is fr
-    assert "drt_bayes" not in group.fit_results
+def test_recompute_drt_propagates_engine_failures_to_the_caller(with_fake_drt, fake_drt):
+    fake_drt.fail = {"probe_r0.txt (avg)": RuntimeError("CmdStan a échoué")}
+    with pytest.raises(RuntimeError, match="CmdStan"):
+        recompute_drt(with_fake_drt.session, "probe", with_fake_drt.cfg)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# E. DRT réelle de bout en bout — sautée sans CmdStan, exécutée par le job CI « drt »
+# F. Tables de résultats (UI + export) : intra-fit et inter-réplicats côte à côte
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_group_rows_put_intra_fit_and_inter_replicate_side_by_side(with_fake_drt):
+    rows = group_rows({1: with_fake_drt.session})
+    assert [r["group"] for r in rows] == ["Probe", "1.00e-09 M"]
+    for r, (_l, _m, _reps, an) in zip(rows, _groups(with_fake_drt.session)):
+        t = an.orazem.target
+        assert r["status"] == GROUP_OK and r["kk_conform"] is True
+        assert (r["fit_mean"], r["fit_std_between"], r["fit_std_within"], r["fit_sem"]) == (
+            t.mean, t.std_between, t.std_within, t.sem)
+        assert r["fit_mean_spectrum"] == an.orazem.mean_fit.target_value
+        assert r["drt_mode"] == "optimize" and r["drt_n_used"] == 3
+        assert math.isnan(r["drt_std_within"]) and r["drt_std_between"] > 0
+
+
+def test_replicate_rows_carry_hmc_diagnostics_only_in_sample_mode(with_fake_drt, fake_drt):
+    s = with_fake_drt.session
+    for r in s.probe_replicate_spectra:
+        recompute_drt(s, r, with_fake_drt.cfg, mode="sample")
+    rows = [r for r in replicate_rows({1: s}) if r["group"] == "Probe"]
+    assert [r["kind"] for r in rows] == ["réplicat"] * 3 + ["moyenne"]
+    for r in rows[:3]:
+        assert (r["drt_mode"], r["drt_rhat_max"], r["drt_divergences"]) == ("sample", 1.002, 0)
+        assert r["drt_ess_bulk_min"] == 900.0 and r["drt_Rct_std_intra"] == 5.0
+        assert r["fit_value"] > 0 and r["fit_std_intra"] > 0
+        assert r["fit_chi2_ci_low"] < r["fit_chi2_ci_high"]
+    mean_row = rows[3]
+    assert mean_row["drt_mode"] == "optimize" and mean_row["drt_rhat_max"] is None   # MAP : n/a
+    assert drt_hmc_summary(s.probe.fit_results[DRT_MODEL_NAME])["divergences"] is None
+
+
+def test_group_rows_of_a_stopped_group_carry_the_status_and_message():
+    session, _ = run_pipeline(_single_file_assignments(), make_config(**_NO_DRT))
+    rows = group_rows({1: session})
+    assert {r["status"] for r in rows} == {GROUP_ERROR_STRUCTURE_UNAVAILABLE}
+    assert all("structure d'erreur non caractérisable" in r["message"] for r in rows)
+    assert all("fit_mean" not in r for r in rows)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# G. DRT réelle de bout en bout — sautée sans CmdStan, exécutée par le job CI « drt »
 # ═════════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture(scope="module")
-def drt_run(tmp_path_factory):
-    """Scénario de l'Annexe A.2 (60 points, Randles bruités à 0,5 %), DRT seule."""
-    cfg = make_config(tmp_path_factory.mktemp("drt") / "es.json")
+def drt_run():
+    """Scénario de l'Annexe A.2 (60 points, Randles bruités à 0,5 %), DRT MAP réelle."""
+    if not _HAVE_CMDSTAN:
+        pytest.skip(f"DRT réelle : {_WHY_NOT}")
     n = N_POINTS_AUDIT
     fa = (replicate_assignments("probe", 0.0, 3000.0, 3, 0, "probe", n_points=n)
-          + replicate_assignments("hybridization", 1e-9, 3500.0, 3, 10, "c1", n_points=n)
-          + replicate_assignments("hybridization", 1e-8, 4200.0, 3, 13, "c2", n_points=n))
-    session, val = run_pipeline(fa, cfg, active_models=["drt_bayes"])
+          + replicate_assignments("hybridization", 1e-9, 3500.0, 3, 10, "c1", n_points=n))
+    cfg = make_config(enabled=True, mode="optimize")
+    session, val = run_pipeline(fa, cfg)
     return SimpleNamespace(session=session, validation=val, cfg=cfg)
 
 
 @_NEEDS_CMDSTAN
-def test_drt_default_map_is_silently_wrong_on_randles_like_spectra(drt_run):
-    """COMPORTEMENT ACTUEL BOGUÉ — cf AUDIT.md DRT-1 / DRT-2, à corriger lors de la refonte.
-
-    Reproduit l'Annexe A.2/§4.4 : avec les réglages par défaut du vendor
-    (``init_from_ridge=False``, ``nonneg=False``, graine 1234), le MAP tombe dans un
-    optimum dégénéré sur des spectres de type Randles. Mesuré : Rct_drt = −6080 /
-    −7130 / −8410 Ω et Rp < 0, mais ``converged=True`` (codé en dur) et
-    ``warnings=[]`` : aucun garde-fou ne le voit.
-
-    Seuls les SIGNES sont figés (pas les valeurs) : l'optimum dégénéré dépend de
-    l'initialisation Stan. Un correctif de la DRT doit faire échouer ce test.
-    """
-    s = drt_run.session
-    fits = [s.probe.fit_results["drt_bayes"]] + [g.fit_results["drt_bayes"] for g in s.groups]
-    assert len(fits) == 3
-    for fr in fits:
-        assert fr.target_value < 0
-        assert fr.params["Rp"] < 0
-        assert fr.params["rct_source"] == "peak_penultimate"
-        assert fr.converged is True            # codé en dur (DRT-2)
-        assert fr.warnings == []               # aucune garde qualité (DRT-2)
-        assert fr.drt_mode == "optimize"
-        assert fr.model_name == "drt_bayes"
+def test_real_drt_map_is_correct_on_every_replicate_and_mean(drt_run):
+    """CORRIGÉ (était « COMPORTEMENT ACTUEL BOGUÉ — DRT-1/DRT-2 ») : avec les réglages
+    amont, le MAP rendait Rct < 0 et Rp < 0 sur ces spectres, ``converged=True`` codé en
+    dur et aucune alerte. Le moteur drt/engine.py (nonneg, init ridge) rend des valeurs
+    correctes, sur chaque réplicat ET sur la moyenne."""
+    truths = [3000.0, 3500.0]
+    for (_lbl, mean_sp, reps, an), rct in zip(_groups(drt_run.session), truths):
+        for sp in reps + [mean_sp]:
+            fr = sp.fit_results[DRT_MODEL_NAME]
+            assert fr.drt_mode == "optimize" and fr.converged is True
+            assert fr.params["Rp"] > 0 and fr.target_value > 0
+            assert fr.target_value == pytest.approx(rct, rel=0.08)
+            assert np.all(fr.drt_gamma >= 0)
+        assert an.drt_failures == {}
+        assert an.drt_target.n == 3 and an.drt_target.mean == pytest.approx(rct, rel=0.08)
+        assert math.isnan(an.drt_target.std_within)                    # MAP : non calculé
 
 
 @_NEEDS_CMDSTAN
-def test_drt_runs_on_averaged_spectra_only(drt_run):
-    s = drt_run.session
-    assert all(r.fit_results == {} for r in s.probe_replicate_spectra)
-    assert all(r.fit_results == {} for g in s.groups for r in g.replicate_spectra)
-    assert [g.spectrum.fit_results for g in s.groups] == [{}, {}]      # asymétrie (cf. section A)
-
-
-@_NEEDS_CMDSTAN
-def test_recompute_drt_real_optimize_is_deterministic_and_replaces_the_result(drt_run):
+def test_real_recompute_drt_optimize_is_deterministic(drt_run):
     s, cfg = drt_run.session, drt_run.cfg
-    previous = s.probe.fit_results["drt_bayes"]
-
+    previous = s.probe.fit_results[DRT_MODEL_NAME]
     fr = recompute_drt(s, "probe", cfg, mode="optimize")
-
-    assert fr is not previous
-    assert s.probe.fit_results["drt_bayes"] is fr
-    assert fr.drt_mode == "optimize"
-    assert fr.target_value == pytest.approx(previous.target_value, rel=1e-6)   # même graine, même optimum
-
-
-@_NEEDS_CMDSTAN
-def test_recompute_drt_real_on_a_replicate_and_on_a_group(drt_run):
-    s, cfg = drt_run.session, drt_run.cfg
-    rep = s.probe_replicate_spectra[0]
-    assert "drt_bayes" not in rep.fit_results
-    fr_rep = recompute_drt(s, "probe#0", cfg, mode="optimize")
-    assert rep.fit_results["drt_bayes"] is fr_rep
-
-    # COMPORTEMENT ACTUEL BOGUÉ (observation non listée dans l'audit) : sur un groupe,
-    # le recalcul crée une SECONDE copie dans group.spectrum.fit_results ; celle du
-    # pipeline, dans group.fit_results, n'est pas remplacée — les deux coexistent.
-    group = s.groups[0]
-    original = group.fit_results["drt_bayes"]
-    fr_group = recompute_drt(s, "1.00e-09", cfg, mode="optimize")
-    assert group.spectrum.fit_results["drt_bayes"] is fr_group
-    assert group.fit_results["drt_bayes"] is original
-    assert fr_group is not original
+    assert fr is not previous and s.probe.fit_results[DRT_MODEL_NAME] is fr
+    assert fr.target_value == pytest.approx(previous.target_value, rel=1e-6)   # même graine
 
 
 @_NEEDS_CMDSTAN
 @pytest.mark.slow
-def test_recompute_drt_real_sample_mode_returns_credible_bounds(drt_run):
-    """HMC (~30 s) : le mode 'sample' est celui du bouton « recalculer » de l'UI."""
-    fr = recompute_drt(drt_run.session, "probe", drt_run.cfg, mode="sample")
-    assert fr.drt_mode == "sample"
-    assert fr.drt_gamma_lo is not None and fr.drt_gamma_hi is not None
-    assert len(fr.drt_gamma_lo) == len(fr.drt_gamma) == len(fr.drt_tau)
-    assert drt_run.session.probe.fit_results["drt_bayes"] is fr
+def test_real_recompute_drt_sample_on_a_replicate_exposes_hmc_diagnostics(drt_run):
+    """HMC (2 à 5 min) sur UN réplicat : intervalles, R-hat/divergences lus et visibles
+    dans les tables, agrégat du groupe recalculé (et signalé : modes mélangés)."""
+    s, cfg = drt_run.session, drt_run.cfg
+    rep = s.probe_replicate_spectra[0]
+    fr = recompute_drt(s, rep, cfg, mode="sample")
+    assert fr.drt_mode == "sample" and fr.drt_gamma_lo is not None
+    h = drt_hmc_summary(fr)
+    assert h["rhat_max"] is not None and h["divergences"] is not None
+    assert np.isfinite(fr.target_std) and fr.target_std > 0
+    row = next(r for r in replicate_rows({1: s}) if r["spectrum"] == rep.label)
+    assert row["drt_rhat_max"] == h["rhat_max"] and row["drt_divergences"] == h["divergences"]
+    assert any("modes DRT différents" in w for w in s.probe_analysis.warnings)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# H. Propagation jusqu'à l'UI (Streamlit AppTest, page EIS réelle)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _experiment_clean(n_rep):
+    import io
+    probe = [io.BytesIO(randles_file(_RCT_PROBE, seed=k)) for k in range(n_rep)]
+    c1 = [io.BytesIO(randles_file(_RCT_C1, seed=10 + k)) for k in range(n_rep)]
+    return {"mode": "eis_only", "n_electrodes": 1, "concentrations": [_C1],
+            "probe": {"eis": {"electrode_1": probe}}, "calibration": {"eis": {"electrode_1": [c1]}}}
+
+
+def _run_eis_page(monkeypatch, experiment):
+    import streamlit
+    from streamlit.testing.v1 import AppTest
+
+    # Une page lancée seule (sans st.navigation) ne peut pas résoudre st.page_link.
+    monkeypatch.setattr(streamlit, "page_link", lambda *a, **k: None)
+    at = AppTest.from_file(str(REPO / "pages" / "A_eis.py"), default_timeout=300)
+    at.session_state["preprocessing_done"] = True
+    at.session_state["experiment_clean"] = experiment
+    at.session_state["eis_drt_enabled"] = False                # DRT décochée : test rapide
+    at.run()
+    return at
+
+
+def test_ui_err1_fixed_the_eis_page_shows_the_stopped_groups_and_no_success(monkeypatch):
+    """CORRIGÉ (ERR-1, côté UI) : l'ancienne page affichait « ✅ Analyse terminée — 2
+    groupe(s) » sur des fits vides. Elle affiche maintenant le message de CHAQUE groupe
+    arrêté et un bilan en erreur, jamais le succès."""
+    at = _run_eis_page(monkeypatch, _experiment_clean(n_rep=1))
+    assert not at.exception, [e.value for e in at.exception]
+    errors = [e.value for e in at.error]
+    assert sum("structure d'erreur non caractérisable" in e for e in errors) >= 2
+    assert any("2 groupe(s) ARRÊTÉ(S)" in e for e in errors)
+    assert not any("Analyse terminée —" in s.value for s in at.success)
+
+
+def test_ui_a_complete_analysis_reports_success(monkeypatch):
+    at = _run_eis_page(monkeypatch, _experiment_clean(n_rep=3))
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("Analyse terminée — 2 groupe(s) analysé(s)" in s.value for s in at.success)
+    sessions = at.session_state["eis_sessions"]
+    assert sessions[1].probe_analysis.ok and ORAZEM_MODEL_NAME in sessions[1].probe.fit_results
+
+
+def test_ui_a_software_bug_is_shown_as_such_not_as_a_data_problem(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("bug simulé")
+
+    monkeypatch.setattr(pipeline, "fit_replicate_group", boom)
+    at = _run_eis_page(monkeypatch, _experiment_clean(n_rep=3))
+    assert any("Erreur LOGICIELLE" in e.value for e in at.error)
+    assert any("bug simulé" in str(e.value) for e in at.exception)     # trace affichée (st.exception)
+    assert "eis_sessions" not in at.session_state                       # rien de faux n'est stocké

@@ -38,7 +38,7 @@ utilisateur).
   71 pts 1e5→1e-2 Hz (= scénario de `tests/test_drt.py`), 60 pts 1e5→1e-1, 40 pts 1e5→1e-1,
   80 pts 1e6→1e-1, sans bruit ; 60 pts avec bruit complexe 0,5 % (graine de bruit 0) et graine Stan
   1234 (défaut amont), 1, 2, 3.
-* **A.4** — Randles complet (`fits.physics.Z_randles_full` : Re 200, R'e 20, Cb 1 nF, Qdl 2 µF,
+* **A.4** — Randles complet (ancien `fits.physics.Z_randles_full`, aujourd'hui l'expression par défaut de `fit.circuit` construite par `circuit.parse_circuit` — identique à 1e-12 : Re 200, R'e 20, Cb 1 nF, Qdl 2 µF,
   α 0,9, R_D = 0,3·Rct, τ_d 0,5 s), Rct = 3000 / 3500 / 4200 / 5200 Ω, 60 pts 1e5→1e-1 Hz, bruit
   0,5 % (graine = Rct). **Rp vrai = R'e + Rct + R_D = 20 + 1,3·Rct** (Z(0) − Z(∞)). ⚠️ Les 20 Ω de
   R'e relaxent à τ ≈ R'e·Cb ≈ 2·10⁻⁸ s, hors de la fenêtre mesurée (τ ≥ 1,6·10⁻⁶ s) : les données ne

@@ -1,6 +1,6 @@
 """
 setup_drt_bayesien.py — installe/enregistre CmdStan (toolchain C++ incluse) puis
-précompile le modèle Stan vendoré du DRT bayésien, afin que la première analyse
+précompile les modèles Stan de la DRT bayésienne (drt/bayes_drt2), afin que la première analyse
 ne paie pas le coût de compilation.
 
 Deux points d'entrée :
@@ -31,7 +31,7 @@ import re
 import sys
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
-# Le paquet vendoré (Inverter + modèles .stan) est résolu depuis le dépôt,
+# Le paquet drt/bayes_drt2 (Inverter + modèles .stan) est résolu depuis le dépôt,
 # quel que soit le répertoire courant.
 if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
@@ -104,16 +104,16 @@ def verify():
 
 
 def precompile():
-    """Instancie l'Inverter puis compile les modèles Stan vendorés (sans sampling).
+    """Instancie l'Inverter puis compile les modèles Stan de drt/bayes_drt2 (sans sampling).
 
-    Instancier l'Inverter valide l'import du paquet vendoré et résout le dossier
+    Instancier l'Inverter valide l'import du paquet et résout le dossier
     des ``.stan``. La compilation via ``CmdStanModel`` met en cache l'exécutable ;
     aucun échantillonnage n'est lancé.
     """
     from cmdstanpy import CmdStanModel
 
-    from vendor.bayes_drt2 import inversion
-    from vendor.bayes_drt2.inversion import Inverter
+    from drt.bayes_drt2 import inversion
+    from drt.bayes_drt2.inversion import Inverter
 
     Inverter()  # honore « instancie l'Inverter » + valide l'import du paquet
     stan_dir = os.path.join(os.path.dirname(inversion.__file__), "stan_model_files")
@@ -136,15 +136,18 @@ def precompile():
 
 
 def _series_exe_exists() -> bool:
-    """True si l'exécutable compilé de ``Series.stan`` (modèle DRT par défaut) existe."""
+    """True si les exécutables compilés de ``STAN_TARGETS`` existent tous (``Series_pos`` :
+    modèle par défaut du moteur, ``drt.engine.DEFAULT_NONNEG`` ; ``Series`` : nonneg=False)."""
     try:
-        from vendor.bayes_drt2 import inversion
+        from drt.bayes_drt2 import inversion
     except Exception:
         return False
     stan_dir = os.path.join(os.path.dirname(inversion.__file__), "stan_model_files")
-    stan_file = os.path.join(stan_dir, "Series.stan")
-    exe = stan_file[:-len(".stan")] + (".exe" if os.name == "nt" else "")
-    return os.path.exists(exe)
+    for name in STAN_TARGETS:
+        exe = os.path.join(stan_dir, name)[:-len(".stan")] + (".exe" if os.name == "nt" else "")
+        if not os.path.exists(exe):
+            return False
+    return True
 
 
 def ensure_drt_ready(parent: str = None, force: bool = False):

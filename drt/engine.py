@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """drt/engine.py — moteur DRT durci autour de ``drt.bayes_drt2.Inverter``.
 
-Remplace, à terme (étape 5 de la refonte), ``fits/drt_fit.py`` + ``vendor/``. Aucun import
-Streamlit ; ne dépend ni de ``fits/drt_fit.py`` ni de ``vendor/``.
+Moteur DRT UNIQUE de l'application depuis l'étape 5 de la refonte (il a remplacé
+``fits/drt_fit.py`` + ``vendor/``, supprimés). Aucun import Streamlit ; aucun import de
+``core`` (sens de dépendance ``core`` → ``drt`` → ``fits.result``, AUDIT.md CPL-1) : le
+spectre est lu par ses seuls attributs ``f``, ``Zre``, ``Zim``.
 
 Ce que ce module ajoute à ``Inverter`` (et pourquoi — AUDIT.md §4)
 ------------------------------------------------------------------
@@ -19,16 +21,16 @@ Ce que ce module ajoute à ``Inverter`` (et pourquoi — AUDIT.md §4)
 * ``params['tau_Rct']`` en **secondes** (correction de DRT-4 : c'était ln τ).
 * ``chi2_reduced = NaN`` : la DRT ne calcule pas de χ² pondéré ; l'erreur de
   reconstruction relative a son propre champ ``reconstruction_error_relative`` (max) et
-  ``reconstruction_error`` suit la formule RMS de ``fits/randles_full.py`` (DRT-5).
+  ``reconstruction_error`` suit la formule RMS du fit Orazem (DRT-5).
 
-Conventions (inchangées par rapport à ``fits/drt_fit.py``)
+Conventions (inchangées par rapport à l'ancien ``fits/drt_fit.py``)
 ----------------------------------------------------------
 * Le loader stocke ``Zim = −Im(Z) > 0`` ; bayes_drt2 attend ``Z = Zre − j·Zim``.
 * Fréquences **mesurées** triées HF→BF avant l'inversion ; tout est remis dans l'ordre
   d'origine en sortie.
 * ``Rct`` : convention « Bissessur » — pic **pénultième** de γ(τ), aire trapèze sur
   ±3 en ln τ ; un seul pic → ``peak_single`` (signalé) ; aucun → repli ``Rp`` (signalé).
-  Seule différence avec ``fits/drt_fit.py`` : les pics candidats sont pris DANS la fenêtre
+  Seule différence avec l'ancien ``fits/drt_fit.py`` : les pics candidats sont pris DANS la fenêtre
   de τ mesurée (:data:`RCT_PEAKS_IN_MEASURED_WINDOW`, justification mesurée dans
   VALIDATION_REGLAGES.md §5). AUDIT.md DRT-10 n'est traité qu'en partie : une ondulation
   située DANS la fenêtre pourrait encore être prise pour un pic.
@@ -44,8 +46,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from core.models import EISSpectrum, FitResult
 from drt import diagnostics as dg
+from fits.result import FitResult
 
 DIST_NAME = "DRT"
 MODEL_NAME = "drt_bayes"
@@ -133,12 +135,22 @@ def _import_inverter():
     return Inverter
 
 
-def engine_available() -> Tuple[bool, Optional[str]]:
-    """(True, None) si bayes_drt2 est importable ET CmdStan installé, sinon (False, raison)."""
+def library_available() -> Tuple[bool, Optional[str]]:
+    """(True, None) si bayes_drt2 et ses dépendances Python (cvxopt, cmdstanpy) sont
+    importables, sinon (False, raison). Ne vérifie PAS CmdStan (voir ``engine_available``) :
+    sert au démarrage de l'app, qui installe CmdStan si besoin (``setup_drt_bayesien``)."""
     try:
         _import_inverter()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — toute cause d'import rend la DRT indisponible
         return False, f"bayes_drt2 non importable : {exc}"
+    return True, None
+
+
+def engine_available() -> Tuple[bool, Optional[str]]:
+    """(True, None) si bayes_drt2 est importable ET CmdStan installé, sinon (False, raison)."""
+    ok, why = library_available()
+    if not ok:
+        return ok, why
     try:
         import cmdstanpy
 
@@ -195,7 +207,7 @@ def rct_window(tau: np.ndarray, gamma: np.ndarray,
                ) -> Tuple[Optional[np.ndarray], Optional[int], str, str]:
     """Choisit le pic de transfert de charge et sa fenêtre d'intégration.
 
-    Sélection identique à ``fits/drt_fit._extract_rct_peak`` (maxima au-dessus de
+    Sélection identique à l'ancien ``fits/drt_fit._extract_rct_peak`` (maxima au-dessus de
     1e-3·max, bords de grille écartés, pic **pénultième**), avec UNE différence
     (constante :data:`RCT_PEAKS_IN_MEASURED_WINDOW`) : si ``tau_bounds`` est fourni, seuls
     les maxima situés DANS la fenêtre mesurée sont candidats. Mesuré
@@ -281,7 +293,7 @@ def _posterior_gamma_draws(inv, tau: np.ndarray, gamma_mean: np.ndarray) -> Opti
 # ─────────────────────────────────────────────────────────────────────────────
 # Inversion
 # ─────────────────────────────────────────────────────────────────────────────
-def _validate_spectrum(spectrum: EISSpectrum) -> Tuple[np.ndarray, np.ndarray]:
+def _validate_spectrum(spectrum) -> Tuple[np.ndarray, np.ndarray]:
     f = np.asarray(spectrum.f, dtype=float)
     zre = np.asarray(spectrum.Zre, dtype=float)
     zim = np.asarray(spectrum.Zim, dtype=float)
@@ -298,7 +310,7 @@ def _validate_spectrum(spectrum: EISSpectrum) -> Tuple[np.ndarray, np.ndarray]:
     return f, zre - 1j * zim
 
 
-def fit_drt(spectrum: EISSpectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG,
+def fit_drt(spectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = DEFAULT_NONNEG,
             init_from_ridge: bool = DEFAULT_INIT_FROM_RIDGE, random_seed: int = DEFAULT_RANDOM_SEED,
             chains: int = DEFAULT_CHAINS, warmup: int = DEFAULT_WARMUP, samples: int = DEFAULT_SAMPLES,
             adapt_delta: float = DEFAULT_ADAPT_DELTA, max_iter: int = DEFAULT_MAX_ITER,
@@ -306,7 +318,8 @@ def fit_drt(spectrum: EISSpectrum, *, mode: str = DEFAULT_MODE, nonneg: bool = D
     """DRT d'un spectre + diagnostics + gardes qualité → ``FitResult``.
 
     Args:
-        spectrum: spectre (convention ``Zim = −Im(Z) > 0``).
+        spectrum: objet portant ``f``, ``Zre``, ``Zim`` (convention ``Zim = −Im(Z) > 0``),
+            typiquement un ``core.models.EISSpectrum``.
         mode: ``'sample'`` (HMC, **défaut**) ou ``'optimize'`` (MAP, aperçu rapide sans
             diagnostic de convergence ni intervalle).
         nonneg, init_from_ridge: options de ``Inverter.fit`` (voir constantes ``DEFAULT_*``).

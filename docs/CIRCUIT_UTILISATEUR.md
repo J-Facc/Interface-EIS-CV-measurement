@@ -104,7 +104,8 @@ l'utilisateur ou estimée depuis le spectre.
 
 ## 3. Exemple complet annoté : le Randles complet de l'application
 
-Le circuit historiquement codé en dur (`fits/physics.py:Z_randles_full`) :
+Le circuit historiquement codé en dur (ancien `fits/physics.py:Z_randles_full`, supprimé ;
+c'est aujourd'hui le circuit PAR DÉFAUT de `config/default.yaml`, `fit.circuit`) :
 
 ```
 Z_eq = R'e + (Rct + Z_D) / [1 + Qdl·(jω)^α·(Rct + Z_D)]
@@ -132,8 +133,9 @@ Re + parallel(
 
 Paramètres détectés (ordre d'apparition) :
 `Re, Re_prime, Rct, R_D, tau_d, Qdl, alpha, Cb` — les 8 paramètres du Randles
-complet. Le test `tests/test_circuit_parser.py::test_full_randles_reconstruction_matches_fits_physics`
-vérifie que cette expression reproduit `Z_randles_full` à 10⁻¹² près.
+complet. Le test `tests/test_circuit_parser.py::test_full_randles_reconstruction_matches_the_closed_form`
+vérifie que cette expression reproduit la forme fermée de l'ancien `Z_randles_full`
+(gardée comme oracle dans `tests/synthetic_data.py`) à 10⁻¹² près.
 
 Variante simplifiée : `Re + parallel(R(Rct), Q(Qdl, alpha)) + ZD_bounded(w, D, delta)`
 (diffusion en série, hors de la branche faradique — ce n'est **pas** le même circuit).

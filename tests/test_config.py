@@ -1,44 +1,66 @@
-"""Tests pour core/config.py — cohérence YAML ↔ Pydantic des bornes de fit."""
+"""Tests pour core/config.py — circuit par défaut (fit.circuit) et réglages DRT."""
 
-from core.config import load_config, config_to_dict
-from fits.randles_full import RandlesFullModel, _PARAM_NAMES
+import math
+
+import pytest
+from pydantic import ValidationError
+
+from core.config import AppSettings, load_config, config_to_dict
+from core.pipeline import circuit_fit_from_config
+from circuit import parse_circuit
 
 
-def test_bounds_all_float():
-    """Toutes les bornes chargées sont des float (garde-fou anti-piège YAML 1.1).
-
-    Le résolveur float de YAML 1.1 ne reconnaît un exposant que s'il porte un
-    signe (1.0e+9, pas 1.0e9). Sans typage list[float], une borne comme
-    Rct: [100.0, 1.0e9] resterait la chaîne "1.0e9". Ce test échoue si le piège
-    revient (soit dans le YAML, soit par un champ Pydantic re-typé en list nu).
-    """
+def test_circuit_bounds_and_guesses_are_floats():
+    """Guess et bornes chargés depuis le YAML sont des float (garde-fou anti-piège YAML
+    1.1 : sans typage, « 1.0e9 » resterait une chaîne)."""
     cfg = config_to_dict(load_config())
-    bounds = cfg["fit"]["bounds_randles_full"]
-    for name, (lo, hi) in bounds.items():
-        assert isinstance(lo, float), f"borne basse {name} = {lo!r} n'est pas un float"
-        assert isinstance(hi, float), f"borne haute {name} = {hi!r} n'est pas un float"
+    for name, p in cfg["fit"]["circuit"]["parameters"].items():
+        for key in ("initial", "lower", "upper"):
+            v = p[key]
+            assert v is None or isinstance(v, float), f"{name}.{key} = {v!r} n'est pas un float"
 
 
-def test_bounds_keys_match_param_names():
-    """Les clés des bornes couvrent exactement les paramètres du modèle Randles.
+def test_default_circuit_parameters_match_the_expression_exactly():
+    """Les paramètres configurés couvrent EXACTEMENT ceux de l'expression (un nom en
+    trop ou manquant ferait refuser l'analyse par compile_circuit_fit)."""
+    c = config_to_dict(load_config())["fit"]["circuit"]
+    _z, names = parse_circuit(c["expression"])
+    assert set(c["parameters"]) == set(names)
+    assert c["target_param"] in names
 
-    Empêche la régression I2 : des clés Pydantic (ZD0/D_eff) divergentes des
-    clés YAML (R_D/tau_d) faisaient ignorer silencieusement les bornes de R_D et
-    tau_d au profit du fallback en dur de RandlesFullModel.bounds.
-    """
+
+def test_default_circuit_compiles_into_a_circuit_fit():
+    cf = circuit_fit_from_config(config_to_dict(load_config()))
+    assert cf.target_param == "Rct"
+    assert list(cf.param_names) == ["Re", "Re_prime", "Rct", "R_D", "tau_d", "Qdl", "alpha", "Cb"]
+    assert cf.specs["alpha"].lower == 0.3 and cf.specs["alpha"].upper == 1.0
+
+
+def test_yaml_and_pydantic_defaults_agree():
+    """Le YAML livré et les défauts Pydantic (sans YAML) décrivent le MÊME circuit."""
+    from_yaml = config_to_dict(load_config())["fit"]["circuit"]
+    from_code = config_to_dict(AppSettings())["fit"]["circuit"]
+    assert from_yaml == from_code
+
+
+def test_a_null_bound_means_unbounded():
     cfg = config_to_dict(load_config())
-    bounds_keys = set(cfg["fit"]["bounds_randles_full"].keys())
-    assert bounds_keys == set(_PARAM_NAMES), (
-        f"clés bornes {sorted(bounds_keys)} != paramètres {sorted(_PARAM_NAMES)}"
-    )
+    cfg["fit"]["circuit"]["parameters"]["Rct"]["upper"] = None
+    cfg["fit"]["circuit"]["parameters"]["Re"]["lower"] = None
+    cf = circuit_fit_from_config(cfg)
+    assert cf.specs["Rct"].upper == math.inf and cf.specs["Re"].lower == -math.inf
 
 
-def test_configured_bounds_are_read_by_model():
-    """Une borne modifiée dans la config est bien lue par RandlesFullModel.bounds
-    (y compris R_D/tau_d, autrefois ignorées)."""
-    cfg = config_to_dict(load_config())
-    cfg["fit"]["bounds_randles_full"]["R_D"] = [42.0, 4242.0]
-    cfg["fit"]["bounds_randles_full"]["Rct"] = [7.0, 7e7]
-    lo, hi = RandlesFullModel().bounds(cfg)
-    assert (lo["R_D"], hi["R_D"]) == (42.0, 4242.0)
-    assert (lo["Rct"], hi["Rct"]) == (7.0, 7e7)
+def test_drt_defaults_and_mode_validation():
+    drt = config_to_dict(load_config())["fit"]["drt"]
+    assert drt == {"enabled": True, "mode": "optimize"}
+    with pytest.raises(ValidationError, match="optimize"):
+        AppSettings.model_validate({"fit": {"drt": {"mode": "nuts"}}})
+
+
+def test_obsolete_persistence_keys_are_gone():
+    """La structure d'erreur n'est plus persistée (AUDIT.md ERR-2) : seule reste
+    min_replicates ; l'ancienne section bounds_randles_full a disparu."""
+    fit = config_to_dict(load_config())["fit"]
+    assert fit["error_structure"] == {"min_replicates": 3}
+    assert "bounds_randles_full" not in fit

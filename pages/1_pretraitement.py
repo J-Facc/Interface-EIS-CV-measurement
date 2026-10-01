@@ -23,6 +23,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from core.app_state import reset_analysis_results
 from core.loader import load_spectrum, average_replicates
 from core.cv_loader import load_cv_file, average_cv_replicates
 from core.experiment_io import apply_exclusions as _apply_exclusions
@@ -883,8 +884,9 @@ def _section_final_validation(experiment: dict, exclusions: dict) -> None:
 
         st.session_state["experiment_clean"] = exp_clean
         st.session_state["preprocessing_done"] = True
-        for key in ("eis_session", "eis_validation"):
-            st.session_state[key] = None
+        # Données modifiées → TOUTE analyse EIS/CV précédente est invalidée (B-STATE) :
+        # les pages d'analyse et l'export recalculent au lieu de réafficher l'ancienne.
+        reset_analysis_results(st.session_state)
 
         if experiment.get("mode") in ("eis_only", "both"):
             _run_kk_validation(exp_clean)

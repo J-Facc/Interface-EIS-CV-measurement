@@ -7,6 +7,7 @@ ui.tabs.render_cv_tabs (run_cv_pipeline + plotting.cv_plots).
 
 import streamlit as st
 
+from core.app_state import preprocessing_ready
 from core.cv_loader import load_cv_file, average_cv_replicates
 from core.cv_pipeline import run_cv_pipeline
 from ui.tabs import render_cv_tabs
@@ -92,23 +93,24 @@ def main() -> None:
     st.caption("Extraction des pics redox · Normalisation probe · Calibration par électrode")
 
     # Vérification que les données sont disponibles
-    if not st.session_state.get("preprocessing_done", False):
+    if not preprocessing_ready(st.session_state):
         st.warning(
             "⚠️ Aucune donnée disponible. "
             "Importez et prétraitez vos données d'abord."
         )
         st.page_link("pages/0_import.py", label="→ Aller à l'import", icon="📂")
         st.stop()
-        return
 
     # Récupérer les données prétraitées
     experiment = st.session_state["experiment_clean"]
 
     if st.button("↺ Relancer l'analyse", key="cv_rerun_btn"):
-        st.session_state.pop("cv_sessions", None)
+        st.session_state["cv_sessions"] = None
         st.rerun()
 
-    if "cv_sessions" not in st.session_state:
+    # None = pas encore calculé (ou invalidé par un nouvel import / prétraitement,
+    # core/app_state.py) ; {} = calculé, sans donnée CV.
+    if st.session_state.get("cv_sessions") is None:
         n_elec = experiment.get("n_electrodes", 2)
         cv_sessions = {}
         for e in range(1, n_elec + 1):

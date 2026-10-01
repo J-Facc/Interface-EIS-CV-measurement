@@ -106,7 +106,7 @@ def reconstruction_error_relative(Z: np.ndarray, Z_fit: np.ndarray) -> dict:
 
     Returns:
         ``{"max", "mean", "rms"}`` ; ``rms = sqrt(mean(|ΔZ|²/|Z|²))`` est la formule du
-        ``reconstruction_error`` de ``fits/randles_full.py`` (comparaison homogène).
+        ``reconstruction_error`` du fit Orazem (``fits/orazem_fit.py``, comparaison homogène).
     """
     Z = np.asarray(Z, dtype=complex)
     Z_fit = np.asarray(Z_fit, dtype=complex)

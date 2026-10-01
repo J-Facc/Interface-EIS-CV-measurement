@@ -11,7 +11,7 @@ de ``drt/VALIDATION_REGLAGES.md``) et quatre réglages :
 * ``nonneg``           : DRT contrainte ≥ 0 (modèle Stan ``Series_pos``) ;
 * ``nonneg+ridge``     : les deux.
 
-Aucun code applicatif n'est utilisé (ni ``fits/drt_fit.py`` ni ``drt/engine.py``) :
+Aucun code applicatif n'est utilisé (ni l'ancien ``fits/drt_fit.py`` ni ``drt/engine.py``) :
 on appelle ``Inverter`` directement, comme les scripts de l'audit, pour mesurer la
 bibliothèque et non un wrapper.
 
@@ -88,17 +88,22 @@ def _two_rc(n, f0, f1, noise=0.0, seed=0):
 
 
 def _randles(Rct, noise=0.005, seed=None):
-    """A.4 : Randles complet (fits.physics), 60 pts 1e5→1e-1 Hz, bruit 0,5 % (graine = Rct).
+    """A.4 : Randles complet, 60 pts 1e5→1e-1 Hz, bruit 0,5 % (graine = Rct).
 
+    Circuit construit par ``circuit.parse_circuit`` (même expression que ``fit.circuit``
+    par défaut) : identique à l'ancien ``fits/physics.py:Z_randles_full`` à 1e-12
+    près (``tests/test_circuit_parser.py``), donc mêmes spectres que les mesures publiées.
     Rp vrai = Z(0) − Z(∞) = R'e + Rct + R_D = 20 + 1,3·Rct.
     """
-    from fits.physics import Z_randles_full
+    from circuit import parse_circuit
 
     f = np.logspace(5, -1, 60)
     w = 2 * np.pi * f
     r = np.random.default_rng(Rct if seed is None else seed)
-    Z = Z_randles_full(w, Re=200., Re_prime=20., Cb=1e-9, Rct=Rct, Qdl=2e-6, alpha=0.9,
-                       R_D=Rct * 0.3, tau_d=0.5)
+    Z_randles, _names = parse_circuit(
+        "Re + parallel(Re_prime + parallel(R(Rct) + ZD_bounded(R_D, tau_d), Q(Qdl, alpha)), C(Cb))")
+    Z = Z_randles(w, Re=200., Re_prime=20., Cb=1e-9, Rct=Rct, Qdl=2e-6, alpha=0.9,
+                  R_D=Rct * 0.3, tau_d=0.5)
     Z = Z.real * (1 + noise * r.standard_normal(60)) + 1j * Z.imag * (1 + noise * r.standard_normal(60))
     return f, Z, 20.0 + 1.3 * Rct
 
