@@ -464,7 +464,21 @@ def fit_spectrum(
     Zfit = model(x)
     res_re = Zre - Zfit.real
     res_im = Zim - (-Zfit.imag)
-    rel = float(np.sqrt(np.mean((res_re ** 2 + res_im ** 2) / (Zre ** 2 + Zim ** 2))))
+    # Résidu relatif RMS √mean(|ΔZ|²/|Z|²). Un point à Z = 0 (Zre = Zim = 0) n'a pas de résidu
+    # RELATIF défini : il est exclu du calcul et signalé, au lieu de produire un
+    # RuntimeWarning silencieux et un `inf`/`nan` qui contaminerait toute la moyenne.
+    z_sq = Zre ** 2 + Zim ** 2
+    usable = z_sq > 0
+    n_zero = int(np.count_nonzero(~usable))
+    if n_zero:
+        warnings.append(
+            f"{n_zero} point(s) à Z = 0 exclu(s) du résidu relatif (|ΔZ|/|Z| indéfini) : "
+            f"le fit les utilise, mais ils ne comptent pas dans cet indicateur")
+    if np.any(usable):
+        rel = float(np.sqrt(np.mean((res_re[usable] ** 2 + res_im[usable] ** 2) / z_sq[usable])))
+    else:
+        rel = float("nan")
+        warnings.append("résidu relatif non calculable : tous les points ont Z = 0")
     if rel > opt.rel_residual_warn:
         warnings.append(f"résidu relatif élevé ({rel * 100:.0f} %) — ajustement médiocre, résultat peu fiable")
 

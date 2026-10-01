@@ -51,6 +51,22 @@ def _drt_status() -> tuple:
 
 st.session_state["drt_ready"], st.session_state["drt_ready_msg"] = _drt_status()
 
+
+@st.cache_resource(show_spinner=False)
+def _drt_version_warning(_ready: bool):
+    """Avertissement si le CmdStan actif n'est pas la version sur laquelle les réglages de la
+    DRT ont été validés (``None`` sinon). Lu APRÈS ``_drt_status()`` : c'est lui qui enregistre
+    le chemin de CmdStan dans ce process. L'onglet DRT l'affiche (``ui/tabs.py``)."""
+    try:
+        from drt import engine as drt_engine
+
+        return drt_engine.cmdstan_version_info()[1]
+    except Exception:  # pragma: no cover - dépend de l'environnement
+        return None
+
+
+st.session_state["drt_version_warning"] = _drt_version_warning(st.session_state["drt_ready"])
+
 # ---------------------------------------------------------------------------
 # Navigation multipage
 # ---------------------------------------------------------------------------

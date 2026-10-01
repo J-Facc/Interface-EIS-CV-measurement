@@ -160,7 +160,7 @@ if "!TOP_DIR!"=="" (
     goto UPDATE_ABORTED
 )
 set "MISSING="
-for %%F in (app.py requirements.txt requirements-drt.txt setup_drt_bayesien.py core\app_state.py !STAN_REL!\Series.stan) do if not exist "!TOP_DIR!\%%F" set "MISSING=!MISSING! %%F"
+for %%F in (app.py requirements.txt requirements-drt.txt setup_drt_bayesien.py drt\cmdstan_version.py core\app_state.py !STAN_REL!\Series.stan !STAN_REL!\Series_pos.stan) do if not exist "!TOP_DIR!\%%F" set "MISSING=!MISSING! %%F"
 if not "!MISSING!"=="" (
     echo   ECHEC REEL : archive incomplete, fichiers absents :!MISSING!
     goto UPDATE_ABORTED
@@ -439,15 +439,19 @@ exit /b 0
 :ensure_drt
 rem Idempotent : setup_drt_bayesien.py --check ne touche a rien ; --ensure n'installe et ne
 rem compile que ce qui manque. On l'appelle depuis le venv, on ne reecrit pas sa logique.
+rem --check n'est PAS redirige : sa raison, et surtout l'avertissement quand une AUTRE version
+rem de CmdStan que la version validee est installee, doit etre lue. Elle est aussi journalisee.
 set "SETUP_PY=!APP_DIR!\setup_drt_bayesien.py"
-"!VENV_PY!" "!SETUP_PY!" --check >nul 2>&1
+"!VENV_PY!" "!SETUP_PY!" --check
 if !errorlevel! equ 0 (
     echo   Moteur DRT deja pret.
     call :sync_stan_cache
     exit /b 0
 )
-echo   Installation du moteur DRT : CmdStan et modeles Stan. Plusieurs minutes la premiere
-echo   fois - telechargement puis compilation C++. Ne fermez pas la fenetre.
+call :log "drt --check : moteur non pret, preparation du moteur"
+echo   Installation du moteur DRT : CmdStan en version validee et modeles Stan. Plusieurs
+echo   minutes la premiere fois - telechargement puis compilation C++. Une autre version de
+echo   CmdStan deja installee est conservee, jamais supprimee. Ne fermez pas la fenetre.
 "!VENV_PY!" -u "!SETUP_PY!" --ensure
 set "RC_DRT=!errorlevel!"
 if !RC_DRT! equ 0 (
@@ -462,7 +466,8 @@ if !RC_DRT! equ 7 (
 ) else (
     echo   ECHEC REEL de l'installation du moteur DRT, code !RC_DRT! - voir les messages
     echo   ci-dessus. L'application demarre sans DRT. 3 = cmdstanpy absent, 4 = installation
-    echo   CmdStan, 5 = chemin CmdStan, 6 = compilation C++.
+    echo   CmdStan, 5 = chemin CmdStan, 6 = erreur de compilation Stan, 8 = toolchain C++
+    echo   absente ou non fonctionnelle.
 )
 call :log "moteur drt non installe code !RC_DRT!"
 exit /b 0

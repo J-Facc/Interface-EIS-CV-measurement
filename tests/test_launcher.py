@@ -156,3 +156,33 @@ def test_python_version_floor_matches_pinned_numpy():
     reqs = (ROOT / "requirements.txt").read_text()
     assert "numpy==2.5" in reqs                       # numpy 2.5.x exige Python >= 3.12
     assert "(3, 12)" in TEXT
+
+
+def test_archive_check_requires_both_stan_models_and_the_version_module():
+    """La précompilation couvre Series ET Series_pos (modèle du réglage par défaut) : une archive
+    qui en perd un doit être refusée AVANT le remplacement, comme celle qui perd Series.stan."""
+    line = next(l for l in LINES if "for %%F in (app.py" in l)
+    for needed in ("Series.stan", "Series_pos.stan", "drt\\cmdstan_version.py", "setup_drt_bayesien.py"):
+        assert needed in line, needed
+
+
+def test_drt_check_output_is_visible_not_hidden():
+    """La raison de --check — surtout l'avertissement « autre version de CmdStan que la version
+    validée » — doit être lue par l'utilisateur, pas envoyée vers nul."""
+    line = next(l for l in LINES if "!SETUP_PY!\" --check" in l)
+    assert ">nul" not in line and "2>&1" not in line
+    assert 'call :log "drt --check' in TEXT                    # et elle laisse une trace au journal
+
+
+def test_launcher_explains_every_failure_code_of_the_setup_script():
+    import setup_drt_bayesien as S
+
+    block = TEXT[TEXT.index("!RC_DRT! equ 7"):TEXT.index('call :log "moteur drt non installe')]
+    for code in (S.EXIT_NO_CMDSTANPY, S.EXIT_INSTALL, S.EXIT_BAD_PATH, S.EXIT_COMPILE, S.EXIT_TOOLCHAIN):
+        assert f"{code} = " in block, f"code {code} non expliqué par launch.bat"
+    assert "toolchain C++" in block
+
+
+def test_launcher_never_hardcodes_a_cmdstan_version():
+    """La version vit dans drt/cmdstan_version.py ; launch.bat délègue à setup_drt_bayesien.py."""
+    assert not re.search(r"\b2\.\d{2}\.\d\b", TEXT)

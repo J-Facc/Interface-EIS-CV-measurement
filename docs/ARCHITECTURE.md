@@ -272,8 +272,15 @@ Seul fichier à distribuer. Le dépôt est public : aucun jeton ; la validation 
    (retour arrière automatique si le déplacement échoue). logs\ et sessions\ sont conservés.
 4. venv\ (Python >= 3.12 exigé : numpy 2.5.x) ; pip install -r requirements.txt puis
    requirements-drt.txt, SEULEMENT si l'empreinte de ces fichiers a changé (.deps_hash).
-5. Moteur DRT : setup_drt_bayesien.py --check ; si besoin --ensure (CmdStan 2.36.0 épinglé dans
-   C:\cmdstan, compilation de Series.stan et Series_pos.stan) — plusieurs minutes la première fois.
+5. Moteur DRT : setup_drt_bayesien.py --check ; si besoin --ensure — plusieurs minutes la première
+   fois. La version de CmdStan (2.36.0, `drt/cmdstan_version.py`) est la source unique : elle est
+   ENREGISTRÉE de préférence à toute version plus récente du même dossier, et installée à côté
+   d'une autre version sans jamais la supprimer. Avant toute compilation, la toolchain C++
+   (`mingw32-make` + `g++`) est vérifiée, installée si besoin, puis re-vérifiée au PATH (cmdstanpy
+   ne l'ajoute au PATH que dans le process qui installe : `activate_toolchain` le refait pour
+   chaque process). Series.stan ET Series_pos.stan sont compilés ; un fichier
+   `<modèle>.cmdstan-version` note la version de CmdStan qui a produit chaque exécutable (cmdstanpy
+   ne recompile qu'une source plus récente que son exécutable, sans regarder la version).
    Un échec ici ne bloque jamais le démarrage : l'application tourne sans DRT.
 6. Port libre de 8501 à 8510 ; Streamlit démarre ; le navigateur s'ouvre APRÈS la réponse de
    /_stcore/health.
@@ -322,5 +329,9 @@ connue : deux paramétrisations du test HMC lent peuvent échouer selon la machi
 | `SSL: CERTIFICATE_VERIFY_FAILED` (pip, CmdStan) | proxy d'entreprise qui intercepte le TLS | définir `HTTPS_PROXY`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE` (aide : `python setup_drt_bayesien.py --help`) ; la validation TLS n'est jamais désactivée |
 | « Python 3.12 ou plus récent est introuvable » | Python absent, trop ancien, ou stub du Microsoft Store | installer Python depuis python.org |
 | Onglet DRT : « moteur indisponible » | extra pip ou CmdStan non installé (premier lancement hors ligne) | relancer `launch.bat` avec réseau, ou `python setup_drt_bayesien.py --ensure` |
+| `setup_drt_bayesien.py` code 8 : « Toolchain C++ absente ou non fonctionnelle » | `mingw32-make` / `g++` introuvables au PATH (RTools absent ou non installable hors ligne) | relancer `launch.bat` avec réseau, ou `python -m cmdstanpy.install_cxx_toolchain --dir C:\cmdstan` |
+| Code 6 : « Erreur de compilation Stan/C++ » | la toolchain fonctionne, la compilation d'un modèle échoue (dernière sortie affichée) | lire la sortie affichée ; chemin trop long ? déplacer `launch.bat` dans `C:\EIS` |
+| Onglet DRT : « CmdStan x.y.z est utilisé, alors que les réglages… 2.36.0 » | une autre version de CmdStan est la seule utilisable (2.36.0 non installable hors ligne) | relancer `launch.bat` avec réseau : la 2.36.0 est installée à côté, l'autre n'est pas touchée |
+| « DRT de « … » non calculée : échec à l'étape … » | exception pendant le calcul DRT | le traceback complet est dans `logs\eis_analyzer.log` (étape, origine, spectre, réglages, version de CmdStan) |
 | Groupe « arrêté » | moins de 3 réplicats : structure d'erreur non caractérisable | fournir au moins 3 réplicats indépendants par groupe |
 | Fenêtre `.bat` qui se ferme / variable vide | `%VAR%` lu dans un bloc `( … )` | `!VAR!` + `enabledelayedexpansion` (règle de `launch.bat`) |
