@@ -399,18 +399,44 @@ def test_a_non_converged_fit_is_excluded_from_both_regressions_with_its_reason()
         assert cal.n == 3 and 1e-11 not in cal.concentrations
 
 
-def test_a_kk_non_conform_group_is_excluded_but_an_undetermined_verdict_is_not():
-    from core.calibration import REASON_KK_NONCONFORM, calibration_points
+def test_a_kk_non_conform_group_is_kept_but_flagged_by_default():
+    from core.calibration import calibration_points, compute_calibration, compute_calibration_loglog
     s = _cal_session(kk={0: False, 2: None, 3: True})
     pts = calibration_points(s, "orazem")
+    assert [p.included for p in pts] == [True, True, True, True]
+    assert [p.kk_nonconform for p in pts] == [True, False, False, False]
+    assert all(p.reasons == () for p in pts)
+    for cal in (compute_calibration(s, "orazem"), compute_calibration_loglog(s, "orazem")):
+        assert cal.n == 4 and list(cal.kk_flags) == [True, False, False, False]
+
+
+def test_strict_regression_excludes_kk_non_conform_groups_but_not_undetermined_ones():
+    from core.calibration import (REASON_KK_NONCONFORM, calibration_points, compute_calibration,
+                                  compute_calibration_loglog)
+    s = _cal_session(kk={0: False, 2: None, 3: True})
+    pts = calibration_points(s, "orazem", strict=True)
     assert [p.included for p in pts] == [False, True, True, True]
     assert pts[0].reasons == (REASON_KK_NONCONFORM,)
+    for cal in (compute_calibration(s, "orazem", strict=True),
+                compute_calibration_loglog(s, "orazem", strict=True)):
+        assert cal.n == 3 and 1e-12 not in cal.concentrations
 
 
 def test_every_reason_is_reported_when_several_apply():
     from core.calibration import REASON_KK_NONCONFORM, REASON_NOT_CONVERGED, calibration_points
     s = _cal_session(orazem={0: dict(converged=False)}, kk={0: False})
-    assert calibration_points(s, "orazem")[0].reasons == (REASON_NOT_CONVERGED, REASON_KK_NONCONFORM)
+    assert calibration_points(s, "orazem")[0].reasons == (REASON_NOT_CONVERGED,)    # KK ne motive plus
+    assert calibration_points(s, "orazem", strict=True)[0].reasons == (REASON_NOT_CONVERGED,
+                                                                       REASON_KK_NONCONFORM)
+
+
+def test_every_group_kk_non_conform_probe_included_still_calibrates():
+    """Cas réel : tous les verdicts KK « non conforme », probe compris."""
+    from core.calibration import calibration_reference, compute_calibration, compute_calibration_loglog
+    s = _cal_session(kk={0: False, 1: False, 2: False, 3: False}, probe_kk=False)
+    ref = calibration_reference(s, "orazem")
+    assert ref.included and ref.kk_nonconform
+    assert compute_calibration(s, "orazem").n == 4 and compute_calibration_loglog(s, "orazem").n == 4
 
 
 def test_a_missing_drt_is_reported_with_its_recorded_failure():
@@ -436,11 +462,18 @@ def test_a_requested_drt_with_no_result_excludes_every_point_instead_of_vanishin
 
 def test_an_unusable_probe_blocks_the_normalised_signal_but_not_the_loglog():
     from core.calibration import calibration_reference, compute_calibration, compute_calibration_loglog
-    for kwargs in (dict(probe_converged=False), dict(probe_kk=False)):
-        s = _cal_session(**kwargs)
-        assert not calibration_reference(s, "orazem").included
-        assert compute_calibration(s, "orazem") is None
-        assert compute_calibration_loglog(s, "orazem").n == 4      # la référence n'y sert pas
+    s = _cal_session(probe_converged=False)
+    assert not calibration_reference(s, "orazem").included
+    assert compute_calibration(s, "orazem") is None
+    assert compute_calibration_loglog(s, "orazem").n == 4          # la référence n'y sert pas
+
+
+def test_the_probe_is_never_excluded_on_kk_alone_even_in_strict_mode():
+    from core.calibration import calibration_reference, compute_calibration
+    s = _cal_session(probe_kk=False)
+    for strict in (False, True):
+        assert calibration_reference(s, "orazem", strict).included
+        assert compute_calibration(s, "orazem", strict).n == 4
 
 
 def test_methods_are_filtered_independently():
@@ -455,7 +488,10 @@ def test_the_csv_export_applies_the_same_filter_as_the_tab():
     from exports.exporter import export_calibration_csv
     s = _cal_session(orazem={1: dict(converged=False)}, kk={3: False})
     rows = list(csv.DictReader(io.StringIO(export_calibration_csv(s).decode())))
-    assert sorted(float(r["concentration_M"]) for r in rows if r["model"] == "orazem") == [1e-12, 1e-10]
+    assert sorted(float(r["concentration_M"]) for r in rows if r["model"] == "orazem") == [1e-12, 1e-10, 1e-9]
+    assert [r["kk_non_conforme"] for r in rows if float(r["concentration_M"]) == 1e-9] == ["True"]
+    strict = list(csv.DictReader(io.StringIO(export_calibration_csv(s, strict=True).decode())))
+    assert sorted(float(r["concentration_M"]) for r in strict) == [1e-12, 1e-10]
 
 
 def test_calibration_rows_list_included_and_excluded_points_with_reasons():
@@ -464,17 +500,20 @@ def test_calibration_rows_list_included_and_excluded_points_with_reasons():
     assert {r["model"] for r in rows} == {"orazem", "drt_bayes"}
     assert [r["kind"] for r in rows if r["model"] == "orazem"] == ["référence"] + ["concentration"] * 4
     out = {(r["model"], r["group"]): r["reasons"] for r in rows if not r["included"]}
-    # Le verdict KK est celui du GROUPE : il exclut le point pour les deux méthodes ; la
-    # non-convergence est propre au fit Orazem.
-    assert out == {("orazem", "1.00e-12 M"): ["KK non conforme"],
-                   ("drt_bayes", "1.00e-12 M"): ["KK non conforme"],
-                   ("orazem", "1.00e-11 M"): ["fit non convergé"]}
+    # Le verdict KK (par GROUPE) ne retire plus le point : il le signale pour les deux méthodes ;
+    # seule la non-convergence, propre au fit Orazem, exclut.
+    assert out == {("orazem", "1.00e-11 M"): ["fit non convergé"]}
+    flagged = {(r["model"], r["group"]) for r in rows if r["included"] and r["kk_nonconform"]}
+    assert flagged == {("orazem", "1.00e-12 M"), ("drt_bayes", "1.00e-12 M")}
+    strict_out = {(r["model"], r["group"]) for r in rt.calibration_rows(s, strict=True) if not r["included"]}
+    assert strict_out == {("orazem", "1.00e-12 M"), ("drt_bayes", "1.00e-12 M"), ("orazem", "1.00e-11 M")}
 
 
 def test_the_calibration_tab_does_no_regression_of_its_own():
     source = (REPO / "ui" / "tabs.py").read_text(encoding="utf-8")
     assert "linregress" not in source and "polyfit" not in source
     assert "export_calibration_csv" in source and "calibration_rows" in source
+    assert "calib_strict" in source and "retenu (KK non conforme)" in source
 
 
 def test_loglog_figure_draws_one_regression_per_method_and_only_kept_points():

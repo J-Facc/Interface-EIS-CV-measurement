@@ -16,12 +16,17 @@ Deux calibrations distinctes coexistent dans l'app :
 Garde-fous communs (``_assess`` / ``calibration_points``) — UNE seule évaluation par point,
 dont dérivent la régression, donc l'export CSV, et les raisons d'exclusion affichées par
 l'onglet « Calibration » : un groupe n'entre dans la régression que si son fit existe, a
-CONVERGÉ, a une valeur cible > 0, et si son verdict Kramers-Kronig n'est pas « non conforme »
-(``GroupAnalysis.validation.all_valid is False``). Un verdict indéterminé (None) n'exclut pas :
-il n'a produit aucun fit à régresser, ou n'a pas dit que les données étaient incohérentes. Le
-probe, qui sert de référence au signal normalisé, est soumis aux MÊMES règles : sans référence
-fiable, la calibration normalisée n'est pas calculée. Un point exclu n'est jamais perdu en
-silence : ``CalibrationPoint.reasons`` dit pourquoi.
+CONVERGÉ et a une valeur cible > 0 (donc calculable : DRT présente pour la courbe DRT).
+
+Le verdict Kramers-Kronig « non conforme » (``GroupAnalysis.validation.all_valid is False``)
+n'EXCLUT PLUS un point par défaut : la détection de dérive qui l'alimente a un taux de faux
+positifs documenté (AUDIT.md ERR-4) qui vidait la calibration sur données réelles, probe
+compris. Le point reste dans la régression, signalé (``CalibrationPoint.kk_nonconform``) pour
+que l'interface le distingue. La régression « stricte » (``strict=True``) restaure l'ancienne
+exclusion, pour comparer les deux. Le probe, référence du signal normalisé, n'est JAMAIS écarté sur le verdict KK, y compris en
+mode strict (sans lui, plus de normalisation) : s'il a convergé il sert de référence, signalé
+``kk_nonconform`` si son verdict l'est.
+Un point exclu n'est jamais perdu en silence : ``CalibrationPoint.reasons`` dit pourquoi.
 """
 
 from dataclasses import dataclass, field
@@ -58,6 +63,7 @@ class CalibrationResult:
     pvalue: float
     stderr: float
     n: int
+    kk_flags: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))  # KK non conforme
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,8 @@ class CalibrationPoint:
         error: erreur de reconstruction relative RMS (0 si absente).
         included: True si le point entre dans la régression.
         reasons: motifs d'exclusion (vide si retenu).
+        kk_nonconform: verdict KK du groupe « non conforme » — information, pas exclusion
+            (sauf ``strict=True``, où le point est alors exclu avec ``REASON_KK_NONCONFORM``).
     """
 
     label: str
@@ -79,10 +87,16 @@ class CalibrationPoint:
     error: float
     included: bool
     reasons: tuple = field(default_factory=tuple)
+    kk_nonconform: bool = False
 
 
-def _assess(label: str, concentration: float, spectrum, analysis, model: str) -> CalibrationPoint:
-    """Évalue un groupe pour ``model`` : retenu, ou exclu avec TOUS ses motifs."""
+def _assess(label: str, concentration: float, spectrum, analysis, model: str,
+            strict: bool = False, is_reference: bool = False) -> CalibrationPoint:
+    """Évalue un groupe pour ``model`` : retenu, ou exclu avec TOUS ses motifs.
+
+    Le verdict KK « non conforme » ne fait qu'étiqueter le point (``kk_nonconform``) ; il ne
+    l'exclut que si ``strict`` et que ce n'est pas la référence (probe).
+    """
     fr = spectrum.fit_results.get(model) if spectrum is not None else None
     if fr is None:
         if model == DRT_MODEL_NAME:
@@ -97,28 +111,34 @@ def _assess(label: str, concentration: float, spectrum, analysis, model: str) ->
     if not fr.converged:
         reasons.append(REASON_NOT_CONVERGED)
     vr = getattr(analysis, "validation", None)
-    if getattr(vr, "all_valid", None) is False:
+    kk_bad = getattr(vr, "all_valid", None) is False
+    if kk_bad and strict and not is_reference:
         reasons.append(REASON_KK_NONCONFORM)
     if not fr.target_value > 0:                    # inclut NaN
         reasons.append(REASON_NONPOSITIVE)
     return CalibrationPoint(label, concentration, float(fr.target_value),
                             float(getattr(fr, "reconstruction_error", 0.0) or 0.0),
-                            not reasons, tuple(reasons))
+                            not reasons, tuple(reasons), kk_bad)
 
 
-def calibration_points(session, model: str) -> list:
-    """``CalibrationPoint`` de chaque concentration > 0 de la session, dans l'ordre des groupes."""
+def calibration_points(session, model: str, strict: bool = False) -> list:
+    """``CalibrationPoint`` de chaque concentration > 0 de la session, dans l'ordre des groupes.
+
+    ``strict=True`` exclut en plus les groupes au verdict KK « non conforme »."""
     return [_assess(f"{g.concentration:.2e} M", float(g.concentration), g.spectrum,
-                    getattr(g, "analysis", None), model)
+                    getattr(g, "analysis", None), model, strict)
             for g in session.groups if g.concentration > 0]
 
 
-def calibration_reference(session, model: str) -> Optional[CalibrationPoint]:
-    """Le probe, référence du signal normalisé, évalué comme un point (None sans probe)."""
+def calibration_reference(session, model: str, strict: bool = False) -> Optional[CalibrationPoint]:
+    """Le probe, référence du signal normalisé, évalué comme un point (None sans probe).
+
+    Le verdict KK n'exclut jamais la référence, ``strict`` ou non."""
     probe = getattr(session, "probe", None)
     if probe is None:
         return None
-    return _assess("Probe", 0.0, probe, getattr(session, "probe_analysis", None), model)
+    return _assess("Probe", 0.0, probe, getattr(session, "probe_analysis", None), model,
+                   strict, is_reference=True)
 
 
 def calibration_models(session) -> list:
@@ -136,29 +156,31 @@ def calibration_models(session) -> list:
     return names
 
 
-def _collect_points(session, model: str):
-    """Retourne (concs, rcts, errs) des points RETENUS (``calibration_points``) : fit existant,
-    convergé, valeur cible > 0, verdict KK du groupe non « non conforme »."""
-    kept = [pt for pt in calibration_points(session, model) if pt.included]
-    return ([pt.concentration for pt in kept], [pt.value for pt in kept], [pt.error for pt in kept])
+def _collect_points(session, model: str, strict: bool = False):
+    """Retourne (concs, rcts, errs, kk_flags) des points RETENUS (``calibration_points``) :
+    fit existant, convergé, valeur cible > 0 (et, si ``strict``, verdict KK conforme)."""
+    kept = [pt for pt in calibration_points(session, model, strict) if pt.included]
+    return ([pt.concentration for pt in kept], [pt.value for pt in kept], [pt.error for pt in kept],
+            [pt.kk_nonconform for pt in kept])
 
 
-def compute_calibration(session, model: str):
+def compute_calibration(session, model: str, strict: bool = False):
     """Calibration signal normalisé pour un modèle : |ΔRct|/Rct_probe vs log10([c]).
 
     Args:
-        session: EISSession (doit avoir un probe retenu — fit convergé, KK non « non conforme »).
+        session: EISSession (doit avoir un probe retenu — fit convergé ; le verdict KK ne l'écarte jamais).
+        strict: exclut aussi les concentrations au verdict KK « non conforme ».
         model: nom du modèle de fit (ex. "orazem", "drt_bayes").
 
     Returns:
         CalibrationResult, ou None si pas de fit probe valide ou < 2 points.
     """
-    ref = calibration_reference(session, model)
+    ref = calibration_reference(session, model, strict)
     if ref is None or not ref.included:
         return None
     probe_rct = ref.value
 
-    concs, rcts, errs = _collect_points(session, model)
+    concs, rcts, errs, kk = _collect_points(session, model, strict)
     if len(concs) < 2:
         return None
 
@@ -168,14 +190,14 @@ def compute_calibration(session, model: str):
     return CalibrationResult(
         model=model, log_c=log_c, y=np.asarray(signal),
         concentrations=np.asarray(concs), rcts=np.asarray(rcts), errs=np.asarray(errs),
-        probe_rct=probe_rct,
+        probe_rct=probe_rct, kk_flags=np.asarray(kk, dtype=bool),
         slope=float(reg.slope), intercept=float(reg.intercept),
         r2=float(reg.rvalue ** 2), pvalue=float(reg.pvalue), stderr=float(reg.stderr),
         n=len(concs),
     )
 
 
-def compute_calibration_loglog(session, model: str):
+def compute_calibration_loglog(session, model: str, strict: bool = False):
     """Calibration log-log pour un modèle : log10(Rct) vs log10([c]) (DRT).
 
     Args:
@@ -185,7 +207,7 @@ def compute_calibration_loglog(session, model: str):
     Returns:
         CalibrationResult (y = log10(Rct), probe_rct = NaN), ou None si < 2 points.
     """
-    concs, rcts, errs = _collect_points(session, model)
+    concs, rcts, errs, kk = _collect_points(session, model, strict)
     if len(concs) < 2:
         return None
     log_c = np.log10(concs)
@@ -194,7 +216,7 @@ def compute_calibration_loglog(session, model: str):
     return CalibrationResult(
         model=model, log_c=log_c, y=log_rct,
         concentrations=np.asarray(concs), rcts=np.asarray(rcts), errs=np.asarray(errs),
-        probe_rct=float("nan"),
+        probe_rct=float("nan"), kk_flags=np.asarray(kk, dtype=bool),
         slope=float(reg.slope), intercept=float(reg.intercept),
         r2=float(reg.rvalue ** 2), pvalue=float(reg.pvalue), stderr=float(reg.stderr),
         n=len(concs),
@@ -247,7 +269,7 @@ def compute_cv_calibration(cv_session):
     )
 
 
-def compute_calibration_all(session):
+def compute_calibration_all(session, strict: bool = False):
     """Calibrations signal normalisé pour tous les modèles présents sur le probe.
 
     Returns:
@@ -258,13 +280,13 @@ def compute_calibration_all(session):
     probe_fr = getattr(probe, "fit_results", {}) if probe is not None else {}
     results = []
     for model in probe_fr:
-        res = compute_calibration(session, model)
+        res = compute_calibration(session, model, strict)
         if res is not None:
             results.append(res)
     return results
 
 
-def compute_calibration_loglog_all(session):
+def compute_calibration_loglog_all(session, strict: bool = False):
     """Calibrations log-log de tous les modèles de ``calibration_models`` ayant ≥ 2 points
     retenus (ne dépend pas du probe).
 
@@ -273,7 +295,7 @@ def compute_calibration_loglog_all(session):
     """
     results = []
     for model in calibration_models(session):
-        res = compute_calibration_loglog(session, model)
+        res = compute_calibration_loglog(session, model, strict)
         if res is not None:
             results.append(res)
     return results

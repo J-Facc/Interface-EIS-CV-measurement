@@ -368,6 +368,11 @@ def _finalize(result: ValidationResult, label: str, drift_cv_threshold: float) -
     return result
 
 
+# ⚠️ À RÉÉVALUER — ce critère de dérive a un historique DOCUMENTÉ de faux positifs élevés
+# (AUDIT.md ERR-4 : 72-95 % des fréquences signalées sur des réplicats synthétiques parfaitement
+# stationnaires). Son taux d'alerte doit être mesuré sur un corpus de données réelles avant
+# d'être resserré ou assoupli ; seuil et algorithme sont volontairement inchangés ici. En
+# attendant, l'onglet Calibration ne s'appuie plus sur le verdict KK pour exclure des points.
 def _detect_drift(
     kk_results: List[KKResult],
     cv_threshold: float,

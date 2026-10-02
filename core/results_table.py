@@ -486,23 +486,26 @@ def drt_replicate_envelope(replicates: list) -> Optional[dict]:
 # Onglet « Calibration » : points retenus / exclus et leur raison
 # ─────────────────────────────────────────────────────────────────────────────
 
-def calibration_rows(session) -> list:
+def calibration_rows(session, strict: bool = False) -> list:
     """Une ligne par (modèle, groupe) : le probe (référence) puis chaque concentration > 0.
 
     Dérivées de ``core.calibration.calibration_points`` / ``calibration_reference`` — les
     MÊMES évaluations que celles dont sortent la régression et l'export CSV. ``included`` dit
     si le point entre dans la régression ; sinon ``reasons`` en donne tous les motifs.
     ``kind`` vaut « référence » pour le probe : son exclusion empêche le signal normalisé.
+    ``kk_nonconform`` : verdict KK du groupe « non conforme » — le point est alors retenu
+    mais à interpréter avec prudence (exclu seulement si ``strict``, sauf le probe).
     """
     rows = []
     for model in calibration_models(session):
-        ref = calibration_reference(session, model)
+        ref = calibration_reference(session, model, strict)
         pts = ([("référence", ref)] if ref is not None else []) \
-            + [("concentration", pt) for pt in calibration_points(session, model)]
+            + [("concentration", pt) for pt in calibration_points(session, model, strict)]
         for kind, pt in pts:
             rows.append({
                 "model": model, "group": pt.label, "kind": kind,
                 "concentration": pt.concentration, "value": None if pt.value is None else float(pt.value),
                 "included": pt.included, "reasons": list(pt.reasons),
+                "kk_nonconform": pt.kk_nonconform,
             })
     return rows

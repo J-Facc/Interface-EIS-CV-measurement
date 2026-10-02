@@ -502,7 +502,7 @@ def _coerce_drt_items(results):
 
 # ── Calibration ─────────────────────────────────────────────────────────────
 
-def calibration_figure(session: EISSession) -> go.Figure:
+def calibration_figure(session: EISSession, strict: bool = False) -> go.Figure:
     """Calibration: one regression curve per model + metrics table below.
 
     Returns a single Figure with two vertically stacked subplots:
@@ -527,8 +527,9 @@ def calibration_figure(session: EISSession) -> go.Figure:
     # Calcul délégué à core/calibration.py : source unique partagée avec
     # export_calibration_csv (pente/ordonnée/R² identiques figure ↔ export).
     model_data = []
-    for mi, cal in enumerate(compute_calibration_all(session)):
+    for mi, cal in enumerate(compute_calibration_all(session, strict)):
         model_data.append({
+            "kk": cal.kk_flags,
             "model": cal.model,
             "log_c": cal.log_c,
             "signals": cal.y,
@@ -569,9 +570,11 @@ def calibration_figure(session: EISSession) -> go.Figure:
             f"y={d['slope']:.3f}x {sign} {abs(d['intercept']):.3f}"
         )
 
-        # Data points
+        # Data points (KK conformes ou indéterminés)
+        kk = np.asarray(d["kk"], dtype=bool)
+        ok = ~kk
         fig.add_trace(go.Scatter(
-            x=d["log_c"], y=d["signals"],
+            x=d["log_c"][ok], y=d["signals"][ok],
             mode="markers",
             name=d["model"],
             legendgroup=d["model"],
@@ -579,6 +582,16 @@ def calibration_figure(session: EISSession) -> go.Figure:
             hovertemplate="log([c]) = %{x:.2f}<br>Signal = %{y:.4f}<extra></extra>",
             showlegend=True,
         ), row=1, col=2)
+        if kk.any():     # retenus mais KK non conforme : marqueur distinct
+            fig.add_trace(go.Scatter(
+                x=d["log_c"][kk], y=d["signals"][kk],
+                mode="markers",
+                name=f"{d['model']} — KK non conforme",
+                legendgroup=d["model"],
+                marker=dict(color="#E67E22", size=11, symbol="diamond-open", line=dict(width=2)),
+                hovertemplate="⚠️ KK non conforme<br>log([c]) = %{x:.2f}<br>Signal = %{y:.4f}<extra></extra>",
+                showlegend=True,
+            ), row=1, col=2)
 
         # Regression line
         fig.add_trace(go.Scatter(
@@ -886,13 +899,14 @@ def drt_aggregate_figure(
 
 # ── Calibration : log10(Rct) vs log10([c]), un jeu de points par méthode ─────────────
 
-def calibration_loglog_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
+def calibration_loglog_figure(session: EISSession, theme_mode: str = "light",
+                              strict: bool = False) -> go.Figure:
     """log10(valeur cible) vs log10([c]) pour chaque méthode (circuit Orazem, DRT…), avec
     régression et résidus. Régressions de ``core.calibration.compute_calibration_loglog_all``
     (source unique, points retenus seulement) : cette figure ne calcule aucune régression.
     """
     theme = get_theme(theme_mode)
-    cals = compute_calibration_loglog_all(session)
+    cals = compute_calibration_loglog_all(session, strict)
     if not cals:
         fig = go.Figure()
         fig.add_annotation(text="Pas assez de points retenus (min. 2 concentrations positives).",
@@ -910,6 +924,14 @@ def calibration_loglog_figure(session: EISSession, theme_mode: str = "light") ->
             marker=dict(color=color, size=9),
             error_y=dict(type="data", array=np.asarray(cal.errs) / np.log(10.0), visible=True),
             hovertemplate="log([c]) = %{x:.2f}<br>log(Rct) = %{y:.4f}<extra></extra>"), row=1, col=1)
+        kk = np.asarray(cal.kk_flags, dtype=bool)
+        if kk.any():     # retenus mais KK non conforme : marqueur distinct
+            fig.add_trace(go.Scatter(
+                x=cal.log_c[kk], y=cal.y[kk], mode="markers", legendgroup=cal.model,
+                name=f"{cal.model} — KK non conforme",
+                marker=dict(color="#E67E22", size=12, symbol="diamond-open", line=dict(width=2)),
+                hovertemplate="⚠️ KK non conforme<br>log([c]) = %{x:.2f}<br>log(Rct) = %{y:.4f}"
+                              "<extra></extra>"), row=1, col=1)
         sign = "+" if cal.intercept >= 0 else "−"
         fig.add_trace(go.Scatter(
             x=x_line, y=cal.slope * x_line + cal.intercept, mode="lines", legendgroup=cal.model,

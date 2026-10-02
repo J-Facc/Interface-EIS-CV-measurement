@@ -205,7 +205,7 @@ def test_calibration_csv_columns_and_values():
     rows = _dicts(out)
     assert list(rows[0]) == ["electrode", "model", "concentration_M", "log10_concentration",
                              "signal_norm", "Rct_Ohm", "Rct_probe_Ohm",
-                             "slope", "intercept", "r2", "p_value", "std_err"]
+                             "slope", "intercept", "r2", "p_value", "std_err", "kk_non_conforme"]
     assert [r["concentration_M"] for r in rows] == ["1e-09", "1e-08", "1e-07"]
     assert [float(r["log10_concentration"]) for r in rows] == [-9.0, -8.0, -7.0]
     # signal = |Rct_probe − Rct| / Rct_probe
