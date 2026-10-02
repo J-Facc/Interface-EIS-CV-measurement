@@ -1,14 +1,16 @@
-"""All EIS Plotly figures: Nyquist, Bode, DRT, parameter table, calibration."""
+"""Figures Plotly EIS : Nyquist, Bode, fit du circuit, DRT, calibration.
+
+Aucun import Streamlit, aucun calcul métier : les figures reçoivent des données déjà produites
+(``core/pipeline.py``, ``core/results_table.py``).
+"""
 
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from core.models import EISSession, EISSpectrum
-from core.calibration import compute_calibration_all, compute_calibration_loglog
+from core.calibration import compute_calibration_all, compute_calibration_loglog_all
 from plotting.theme import get_theme, apply_theme_to_figure
-from drt.engine import MODEL_NAME as DRT_MODEL_NAME
-from fits.orazem_fit import ORAZEM_MODEL_NAME
 
 
 import plotly.colors as _pc
@@ -498,108 +500,6 @@ def _coerce_drt_items(results):
     return list(results)
 
 
-# ── Parameters table ──────────────────────────────────────────────────────────
-
-def params_table_figure(session: EISSession) -> go.Figure:
-    """Paramètre cible (spectre MOYEN) de bare, probe et chaque concentration, par modèle :
-    fit Orazem du circuit utilisateur et DRT. Les valeurs par réplicat et les
-    incertitudes intra/inter sont dans l'onglet « Résultats par groupe »."""
-    model_names: list = []
-    for sp in (session.bare, session.probe):
-        if sp is not None:
-            for m in sp.fit_results:
-                if m not in model_names:
-                    model_names.append(m)
-    for grp in session.groups:
-        for m in grp.fit_results:
-            if m not in model_names:
-                model_names.append(m)
-
-    if not model_names:
-        fig = go.Figure()
-        fig.add_annotation(text="Aucun résultat de fit disponible.", showarrow=False, font=dict(size=14))
-        return fig
-
-    def _rct_str(fit_results: dict, model: str) -> str:
-        fr = fit_results.get(model)
-        if fr is None or fr.target_value <= 0:
-            return "—"
-        return f"{fr.target_value:.1f} Ω"
-
-    def _rct_val(fit_results: dict, model: str):
-        fr = fit_results.get(model)
-        if fr is None or fr.target_value <= 0:
-            return None
-        return float(fr.target_value)
-
-    def _chi2_str(fit_results: dict, model: str) -> str:
-        fr = fit_results.get(model)
-        if fr is None or fr.chi2_reduced is None or not np.isfinite(fr.chi2_reduced):
-            return "—"
-        return f"{fr.chi2_reduced:.2f}"
-
-    has_comparison = ORAZEM_MODEL_NAME in model_names and DRT_MODEL_NAME in model_names
-
-    def _target_name(model: str) -> str:
-        for fits in [sp.fit_results for sp in (session.bare, session.probe) if sp is not None] + [
-                g.fit_results for g in session.groups]:
-            fr = fits.get(model)
-            if fr is not None:
-                return fr.target_param
-        return "cible"
-
-    def _delta_str(fit_results: dict) -> str:
-        r_randles = _rct_val(fit_results, ORAZEM_MODEL_NAME)
-        r_drt = _rct_val(fit_results, DRT_MODEL_NAME)
-        if r_randles is None or r_drt is None:
-            return "—"
-        rel_err = abs(r_randles - r_drt) / abs(r_randles)
-        return f"{rel_err * 100:.1f}%"
-
-    step_col: list = []
-    model_cols: list = [[] for _ in model_names]
-    chi2_cols: list = [[] for _ in model_names]
-    delta_col: list = []
-
-    def _append_row(step_label: str, fit_results: dict) -> None:
-        step_col.append(step_label)
-        for i, m in enumerate(model_names):
-            model_cols[i].append(_rct_str(fit_results, m))
-            chi2_cols[i].append(_chi2_str(fit_results, m))
-        if has_comparison:
-            delta_col.append(_delta_str(fit_results))
-
-    if session.bare is not None:
-        _append_row("Bare", session.bare.fit_results)
-
-    if session.probe is not None:
-        _append_row("Probe", session.probe.fit_results)
-
-    for grp in session.groups:
-        _append_row(f"{grp.concentration:.2e} M", grp.fit_results)
-
-    n_rows = len(step_col)
-    row_colors = ["#EEF0F8" if i % 2 == 0 else "#FFFFFF" for i in range(n_rows)]
-    header_values = ["Étape"] + [f"{_target_name(m)} — {m}" for m in model_names]
-    cell_values = [step_col] + model_cols
-    if has_comparison:
-        header_values = header_values + ["Écart relatif circuit/DRT"]
-        cell_values = cell_values + [delta_col]
-    # Colonnes χ²_réduit par modèle (≈1 = adéquation en pondération sigma).
-    header_values = header_values + [f"χ²ᵣ — {m}" for m in model_names]
-    cell_values = cell_values + chi2_cols
-
-    fig = go.Figure(data=[go.Table(
-        header=dict(values=header_values, fill_color="#4472C4",
-                    font=dict(color="white", size=12), align="left"),
-        cells=dict(values=cell_values,
-                   fill_color=[row_colors] * len(header_values),
-                   align="left", font=dict(size=11)),
-    )])
-    fig.update_layout(title="Paramètre cible du spectre moyen — circuit (Orazem) vs DRT (model-free)")
-    return fig
-
-
 # ── Calibration ─────────────────────────────────────────────────────────────
 
 def calibration_figure(session: EISSession) -> go.Figure:
@@ -726,254 +626,304 @@ def calibration_figure(session: EISSession) -> go.Figure:
     return fig
 
 
-def calibration_drt_figure(session: EISSession, model_name: str = "drt_bayes") -> go.Figure:
-    """Calibration log(Rct) vs log([c]) pour un modèle DRT, avec barres d'erreur et régression.
+# ── Visualisation : tous les réplicats + moyenne (Nyquist, Bode) ─────────────────────
 
-    Côte à côte : nuage de points + droite de régression (gauche), résidus (droite).
-    """
-    # Calcul délégué à core/calibration.py (calibration log-log Rct).
-    cal = compute_calibration_loglog(session, model_name)
-    if cal is None:
-        fig = go.Figure()
-        fig.add_annotation(
-            text="Pas assez de points (min. 2 concentrations positives avec fit DRT).",
-            showarrow=False, font=dict(size=13),
-        )
-        apply_theme_to_figure(fig, "light")
-        return fig
-
-    log_c, log_rct, errs = cal.log_c, cal.y, cal.errs
-    log_c_line = np.linspace(log_c.min(), log_c.max(), 200)
-    y_line = cal.slope * log_c_line + cal.intercept
-
-    fig = make_subplots(rows=1, cols=2, subplot_titles=[
-        "log(Rct) vs log([c])", "Résidus de régression",
-    ])
-
-    # Barre d'erreur sur log10(Rct) : d(log10 Rct) = dRct/(Rct·ln10) avec
-    # dRct = err·Rct → err/ln10 (les Rct se simplifient).
-    yerr = np.asarray(errs) / np.log(10.0)
-    fig.add_trace(go.Scatter(
-        x=log_c, y=log_rct, mode="markers", name="Données",
-        error_y=dict(type="data", array=yerr, visible=True),
-        marker=dict(color="#1a56db", size=9),
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=log_c_line, y=y_line, mode="lines",
-        name=f"R²={cal.r2:.3f}  y={cal.slope:.3f}x+{cal.intercept:.3f}",
-        line=dict(color="#dc2626", width=2),
-    ), row=1, col=1)
-
-    residuals = log_rct - (cal.slope * log_c + cal.intercept)
-    fig.add_trace(go.Scatter(
-        x=log_c, y=residuals, mode="markers", name="Résidus",
-        marker=dict(color="#7c3aed", size=9), showlegend=False,
-    ), row=1, col=2)
-    fig.add_hline(y=0, line=dict(color="#9ca3af", width=1), row=1, col=2)
-
-    fig.update_xaxes(title_text="log([c] / M)", row=1, col=1)
-    fig.update_yaxes(title_text="log(Rct / Ω)", row=1, col=1)
-    fig.update_xaxes(title_text="log([c] / M)", row=1, col=2)
-    fig.update_yaxes(title_text="Résidu log(Rct)", row=1, col=2)
-
-    fig.update_layout(
-        title=f"Calibration DRT ({model_name}) — log(Rct) vs log([c])",
-        legend=dict(orientation="h", y=-0.2),
-    )
-    apply_theme_to_figure(fig, "light")
-    return fig
+def _group_color(group, c_min: float, c_max: float) -> str:
+    """Probe en noir ; bare en gris ; concentrations en dégradé log (comme Nyquist/électrode)."""
+    if group.concentration and group.concentration > 0:
+        if c_min < c_max:
+            t = (np.log10(group.concentration) - np.log10(c_min)) / (np.log10(c_max) - np.log10(c_min))
+        else:
+            t = 0.5
+        # Plasma tronqué à 85 % : son extrémité jaune est illisible sur fond clair.
+        return _pc.sample_colorscale("plasma", [0.85 * float(np.clip(t, 0, 1))])[0]
+    return "#6b7280" if group.step == "bare" else "black"
 
 
-# ── Reconstructions Nyquist (circuit Orazem vs DRT) ──────────────────────────────────
+def _concentration_range(groups: list) -> tuple:
+    c = [g.concentration for g in groups if g.concentration and g.concentration > 0]
+    return (min(c), max(c)) if c else (1e-12, 1e-8)
 
-def reconstruction_comparison_figure(sessions: dict) -> go.Figure:
-    """Comparaison circuit (Orazem) vs DRT, mesurée sur le spectre probe de chaque électrode.
 
-    Style de ligne distinct par électrode (solide E1, tirets E2…),
-    couleur distincte par méthode (circuit / DRT).
+def _phase_deg(sp) -> np.ndarray:
+    """−φ en degrés, φ = arg Z, Z = Zre − j·Zim : positif pour un comportement capacitif."""
+    return np.degrees(np.arctan2(np.asarray(sp.Zim, dtype=float), np.asarray(sp.Zre, dtype=float)))
+
+
+def _modulus(sp) -> np.ndarray:
+    return np.hypot(np.asarray(sp.Zre, dtype=float), np.asarray(sp.Zim, dtype=float))
+
+
+def nyquist_replicates_figure(
+    groups: list,
+    bare=None,
+    show_replicates: bool = True,
+    title: str = "Diagramme de Nyquist",
+    theme_mode: str = "light",
+) -> go.Figure:
+    """Nyquist d'une électrode : pour chaque groupe, ses réplicats (traits fins) et sa moyenne.
+
+    Args:
+        groups: ``core.models.DisplayGroup``. Une trace de légende par groupe : la
+            cliquer masque aussi les réplicats de ce groupe (``legendgroup``).
+        bare: EISSpectrum de référence « électrode nue » (affichage seul), ou None.
+        show_replicates: False = moyennes seules.
     """
     fig = go.Figure()
-    line_dashes = ["solid", "dash", "dot", "dashdot"]
-    method_colors = {ORAZEM_MODEL_NAME: "#dc2626", DRT_MODEL_NAME: "#1a56db"}
-
-    any_data = False
-    for idx, (e, session) in enumerate(sorted(sessions.items())):
-        probe = session.probe
-        if probe is None:
-            continue
-        dash = line_dashes[idx % len(line_dashes)]
-
-        fig.add_trace(go.Scatter(
-            x=probe.Zre, y=probe.Zim, mode="markers",
-            name=f"E{e} — mesuré",
-            marker=dict(color="black", size=6, symbol="circle" if idx == 0 else "x"),
-        ))
-        any_data = True
-
-        fr_r = probe.fit_results.get(ORAZEM_MODEL_NAME)
-        if fr_r is not None:
+    c_min, c_max = _concentration_range(groups)
+    for g in groups:
+        color = _group_color(g, c_min, c_max)
+        has_mean = g.mean is not None
+        if show_replicates or not has_mean:
+            for i, sp in enumerate(g.replicates):
+                fig.add_trace(go.Scatter(
+                    x=sp.Zre, y=sp.Zim, mode="lines+markers", legendgroup=g.label,
+                    name=f"{g.label} — réplicat {i + 1}",
+                    showlegend=(not has_mean and i == 0),
+                    marker=dict(color=color, size=4), line=dict(color=color, width=1),
+                    opacity=0.45, customdata=sp.f,
+                    hovertemplate=(f"<b>{g.label} — réplicat {i + 1}</b><br>Re(Z) = %{{x:.1f}} Ω<br>"
+                                   "−Im(Z) = %{y:.1f} Ω<br>f = %{customdata:.3e} Hz<extra></extra>"),
+                ))
+        if has_mean:
+            sp = g.mean
+            n = len(g.replicates)
+            suffix = f" (moyenne de {n})" if show_replicates and n > 1 else ""
             fig.add_trace(go.Scatter(
-                x=fr_r.Zfit_re, y=fr_r.Zfit_im, mode="lines",
-                name=f"E{e} — circuit (Orazem)",
-                line=dict(color=method_colors[ORAZEM_MODEL_NAME], dash=dash, width=2),
+                x=sp.Zre, y=sp.Zim, mode="lines+markers", legendgroup=g.label,
+                name=g.label + suffix, marker=dict(color=color, size=7),
+                line=dict(color=color, width=2), customdata=sp.f,
+                hovertemplate=(f"<b>{g.label}</b> (moyenne)<br>Re(Z) = %{{x:.1f}} Ω<br>"
+                               "−Im(Z) = %{y:.1f} Ω<br>f = %{customdata:.3e} Hz<extra></extra>"),
             ))
-
-        fr_d = probe.fit_results.get("drt_bayes")
-        if fr_d is not None:
-            fig.add_trace(go.Scatter(
-                x=fr_d.Zfit_re, y=fr_d.Zfit_im, mode="lines",
-                name=f"E{e} — DRT",
-                line=dict(color=method_colors["drt_bayes"], dash=dash, width=2),
-            ))
-
-    if not any_data:
-        fig.add_annotation(
-            text="Aucun spectre probe disponible.",
-            xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=13),
-        )
-
+    if bare is not None:
+        _add_bare_reference_trace(
+            fig, np.asarray(bare.Zre), np.asarray(bare.Zim), theme_mode,
+            hovertemplate=("<b>Électrode nue (réf.)</b><br>Re(Z) = %{x:.1f} Ω<br>"
+                           "−Im(Z) = %{y:.1f} Ω<extra></extra>"))
     fig.update_layout(
-        title="Reconstructions Nyquist — circuit (Orazem) vs DRT (probe)",
-        xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
+        title=title, xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
         yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"),
         legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
-        hovermode="closest",
+        hovermode="closest", margin=dict(r=120), height=480,
     )
-    apply_theme_to_figure(fig, "light")
+    apply_theme_to_figure(fig, theme_mode)
     return fig
 
 
-def drt_reconstruction_figure_dual(
-    spectrum: EISSpectrum, fr_drt=None, fr_randles=None, label: str = "",
+def bode_figure(
+    groups: list,
+    bare=None,
+    show_replicates: bool = True,
+    title: str = "Diagramme de Bode",
+    theme_mode: str = "light",
 ) -> go.Figure:
-    """Mesuré + reconstruction du circuit (fit Orazem) + reconstruction DRT (3 séries).
-
-    Extension de drt_reconstruction_figure pour accepter un second FitResult
-    (circuit, fit Orazem) en plus de la DRT. fr_drt et/ou fr_randles peuvent être None.
+    """Bode d'une électrode : |Z| (haut) et −phase (bas) vs fréquence, mêmes conventions
+    (couleurs, légende par groupe, réplicats + moyenne) que :func:`nyquist_replicates_figure`.
     """
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                        subplot_titles=["|Z| (Ω)", "−phase (°)"])
+    c_min, c_max = _concentration_range(groups)
+
+    def _add(sp, g, color, name, mean: bool, show_leg: bool):
+        for row, y, unit in ((1, _modulus(sp), "|Z| = %{y:.4g} Ω"),
+                             (2, _phase_deg(sp), "−φ = %{y:.2f}°")):
+            fig.add_trace(go.Scatter(
+                x=sp.f, y=y, mode="lines+markers", legendgroup=g.label, name=name,
+                showlegend=(show_leg and row == 1),
+                marker=dict(color=color, size=7 if mean else 4),
+                line=dict(color=color, width=2 if mean else 1),
+                opacity=1.0 if mean else 0.45,
+                hovertemplate=f"<b>{name}</b><br>f = %{{x:.3e}} Hz<br>{unit}<extra></extra>",
+            ), row=row, col=1)
+
+    for g in groups:
+        color = _group_color(g, c_min, c_max)
+        has_mean = g.mean is not None
+        if show_replicates or not has_mean:
+            for i, sp in enumerate(g.replicates):
+                _add(sp, g, color, f"{g.label} — réplicat {i + 1}", False, not has_mean and i == 0)
+        if has_mean:
+            n = len(g.replicates)
+            suffix = f" (moyenne de {n})" if show_replicates and n > 1 else ""
+            _add(g.mean, g, color, g.label + suffix, True, True)
+    if bare is not None:
+        for row, y in ((1, _modulus(bare)), (2, _phase_deg(bare))):
+            color = _BARE_REF_COLOR.get(theme_mode, _BARE_REF_COLOR["light"])
+            fig.add_trace(go.Scatter(
+                x=bare.f, y=y, mode="lines", name="Électrode nue (réf.)", opacity=0.6,
+                line=dict(color=color, dash="dot", width=1.5), showlegend=(row == 1),
+                hovertemplate="<b>Électrode nue (réf.)</b><br>f = %{x:.3e} Hz<extra></extra>",
+            ), row=row, col=1)
+    fig.update_xaxes(type="log", row=1, col=1)
+    fig.update_xaxes(type="log", title_text="Fréquence (Hz)", row=2, col=1)
+    fig.update_layout(title=title, legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+                      hovermode="closest", margin=dict(r=120), height=480)
+    apply_theme_to_figure(fig, theme_mode)
+    # apply_theme_to_figure réécrit xaxis/yaxis de la 1re ligne : on rétablit les échelles log.
+    fig.update_xaxes(type="log", row=1, col=1)
+    fig.update_yaxes(type="log", tickformat=".4~g", row=1, col=1)
+    fig.update_xaxes(type="log", row=2, col=1)
+    return fig
+
+
+# ── Fit du circuit : Nyquist expérimental + courbe ajustée, résidus ──────────────────
+
+def fit_nyquist_figure(sp, fr, title: str = "", theme_mode: str = "light") -> go.Figure:
+    """Nyquist expérimental (points) et courbe du circuit ajusté (trait), pour UN spectre.
+
+    ``sp`` et ``fr`` doivent porter les MÊMES points (``fr.Zfit_re`` aligné sur ``sp.f``).
+    """
+    theme = get_theme(theme_mode)
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=spectrum.Zre, y=spectrum.Zim, mode="markers", name="Mesuré",
-        marker=dict(color="#1a56db", size=7),
-    ))
-    err_parts = []
-    if fr_randles is not None:
-        fig.add_trace(go.Scatter(
-            x=fr_randles.Zfit_re, y=fr_randles.Zfit_im, mode="lines",
-            name="Reconstruction circuit (Orazem)",
-            line=dict(color="#dc2626", width=2),
-        ))
-        if fr_randles.reconstruction_error is not None:
-            err_parts.append(f"circuit ε={fr_randles.reconstruction_error*100:.2f}%")
-    if fr_drt is not None:
-        fig.add_trace(go.Scatter(
-            x=fr_drt.Zfit_re, y=fr_drt.Zfit_im, mode="lines",
-            name="Reconstruction DRT",
-            line=dict(color="#16a34a", width=2, dash="dash"),
-        ))
-        if fr_drt.reconstruction_error is not None:
-            err_parts.append(f"DRT ε={fr_drt.reconstruction_error*100:.2f}%")
-
-    fig.update_xaxes(title_text="Z' (Ω)")
-    fig.update_yaxes(title_text="-Z'' (Ω)", scaleanchor="x")
-    err_str = " — " + ", ".join(err_parts) if err_parts else ""
+        x=sp.Zre, y=sp.Zim, mode="markers", name="Expérience", customdata=sp.f,
+        marker=dict(color=theme["colors"][0], size=7),
+        hovertemplate=("<b>Expérience</b><br>Re(Z) = %{x:.1f} Ω<br>−Im(Z) = %{y:.1f} Ω<br>"
+                       "f = %{customdata:.3e} Hz<extra></extra>")))
+    fig.add_trace(go.Scatter(
+        x=fr.Zfit_re, y=fr.Zfit_im, mode="lines", name="Circuit ajusté", customdata=sp.f,
+        line=dict(color=theme["colors"][3], width=2.5),
+        hovertemplate=("<b>Circuit ajusté</b><br>Re(Z) = %{x:.1f} Ω<br>−Im(Z) = %{y:.1f} Ω<br>"
+                       "f = %{customdata:.3e} Hz<extra></extra>")))
     fig.update_layout(
-        title=f"Reconstruction circuit (Orazem) vs DRT — {label}{err_str}",
-        legend=dict(orientation="h", y=-0.15),
-    )
-    apply_theme_to_figure(fig, "light")
+        title=title or "Nyquist — expérience vs circuit ajusté",
+        xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
+        yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"),
+        legend=dict(orientation="h", x=0.0, y=-0.2), hovermode="closest", height=420)
+    apply_theme_to_figure(fig, theme_mode)
     return fig
 
 
-def open_reconstruction_matplotlib_window(sessions: dict) -> None:
-    """Ouvre une fenêtre matplotlib (bloquante) empilant les graphes de l'onglet 3.
+def fit_residuals_figure(sp, fr, title: str = "", theme_mode: str = "light") -> go.Figure:
+    """Résidus du fit (données − modèle) en % de |Z|, parties réelle et imaginaire, vs f."""
+    theme = get_theme(theme_mode)
+    z = np.maximum(_modulus(sp), 1e-300)
+    fig = go.Figure()
+    for name, res, color in (("Re(Z)", fr.residuals_re, theme["colors"][0]),
+                             ("−Im(Z)", fr.residuals_im, theme["colors"][1])):
+        fig.add_trace(go.Scatter(
+            x=sp.f, y=100.0 * np.asarray(res, dtype=float) / z, mode="markers+lines", name=name,
+            marker=dict(color=color, size=5), line=dict(color=color, width=1),
+            hovertemplate=f"<b>{name}</b><br>f = %{{x:.3e}} Hz<br>résidu = %{{y:.2f}} %<extra></extra>"))
+    fig.add_hline(y=0, line=dict(color=theme["text"], width=0.5))
+    fig.update_layout(
+        title=title or "Résidus du fit (% de |Z|)", xaxis=dict(title="Fréquence (Hz)", type="log"),
+        yaxis=dict(title="(données − modèle) / |Z| (%)"),
+        legend=dict(orientation="h", x=0.0, y=-0.2), hovermode="closest", height=420)
+    apply_theme_to_figure(fig, theme_mode)
+    fig.update_xaxes(type="log")
+    return fig
 
-    Empile : (a) comparaison moyenne probe toutes électrodes, (b) reconstruction
-    par électrode sur le probe moyen (circuit Orazem + DRT).
+
+# ── DRT : vue agrégée (variabilité inter-réplicats) ──────────────────────────────────
+
+def drt_aggregate_figure(
+    envelope: dict,
+    replicate_items: list,
+    mean_item=None,
+    title: str = "DRT agrégée",
+    theme_mode: str = "light",
+) -> go.Figure:
+    """γ(τ) agrégée sur les réplicats : courbe moyenne et bande de variabilité inter-réplicats.
+
+    Même convention de tracé que :func:`drt_figure` (ln γ/γ₀ vs ln τ/τ₀). Deux notions
+    d'incertitude NE SONT PAS confondues : la bande LARGE (ici) est l'étendue min–max des
+    réplicats, la variabilité expérimentale ; la bande fine de crédibilité HMC d'UN
+    réplicat est tracée par :func:`drt_figure` sur la vue du réplicat.
+
+    Args:
+        envelope: ``core.results_table.drt_replicate_envelope`` (tau, mean, lo, hi, n).
+        replicate_items: [(label, FitResult DRT)] des réplicats, tracés en traits fins.
+        mean_item: (label, FitResult DRT) du spectre moyen, tracé en pointillés (légende
+            seule : cliquer pour l'afficher), ou None.
     """
-    import matplotlib.pyplot as plt
-
-    n_graphs = 1 + len(sessions)
-    fig, axes = plt.subplots(nrows=n_graphs, ncols=1, figsize=(9, 4.2 * n_graphs))
-    if n_graphs == 1:
-        axes = [axes]
-
-    # (a) comparaison globale
-    ax = axes[0]
-    line_dashes = ["-", "--", ":", "-."]
-    method_colors = {ORAZEM_MODEL_NAME: "#dc2626", DRT_MODEL_NAME: "#1a56db"}
-    for idx, (e, session) in enumerate(sorted(sessions.items())):
-        probe = session.probe
-        if probe is None:
-            continue
-        dash = line_dashes[idx % len(line_dashes)]
-        ax.plot(probe.Zre, probe.Zim, "o", color="black", markersize=4, label=f"E{e} — mesuré")
-        fr_r = probe.fit_results.get(ORAZEM_MODEL_NAME)
-        if fr_r is not None:
-            ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, dash, color=method_colors[ORAZEM_MODEL_NAME],
-                     label=f"E{e} — circuit (Orazem)")
-        fr_d = probe.fit_results.get("drt_bayes")
-        if fr_d is not None:
-            ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, dash, color=method_colors["drt_bayes"],
-                     label=f"E{e} — DRT")
-    ax.set_title("Reconstructions Nyquist — comparaison toutes électrodes (probe)")
-    ax.set_xlabel("Re(Z) (Ω)")
-    ax.set_ylabel("-Im(Z) (Ω)")
-    ax.legend(fontsize=7)
-
-    # (b) par électrode
-    for i, (e, session) in enumerate(sorted(sessions.items())):
-        ax = axes[i + 1]
-        probe = session.probe
-        if probe is None:
-            ax.set_title(f"Électrode {e} — aucune donnée")
-            continue
-        ax.plot(probe.Zre, probe.Zim, "o", color="black", markersize=4, label="Mesuré")
-        fr_r = probe.fit_results.get(ORAZEM_MODEL_NAME)
-        if fr_r is not None:
-            ax.plot(fr_r.Zfit_re, fr_r.Zfit_im, "-", color="#dc2626", label="circuit (Orazem)")
-        fr_d = probe.fit_results.get("drt_bayes")
-        if fr_d is not None:
-            ax.plot(fr_d.Zfit_re, fr_d.Zfit_im, "--", color="#1a56db", label="DRT")
-        ax.set_title(f"Reconstruction probe — Électrode {e}")
-        ax.set_xlabel("Re(Z) (Ω)")
-        ax.set_ylabel("-Im(Z) (Ω)")
-        ax.legend(fontsize=7)
-
-    fig.tight_layout()
-    plt.show()
+    theme = get_theme(theme_mode)
+    color = theme["colors"][0]
+    fig = go.Figure()
+    tau = np.asarray(envelope["tau"], dtype=float)
+    lo, hi, mean = (np.asarray(envelope[k], dtype=float) for k in ("lo", "hi", "mean"))
+    band = (tau > 0) & (lo > 0) & (hi > 0)
+    if np.any(band):
+        xb = np.log(tau[band] / DRT_TAU0_S)
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([xb, xb[::-1]]),
+            y=np.concatenate([np.log(hi[band] / DRT_GAMMA0_OHM), np.log(lo[band][::-1] / DRT_GAMMA0_OHM)]),
+            fill="toself", fillcolor=_hex_to_rgba(color, 0.18), line=dict(width=0), hoverinfo="skip",
+            name=f"Variabilité inter-réplicats (min–max, n = {envelope['n']})"))
+    for i, (lbl, fr) in enumerate(replicate_items):
+        t = np.asarray(fr.drt_tau, dtype=float)
+        g = np.asarray(fr.drt_gamma, dtype=float)
+        ok = (t > 0) & (g > 0)
+        fig.add_trace(go.Scatter(
+            x=np.log(t[ok] / DRT_TAU0_S), y=np.log(g[ok] / DRT_GAMMA0_OHM), mode="lines", name=lbl,
+            line=dict(color=theme["colors"][(i + 1) % len(theme["colors"])], width=1), opacity=0.7,
+            hovertemplate=f"<b>{lbl}</b><br>ln(τ/τ₀) = %{{x:.3f}}<br>ln(γ/γ₀) = %{{y:.4g}}<extra></extra>"))
+    ok = (tau > 0) & (mean > 0)
+    fig.add_trace(go.Scatter(
+        x=np.log(tau[ok] / DRT_TAU0_S), y=np.log(mean[ok] / DRT_GAMMA0_OHM), mode="lines",
+        name="Moyenne des réplicats", line=dict(color=color, width=3),
+        hovertemplate="<b>Moyenne des réplicats</b><br>ln(τ/τ₀) = %{x:.3f}<br>ln(γ/γ₀) = %{y:.4g}<extra></extra>"))
+    if mean_item is not None and mean_item[1] is not None and mean_item[1].drt_tau is not None:
+        lbl, fr = mean_item
+        t = np.asarray(fr.drt_tau, dtype=float)
+        g = np.asarray(fr.drt_gamma, dtype=float)
+        ok = (t > 0) & (g > 0)
+        fig.add_trace(go.Scatter(
+            x=np.log(t[ok] / DRT_TAU0_S), y=np.log(g[ok] / DRT_GAMMA0_OHM), mode="lines",
+            name="DRT du spectre moyen", visible="legendonly",
+            line=dict(color=theme["colors"][3], width=2, dash="dash")))
+    fig.update_layout(
+        title=title, xaxis_title=r"$\ln(\tau/\tau_0)\;\;[\tau_0 = 1\,\mathrm{s}]$",
+        yaxis_title=r"$\ln(\gamma/\gamma_0)\;\;[\gamma_0 = 1\,\Omega]$",
+        legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0,
+                    font=dict(color=theme["text"]), bgcolor=_hex_to_rgba(theme["paper_bg"], 0.6),
+                    bordercolor=theme["grid"], borderwidth=1),
+        hovermode="closest", margin=dict(r=140))
+    apply_theme_to_figure(fig, theme_mode)
+    return fig
 
 
-def open_calibration_matplotlib_window(sessions: dict) -> None:
-    """Ouvre une fenêtre matplotlib (bloquante) empilant les courbes de calibration EIS.
+# ── Calibration : log10(Rct) vs log10([c]), un jeu de points par méthode ─────────────
 
-    Une sous-figure par électrode présente, une courbe par méthode (orazem,
-    drt_bayes), reproduisant la logique de calibration_figure() en matplotlib.
+def calibration_loglog_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
+    """log10(valeur cible) vs log10([c]) pour chaque méthode (circuit Orazem, DRT…), avec
+    régression et résidus. Régressions de ``core.calibration.compute_calibration_loglog_all``
+    (source unique, points retenus seulement) : cette figure ne calcule aucune régression.
     """
-    import matplotlib.pyplot as plt
-
-    n_graphs = max(len(sessions), 1)
-    fig, axes = plt.subplots(nrows=n_graphs, ncols=1, figsize=(8, 5 * n_graphs))
-    if n_graphs == 1:
-        axes = [axes]
-
-    for i, (e, session) in enumerate(sorted(sessions.items())):
-        ax = axes[i]
-        # Calcul délégué à core/calibration.py (même source que calibration_figure).
-        cals = compute_calibration_all(session)
-        if not cals:
-            ax.set_title(f"Électrode {e} — pas de calibration")
-            continue
-        for cal in cals:
-            ax.plot(cal.log_c, cal.y, "o", label=f"{cal.model} (données)")
-            log_c_line = np.linspace(cal.log_c.min(), cal.log_c.max(), 200)
-            ax.plot(log_c_line, cal.slope * log_c_line + cal.intercept, "-",
-                     label=f"{cal.model} R²={cal.r2:.3f}")
-        ax.set_title(f"Calibration — Électrode {e}")
-        ax.set_xlabel("log([c] / M)")
-        ax.set_ylabel("|Rct_probe − Rct_c| / |Rct_probe|")
-        ax.legend(fontsize=8)
-
-    fig.tight_layout()
-    plt.show()
+    theme = get_theme(theme_mode)
+    cals = compute_calibration_loglog_all(session)
+    if not cals:
+        fig = go.Figure()
+        fig.add_annotation(text="Pas assez de points retenus (min. 2 concentrations positives).",
+                           xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+                           font=dict(size=13))
+        apply_theme_to_figure(fig, theme_mode)
+        return fig
+    fig = make_subplots(rows=1, cols=2, subplot_titles=["log(Rct) vs log([c])", "Résidus de régression"])
+    for i, cal in enumerate(cals):
+        color = theme["colors"][i % len(theme["colors"])]
+        x_line = np.linspace(cal.log_c.min(), cal.log_c.max(), 200)
+        # d(log10 R) = (dR/R)/ln10 : l'erreur de reconstruction relative donne la barre d'erreur.
+        fig.add_trace(go.Scatter(
+            x=cal.log_c, y=cal.y, mode="markers", name=cal.model, legendgroup=cal.model,
+            marker=dict(color=color, size=9),
+            error_y=dict(type="data", array=np.asarray(cal.errs) / np.log(10.0), visible=True),
+            hovertemplate="log([c]) = %{x:.2f}<br>log(Rct) = %{y:.4f}<extra></extra>"), row=1, col=1)
+        sign = "+" if cal.intercept >= 0 else "−"
+        fig.add_trace(go.Scatter(
+            x=x_line, y=cal.slope * x_line + cal.intercept, mode="lines", legendgroup=cal.model,
+            name=f"{cal.model} — R²={cal.r2:.3f}, y={cal.slope:.3f}x {sign} {abs(cal.intercept):.3f}",
+            line=dict(color=color, width=2)), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=cal.log_c, y=cal.y - (cal.slope * cal.log_c + cal.intercept), mode="markers",
+            name=f"{cal.model} — résidus", legendgroup=cal.model, showlegend=False,
+            marker=dict(color=color, size=9)), row=1, col=2)
+    fig.add_hline(y=0, line=dict(color="#9ca3af", width=1), row=1, col=2)
+    fig.update_xaxes(title_text="log([c] / M)")
+    fig.update_yaxes(title_text="log(Rct / Ω)", row=1, col=1)
+    fig.update_yaxes(title_text="Résidu", row=1, col=2)
+    fig.update_layout(title="Calibration log-log — log(Rct) vs log([c])",
+                      legend=dict(orientation="h", y=-0.25), hovermode="closest")
+    apply_theme_to_figure(fig, theme_mode)
+    return fig
