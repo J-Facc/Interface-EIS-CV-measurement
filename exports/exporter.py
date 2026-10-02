@@ -178,12 +178,14 @@ def export_session_yaml(session: EISSession) -> str:
 
 # ── Calibration EIS — export multi-électrode / multi-méthode (ajout) ─────────
 
-def export_calibration_csv(sessions: dict) -> bytes:
+def export_calibration_csv(sessions: dict, strict: bool = False) -> bytes:
     """Exporte, pour chaque électrode et méthode, conc / log10(conc) / signal
     normalisé / Rct / paramètres de régression (slope, intercept, r2, p_value, std_err)
     dans un CSV multi-colonnes unique.
 
     sessions: {electrode_index: EISSession} ou un EISSession unique.
+    strict: exclut aussi les points au verdict KK « non conforme » (défaut : tous les points
+    calculables, la colonne ``kk_non_conforme`` signale ceux à interpréter avec prudence).
     """
     sessions = _as_sessions_dict(sessions)
     buf = io.StringIO()
@@ -191,17 +193,18 @@ def export_calibration_csv(sessions: dict) -> bytes:
     writer.writerow([
         "electrode", "model", "concentration_M", "log10_concentration",
         "signal_norm", "Rct_Ohm", "Rct_probe_Ohm",
-        "slope", "intercept", "r2", "p_value", "std_err",
+        "slope", "intercept", "r2", "p_value", "std_err", "kk_non_conforme",
     ])
 
     # Calcul délégué à core/calibration.py : mêmes pente/ordonnée/R² que
     # plotting.eis_plots.calibration_figure (source unique).
     for e, session in sorted(sessions.items()):
-        for cal in compute_calibration_all(session):
-            for conc, lc, sig, rct in zip(cal.concentrations, cal.log_c, cal.y, cal.rcts):
+        for cal in compute_calibration_all(session, strict):
+            for conc, lc, sig, rct, kk in zip(cal.concentrations, cal.log_c, cal.y, cal.rcts,
+                                              cal.kk_flags):
                 writer.writerow([
                     e, cal.model, conc, lc, sig, rct, cal.probe_rct,
-                    cal.slope, cal.intercept, cal.r2, cal.pvalue, cal.stderr,
+                    cal.slope, cal.intercept, cal.r2, cal.pvalue, cal.stderr, bool(kk),
                 ])
 
     return buf.getvalue().encode()
