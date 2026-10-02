@@ -1,5 +1,5 @@
-"""Streamlit tab rendering — EIS (Visualisation / Measurement model & fit Orazem / DRT) and
-CV (Visualisation / Calibration).
+"""Streamlit tab rendering — EIS (Visualisation / Measurement model & fit Orazem / DRT /
+Calibration) and CV (Visualisation / Calibration).
 
 Aucune logique métier ici : les tableaux viennent de ``core/results_table.py`` (lignes
 prêtes à afficher, testées sans navigateur) et les figures de ``plotting/``.
@@ -19,6 +19,7 @@ from core.results_table import (
     SEVERITY_ERROR,
     SEVERITY_OK,
     SEVERITY_WARNING,
+    calibration_rows,
     drt_diagnostic_rows,
     drt_replicate_envelope,
     fit_alert_lines,
@@ -34,6 +35,8 @@ from drt import engine as drt_engine
 from fits.orazem_fit import CONDITION_NUMBER_WARN
 from plotting.eis_plots import (
     bode_figure,
+    calibration_figure,
+    calibration_loglog_figure,
     drt_aggregate_figure,
     drt_figure,
     fit_nyquist_figure,
@@ -47,7 +50,7 @@ from plotting.cv_plots import (
     open_cv_calibration_matplotlib_window_multi,
 )
 from plotting.kk_plots import residuals_figure
-from exports.exporter import export_cv_calibration_csv_multi
+from exports.exporter import export_calibration_csv, export_cv_calibration_csv_multi
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -624,8 +627,78 @@ def _render_drt_tab(sessions: dict) -> None:
                               drt_ok=drt_ok)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# EIS — onglet 4 : Calibration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _calibration_table(rows: list) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "Méthode": r["model"],
+        "Groupe": r["group"],
+        "Rôle": "référence (normalisation)" if r["kind"] == "référence" else "point de calibration",
+        "Valeur cible (Ω)": _fmt(r["value"]),
+        "Statut": "✅ retenu" if r["included"] else "⛔ exclu",
+        "Raison de l'exclusion": " ; ".join(r["reasons"]),
+    } for r in rows])
+
+
+def _render_calibration_tab(sessions: dict) -> None:
+    """Onglet 4 — Calibration : signal normalisé et log-log, circuit Orazem et DRT séparément.
+
+    AUCUN calcul ici : régressions et filtre viennent de ``core/calibration.py`` (via
+    ``calibration_figure``, ``calibration_loglog_figure`` et ``core.results_table.calibration_rows``),
+    les mêmes fonctions que l'export CSV (``exports.exporter.export_calibration_csv``).
+    """
+    st.subheader("Courbe de calibration")
+    st.caption(
+        "Valeur de chaque groupe = paramètre cible du fit du spectre MOYEN (`orazem` : circuit "
+        "ajusté ; `drt_bayes` : Rct de la DRT), calculée par `core/calibration.py` comme pour l'export CSV. "
+        "Signal normalisé = |Rct_probe − Rct_c| / Rct_probe vs log10([c]) ; log-log = log10(Rct) vs log10([c]). "
+        "N'entrent dans une régression que les groupes dont le fit existe, a convergé et dont le verdict "
+        "Kramers-Kronig n'est pas « non conforme » ; le probe (référence) obéit aux mêmes règles. "
+        "Chaque point exclu est listé avec sa raison."
+    )
+    electrodes = [e for e in sorted(sessions.keys()) if calibration_rows(sessions[e])]
+    if not electrodes:
+        st.info("Aucun fit disponible pour une calibration : chargez au moins un probe et des "
+                "concentrations, et lancez l'analyse.")
+        return
+    elec_tabs = st.tabs([f"Électrode {e}" for e in electrodes])
+    for e, tab in zip(electrodes, elec_tabs):
+        with tab:
+            session = sessions[e]
+            rows = calibration_rows(session)
+            models = list(dict.fromkeys(r["model"] for r in rows))
+            if DRT_MODEL_NAME not in models:
+                st.info("Aucune DRT calculée pour cette électrode : seule la calibration du circuit est "
+                        "disponible.")
+            for model in models:
+                mine = [r for r in rows if r["model"] == model]
+                ref = next((r for r in mine if r["kind"] == "référence"), None)
+                pts = [r for r in mine if r["kind"] == "concentration"]
+                kept = [r for r in pts if r["included"]]
+                if ref is not None and not ref["included"]:
+                    st.error(f"**{model}** : référence probe exclue ({' ; '.join(ref['reasons'])}) — le "
+                             "signal normalisé n'est pas calculé pour cette méthode.")
+                if len(kept) < 2:
+                    st.warning(f"**{model}** : pas de régression — {len(kept)} point(s) retenu(s) sur "
+                               f"{len(pts)} (minimum 2). Voir les exclusions ci-dessous.")
+            st.plotly_chart(calibration_figure(session), width='stretch', key=f"calib_fig_e{e}")
+            st.plotly_chart(calibration_loglog_figure(session), width='stretch', key=f"calib_ll_fig_e{e}")
+            st.markdown("**Points de calibration — retenus et exclus**")
+            st.dataframe(_calibration_table(rows), hide_index=True, width='stretch')
+            n_out = sum(1 for r in rows if not r["included"])
+            st.caption(f"{n_out} point(s) exclu(s) sur {len(rows)}." if n_out
+                       else "Aucun point exclu : tous les groupes sont retenus.")
+    st.download_button(
+        "📥 Télécharger les valeurs (CSV)", data=export_calibration_csv(sessions),
+        file_name="eis_calibration.csv", mime="text/csv", key="calib_csv_btn",
+        help="Même fonction que la page Export : mêmes points, mêmes régressions.")
+
+
 def render_eis_tabs(sessions: dict, normalized: dict = None) -> None:
-    """Les trois onglets d'analyse EIS : Visualisation / Measurement model & fit Orazem / DRT.
+    """Les quatre onglets d'analyse EIS : Visualisation / Measurement model & fit Orazem / DRT /
+    Calibration.
 
     Args:
         sessions: {electrode_index: EISSession} — les sessions RÉELLES de
@@ -634,8 +707,8 @@ def render_eis_tabs(sessions: dict, normalized: dict = None) -> None:
         normalized: spectres normalisés par concentration (``A_eis._build_normalized_session``),
             affichés comme un onglet de plus dans « Visualisation » ; None = pas de vue normalisée.
     """
-    tab1, tab2, tab3 = st.tabs([
-        "1️⃣ Visualisation", "2️⃣ Measurement model & fit Orazem", "3️⃣ DRT",
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "1️⃣ Visualisation", "2️⃣ Measurement model & fit Orazem", "3️⃣ DRT", "4️⃣ Calibration",
     ])
     with tab1:
         _render_visualisation_tab(sessions, normalized)
@@ -643,6 +716,8 @@ def render_eis_tabs(sessions: dict, normalized: dict = None) -> None:
         _render_model_fit_tab(sessions)
     with tab3:
         _render_drt_tab(sessions)
+    with tab4:
+        _render_calibration_tab(sessions)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from core.models import EISSession, EISSpectrum
-from core.calibration import compute_calibration_all
+from core.calibration import compute_calibration_all, compute_calibration_loglog_all
 from plotting.theme import get_theme, apply_theme_to_figure
 
 
@@ -880,5 +880,50 @@ def drt_aggregate_figure(
                     font=dict(color=theme["text"]), bgcolor=_hex_to_rgba(theme["paper_bg"], 0.6),
                     bordercolor=theme["grid"], borderwidth=1),
         hovermode="closest", margin=dict(r=140))
+    apply_theme_to_figure(fig, theme_mode)
+    return fig
+
+
+# ── Calibration : log10(Rct) vs log10([c]), un jeu de points par méthode ─────────────
+
+def calibration_loglog_figure(session: EISSession, theme_mode: str = "light") -> go.Figure:
+    """log10(valeur cible) vs log10([c]) pour chaque méthode (circuit Orazem, DRT…), avec
+    régression et résidus. Régressions de ``core.calibration.compute_calibration_loglog_all``
+    (source unique, points retenus seulement) : cette figure ne calcule aucune régression.
+    """
+    theme = get_theme(theme_mode)
+    cals = compute_calibration_loglog_all(session)
+    if not cals:
+        fig = go.Figure()
+        fig.add_annotation(text="Pas assez de points retenus (min. 2 concentrations positives).",
+                           xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+                           font=dict(size=13))
+        apply_theme_to_figure(fig, theme_mode)
+        return fig
+    fig = make_subplots(rows=1, cols=2, subplot_titles=["log(Rct) vs log([c])", "Résidus de régression"])
+    for i, cal in enumerate(cals):
+        color = theme["colors"][i % len(theme["colors"])]
+        x_line = np.linspace(cal.log_c.min(), cal.log_c.max(), 200)
+        # d(log10 R) = (dR/R)/ln10 : l'erreur de reconstruction relative donne la barre d'erreur.
+        fig.add_trace(go.Scatter(
+            x=cal.log_c, y=cal.y, mode="markers", name=cal.model, legendgroup=cal.model,
+            marker=dict(color=color, size=9),
+            error_y=dict(type="data", array=np.asarray(cal.errs) / np.log(10.0), visible=True),
+            hovertemplate="log([c]) = %{x:.2f}<br>log(Rct) = %{y:.4f}<extra></extra>"), row=1, col=1)
+        sign = "+" if cal.intercept >= 0 else "−"
+        fig.add_trace(go.Scatter(
+            x=x_line, y=cal.slope * x_line + cal.intercept, mode="lines", legendgroup=cal.model,
+            name=f"{cal.model} — R²={cal.r2:.3f}, y={cal.slope:.3f}x {sign} {abs(cal.intercept):.3f}",
+            line=dict(color=color, width=2)), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=cal.log_c, y=cal.y - (cal.slope * cal.log_c + cal.intercept), mode="markers",
+            name=f"{cal.model} — résidus", legendgroup=cal.model, showlegend=False,
+            marker=dict(color=color, size=9)), row=1, col=2)
+    fig.add_hline(y=0, line=dict(color="#9ca3af", width=1), row=1, col=2)
+    fig.update_xaxes(title_text="log([c] / M)")
+    fig.update_yaxes(title_text="log(Rct / Ω)", row=1, col=1)
+    fig.update_yaxes(title_text="Résidu", row=1, col=2)
+    fig.update_layout(title="Calibration log-log — log(Rct) vs log([c])",
+                      legend=dict(orientation="h", y=-0.25), hovermode="closest")
     apply_theme_to_figure(fig, theme_mode)
     return fig

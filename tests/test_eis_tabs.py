@@ -1,11 +1,12 @@
-"""Les trois onglets EIS (ui/tabs.py::render_eis_tabs) : Visualisation / Measurement model &
-fit Orazem / DRT.
+"""Les quatre onglets EIS (ui/tabs.py::render_eis_tabs) : Visualisation / Measurement model &
+fit Orazem / DRT / Calibration.
 
 Organisation
     A. Lignes de données (core/results_table.py), sans Streamlit : verdict KK, diagnostics de
        fit (κ, rang, identifiabilité, bornes, χ²ᵣ), alertes, paramètres, diagnostics DRT,
        enveloppe inter-réplicats
     B. Figures (plotting/eis_plots.py) : smoke-tests de rendu sur de vrais résultats du pipeline
+    D. Calibration : filtre (convergence, KK), raisons d'exclusion, cohérence avec l'export
     C. Rendu de la vraie page EIS (Streamlit AppTest) : structure à trois onglets, groupe
        « indéterminé », avertissement κ visuellement distinct, diagnostics DRT toujours visibles
        (DRT factice : ni CmdStan ni cvxopt requis)
@@ -335,6 +336,159 @@ def test_drt_aggregate_figure_has_the_wide_band_replicates_and_mean(with_drt):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# D. Calibration (core/calibration.py, source unique de l'onglet ET de l'export CSV)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _cal_fit(model, rct, converged=True):
+    z = np.ones(5)
+    return FitResult(model_name=model, params={}, params_std={}, Zfit_re=z, Zfit_im=z, chi2_reduced=1.0,
+                     residuals_re=z, residuals_im=z, target_param="Rct", target_value=rct,
+                     target_std=1.0, converged=converged)
+
+
+def _cal_session(*, orazem=None, drt=None, kk=None, drt_mode="optimize", probe_kk=None,
+                 probe_converged=True):
+    """probe + 4 concentrations. ``orazem``/``drt`` : {indice de groupe: dict(rct, converged)}
+    pour surcharger ; ``drt`` None = pas de DRT ; ``kk`` : {indice: all_valid}."""
+    from types import SimpleNamespace
+    from core.models import ConcentrationGroup, EISSession, EISSpectrum
+
+    def spectrum(conc, step, label):
+        f = np.logspace(5, -1, 10)
+        return EISSpectrum(label=label, f=f, Zre=f * 0 + 1.0, Zim=f * 0 + 1.0, concentration=conc,
+                           step=step, n_points=10)
+
+    def analysis(valid):
+        return SimpleNamespace(ok=True, validation=SimpleNamespace(all_valid=valid), drt_failures={})
+
+    s = EISSession()
+    s.probe = spectrum(0.0, "probe", "probe (avg)")
+    s.probe.fit_results["orazem"] = _cal_fit("orazem", 3000.0, probe_converged)
+    s.probe_analysis = analysis(probe_kk)
+    if drt is not None:
+        s.drt_mode = drt_mode
+        s.probe.fit_results["drt_bayes"] = _cal_fit("drt_bayes", 3000.0)
+    for i, (conc, rct) in enumerate([(1e-12, 3300.0), (1e-11, 3900.0), (1e-10, 4800.0), (1e-9, 5700.0)]):
+        sp = spectrum(conc, "hybridization", f"c{i} (avg)")
+        o = {"rct": rct, "converged": True, **(orazem or {}).get(i, {})}
+        sp.fit_results["orazem"] = _cal_fit("orazem", o["rct"], o["converged"])
+        if drt is not None and drt.get(i) is not False:          # drt[i] = False : pas de DRT
+            d = {"rct": rct * 1.02, "converged": True, **(drt.get(i) or {})}
+            sp.fit_results["drt_bayes"] = _cal_fit("drt_bayes", d["rct"], d["converged"])
+        grp = ConcentrationGroup(concentration=conc, spectrum=sp)
+        grp.analysis = analysis((kk or {}).get(i))
+        s.groups.append(grp)
+    return s
+
+
+def test_calibration_keeps_every_group_when_all_fits_are_sound():
+    from core.calibration import calibration_points, compute_calibration, compute_calibration_loglog
+    s = _cal_session()
+    assert all(p.included and p.reasons == () for p in calibration_points(s, "orazem"))
+    assert compute_calibration(s, "orazem").n == 4 and compute_calibration_loglog(s, "orazem").n == 4
+
+
+def test_a_non_converged_fit_is_excluded_from_both_regressions_with_its_reason():
+    from core.calibration import (REASON_NOT_CONVERGED, calibration_points, compute_calibration,
+                                  compute_calibration_loglog)
+    s = _cal_session(orazem={1: dict(converged=False)})
+    pts = calibration_points(s, "orazem")
+    assert [p.included for p in pts] == [True, False, True, True]
+    assert pts[1].reasons == (REASON_NOT_CONVERGED,)
+    for cal in (compute_calibration(s, "orazem"), compute_calibration_loglog(s, "orazem")):
+        assert cal.n == 3 and 1e-11 not in cal.concentrations
+
+
+def test_a_kk_non_conform_group_is_excluded_but_an_undetermined_verdict_is_not():
+    from core.calibration import REASON_KK_NONCONFORM, calibration_points
+    s = _cal_session(kk={0: False, 2: None, 3: True})
+    pts = calibration_points(s, "orazem")
+    assert [p.included for p in pts] == [False, True, True, True]
+    assert pts[0].reasons == (REASON_KK_NONCONFORM,)
+
+
+def test_every_reason_is_reported_when_several_apply():
+    from core.calibration import REASON_KK_NONCONFORM, REASON_NOT_CONVERGED, calibration_points
+    s = _cal_session(orazem={0: dict(converged=False)}, kk={0: False})
+    assert calibration_points(s, "orazem")[0].reasons == (REASON_NOT_CONVERGED, REASON_KK_NONCONFORM)
+
+
+def test_a_missing_drt_is_reported_with_its_recorded_failure():
+    from core.calibration import REASON_DRT_MISSING, calibration_points
+    s = _cal_session(drt={2: False})                     # pas de DRT sur le groupe 2
+    s.groups[2].analysis.drt_failures["c2 (avg)"] = "échec CmdStan simulé"
+    pts = calibration_points(s, "drt_bayes")
+    assert [p.included for p in pts] == [True, True, False, True]
+    assert pts[2].reasons[0].startswith(REASON_DRT_MISSING) and "échec CmdStan simulé" in pts[2].reasons[0]
+
+
+def test_a_requested_drt_with_no_result_excludes_every_point_instead_of_vanishing():
+    from core.calibration import REASON_DRT_MISSING, calibration_models, calibration_points, \
+        compute_calibration_loglog
+    s = _cal_session()
+    assert calibration_models(s) == ["orazem"]
+    s.drt_mode = "optimize"                               # DRT demandée, mais aucun spectre n'en porte
+    assert calibration_models(s) == ["orazem", "drt_bayes"]
+    pts = calibration_points(s, "drt_bayes")
+    assert not any(p.included for p in pts) and all(p.reasons == (REASON_DRT_MISSING,) for p in pts)
+    assert compute_calibration_loglog(s, "drt_bayes") is None
+
+
+def test_an_unusable_probe_blocks_the_normalised_signal_but_not_the_loglog():
+    from core.calibration import calibration_reference, compute_calibration, compute_calibration_loglog
+    for kwargs in (dict(probe_converged=False), dict(probe_kk=False)):
+        s = _cal_session(**kwargs)
+        assert not calibration_reference(s, "orazem").included
+        assert compute_calibration(s, "orazem") is None
+        assert compute_calibration_loglog(s, "orazem").n == 4      # la référence n'y sert pas
+
+
+def test_methods_are_filtered_independently():
+    from core.calibration import compute_calibration_all
+    s = _cal_session(orazem={1: dict(converged=False)}, drt={})
+    by_model = {c.model: c.n for c in compute_calibration_all(s)}
+    assert by_model == {"orazem": 3, "drt_bayes": 4}
+
+
+def test_the_csv_export_applies_the_same_filter_as_the_tab():
+    import csv
+    from exports.exporter import export_calibration_csv
+    s = _cal_session(orazem={1: dict(converged=False)}, kk={3: False})
+    rows = list(csv.DictReader(io.StringIO(export_calibration_csv(s).decode())))
+    assert sorted(float(r["concentration_M"]) for r in rows if r["model"] == "orazem") == [1e-12, 1e-10]
+
+
+def test_calibration_rows_list_included_and_excluded_points_with_reasons():
+    s = _cal_session(orazem={1: dict(converged=False)}, kk={0: False}, drt={})
+    rows = rt.calibration_rows(s)
+    assert {r["model"] for r in rows} == {"orazem", "drt_bayes"}
+    assert [r["kind"] for r in rows if r["model"] == "orazem"] == ["référence"] + ["concentration"] * 4
+    out = {(r["model"], r["group"]): r["reasons"] for r in rows if not r["included"]}
+    # Le verdict KK est celui du GROUPE : il exclut le point pour les deux méthodes ; la
+    # non-convergence est propre au fit Orazem.
+    assert out == {("orazem", "1.00e-12 M"): ["KK non conforme"],
+                   ("drt_bayes", "1.00e-12 M"): ["KK non conforme"],
+                   ("orazem", "1.00e-11 M"): ["fit non convergé"]}
+
+
+def test_the_calibration_tab_does_no_regression_of_its_own():
+    source = (REPO / "ui" / "tabs.py").read_text(encoding="utf-8")
+    assert "linregress" not in source and "polyfit" not in source
+    assert "export_calibration_csv" in source and "calibration_rows" in source
+
+
+def test_loglog_figure_draws_one_regression_per_method_and_only_kept_points():
+    from plotting.eis_plots import calibration_loglog_figure
+    s = _cal_session(orazem={1: dict(converged=False)}, drt={})
+    fig = calibration_loglog_figure(s)
+    pts = {t.name: t for t in fig.data if t.mode == "markers" and "résidus" not in t.name}
+    assert set(pts) == {"orazem", "drt_bayes"}
+    assert len(pts["orazem"].x) == 3 and len(pts["drt_bayes"].x) == 4
+    empty = calibration_loglog_figure(_cal_session(orazem={i: dict(converged=False) for i in range(4)}))
+    assert not any(t.type == "scatter" for t in empty.data)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # C. Rendu de la page EIS réelle (Streamlit AppTest)
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -360,13 +514,14 @@ def _run_page(monkeypatch, n_rep, *, drt=None, raw=True):
 
 
 def _top_tabs(at):
-    return [t.label for t in at.tabs if t.label.startswith(("1️⃣", "2️⃣", "3️⃣"))]
+    return [t.label for t in at.tabs if t.label.startswith(("1️⃣", "2️⃣", "3️⃣", "4️⃣"))]
 
 
-def test_page_has_exactly_the_three_tabs_in_order(monkeypatch):
+def test_page_has_exactly_the_four_tabs_in_order(monkeypatch):
     at = _run_page(monkeypatch, 3)
-    assert _top_tabs(at) == ["1️⃣ Visualisation", "2️⃣ Measurement model & fit Orazem", "3️⃣ DRT"]
-    assert len([t for t in at.tabs if t.label[:2] in ("1️", "2️", "3️", "4️", "5️")]) == 3
+    assert _top_tabs(at) == ["1️⃣ Visualisation", "2️⃣ Measurement model & fit Orazem", "3️⃣ DRT",
+                             "4️⃣ Calibration"]
+    assert len([t for t in at.tabs if t.label[:2] in ("1️", "2️", "3️", "4️", "5️")]) == 4
 
 
 def test_page_offers_raw_data_only_when_the_raw_experiment_exists(monkeypatch):
@@ -438,3 +593,20 @@ def test_drt_alerts_are_displayed_not_buried(monkeypatch):
     view = next(r for r in at.radio if r.key.startswith("drt_view_"))
     at = view.set_value("Réplicat 1").run()
     assert any("ESS tail faible (simulé)" in w.value for w in at.warning)
+
+
+def test_calibration_tab_shows_both_methods_and_names_the_excluded_points(monkeypatch):
+    # 1 concentration seulement : la régression est impossible, le tableau dit pourquoi et rien ne disparaît.
+    at = _run_page(monkeypatch, 3, drt=_FakeDRT())
+    assert any(w.value.startswith("**orazem** : pas de régression") for w in at.warning)
+    table = next(d for d in at.dataframe if "Raison de l'exclusion" in d.value.columns)
+    df = table.value
+    assert set(df["Méthode"]) == {"orazem", "drt_bayes"}
+    assert {"référence (normalisation)", "point de calibration"} == set(df["Rôle"])
+    assert any(b.label.startswith("📥") for b in at.get("download_button"))
+    assert len(df) == 4                                    # (probe + 1 concentration) × 2 méthodes
+
+
+def test_calibration_tab_without_drt_says_so(monkeypatch):
+    at = _run_page(monkeypatch, 3)
+    assert any("Aucune DRT calculée pour cette électrode" in i.value for i in at.info)

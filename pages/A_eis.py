@@ -6,8 +6,8 @@ model + verdict Kramers-Kronig AVANT le fit, fit Orazem du circuit défini ici (
 réplicat + la moyenne) et DRT (chaque réplicat + la moyenne). Les groupes arrêtés
 (structure d'erreur non caractérisable, AUDIT.md ERR-1) sont signalés explicitement.
 
-Résultats présentés en TROIS onglets (ui/tabs.py::render_eis_tabs) : Visualisation (spectres
-mesurés), Measurement model & fit Orazem, DRT.
+Résultats présentés en QUATRE onglets (ui/tabs.py::render_eis_tabs) : Visualisation (spectres
+mesurés), Measurement model & fit Orazem, DRT, Calibration.
 """
 
 import copy
@@ -293,7 +293,7 @@ def _build_file_assignments_electrode(experiment: dict, elec_idx: int) -> list:
 
 def main() -> None:
     st.title("📡 Analyse EIS — Spectroscopie d'impédance")
-    st.caption("Visualisation · Measurement model & Kramers-Kronig, fit Orazem du circuit · DRT")
+    st.caption("Visualisation · Measurement model & Kramers-Kronig, fit Orazem du circuit · DRT · Calibration")
 
     # Vérification que les données sont disponibles (B-STATE-b : jamais de KeyError)
     if not preprocessing_ready(st.session_state):
