@@ -193,8 +193,12 @@ def _group_recap_rows(session) -> tuple:
     return rows, flagged
 
 
-def _render_kk_section(an) -> None:
-    """Measurement model et verdict KK d'un groupe — lus AVANT le fit."""
+def _render_kk_section(an, key: str) -> None:
+    """Measurement model et verdict KK d'un groupe — lus AVANT le fit.
+
+    ``key`` : identifiant unique (électrode + groupe) ; le label de groupe seul (« probe »…)
+    se répète d'une électrode à l'autre.
+    """
     vr = an.validation
     if vr is None:
         st.info("Aucun résultat de validation pour ce groupe.")
@@ -221,7 +225,7 @@ def _render_kk_section(an) -> None:
     st.dataframe(pd.DataFrame(table), hide_index=True, width='stretch')
 
     st.plotly_chart(residuals_figure(vr, theme_mode="light"), width='stretch',
-                    key=f"kk_res_{vr.label}")
+                    key=f"kk_res_{key}")
     for kk in vr.replicates:
         if kk.warning and kk.method != "lin_kk":     # Lin-KK : « indéterminé », déjà dit plus haut
             st.warning(f"**{kk.label}** : {kk.warning}")
@@ -381,7 +385,7 @@ def _render_model_fit_group(an, mean_sp, reps, key: str) -> None:
         st.info("Aucune analyse pour ce groupe.")
         return
     st.markdown("##### 1 · Measurement model et validation Kramers-Kronig")
-    _render_kk_section(an)
+    _render_kk_section(an, key)
 
     st.markdown("##### 2 · Fit Orazem du circuit")
     if an.orazem is not None:

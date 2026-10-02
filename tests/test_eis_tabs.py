@@ -610,3 +610,35 @@ def test_calibration_tab_shows_both_methods_and_names_the_excluded_points(monkey
 def test_calibration_tab_without_drt_says_so(monkeypatch):
     at = _run_page(monkeypatch, 3)
     assert any("Aucune DRT calculée pour cette électrode" in i.value for i in at.info)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Clés Streamlit uniques entre électrodes partageant les mêmes labels de groupe
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_tabs_script():
+    import streamlit as st
+    from ui.tabs import render_eis_tabs
+    render_eis_tabs(st.session_state["sessions"])
+
+
+def test_two_electrodes_sharing_group_labels_raise_no_duplicate_key(monkeypatch, with_drt):
+    """Régression : e1 et e2 ont chacune un groupe « Probe » (et la même concentration).
+    Toute clé construite sur le seul label (ex. ``kk_res_probe``) lève
+    StreamlitDuplicateElementKey. Rendu des 4 onglets avec DRT, KK, fit et visualisation."""
+    import streamlit
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setattr(streamlit, "page_link", lambda *a, **k: None)
+    monkeypatch.setattr(drt_engine, "engine_available", lambda: (True, None))
+    sessions = {1: copy.deepcopy(with_drt), 2: copy.deepcopy(with_drt)}
+    labels = [[g[0] for g in s.iter_groups()] for s in sessions.values()]
+    assert labels[0] == labels[1] and "Probe" in labels[0]       # précondition : labels partagés
+
+    at = AppTest.from_function(_render_tabs_script, default_timeout=300)
+    at.session_state["sessions"] = sessions
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    keys = [c.key for c in at.get("plotly_chart")]
+    assert any(k and k.startswith("kk_res_") for k in keys)
+    assert len(keys) == len(set(keys))
