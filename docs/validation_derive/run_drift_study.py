@@ -256,8 +256,15 @@ def _ci(k, n):
 
 
 def cmd_report(args):
-    rows = [json.loads(line) for line in Path(args.path).read_text(encoding="utf-8").splitlines() if line.strip()]
-    ok = [r for r in rows if r["status"] == "ok"]
+    rows, seen = [], set()
+    for line in Path(args.path).read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            r = json.loads(line)
+            key = (r["noise"], r["scenario"], r["param"], r["amplitude"], r["n_rep"], r["seed"])
+            if key not in seen:                     # reprise après interruption : un groupe = une ligne
+                seen.add(key)
+                rows.append(r)
+    ok =[r for r in rows if r["status"] == "ok"]
     ko = [r for r in rows if r["status"] != "ok"]
     print(f"{len(rows)} groupes, {len(ko)} sans structure d'erreur\n")
     keys = []
