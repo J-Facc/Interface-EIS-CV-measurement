@@ -112,6 +112,7 @@ python -m pytest tests/ -v                # ajouter -m "not slow" pour exclure l
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | arborescence, flux de données, règles de modularité, lanceur |
 | [docs/MEASUREMENT_MODEL.md](docs/MEASUREMENT_MODEL.md) | measurement model, structure d'erreur d'Orazem, Kramers-Kronig, fit |
+| [docs/VALIDATION_DETECTION_DERIVE.md](docs/VALIDATION_DETECTION_DERIVE.md) | calibration empirique des critères de dérive entre réplicats (faux positifs, puissance) |
 | [docs/CIRCUIT_UTILISATEUR.md](docs/CIRCUIT_UTILISATEUR.md) | écrire son propre circuit équivalent |
 | [docs/DRT_BAYESIENNE.md](docs/DRT_BAYESIENNE.md) | DRT, HMC/NUTS, lecture des intervalles de crédibilité |
 | [drt/PROVENANCE.md](drt/PROVENANCE.md), [drt/VALIDATION_REGLAGES.md](drt/VALIDATION_REGLAGES.md) | origine du code DRT, validation des réglages |
