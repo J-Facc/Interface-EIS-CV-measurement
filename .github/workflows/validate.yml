@@ -60,4 +60,4 @@ jobs:
       # tests/test_drt_engine.py : moteur durci drt/ (HMC par défaut, ~2-5 min par spectre sur
       # 4 cœurs — les 7 cas DRT-1 + reproductibilité, marqués slow, sont exécutés ici).
       - name: Run DRT tests (MAP + HMC)
-        run: python -m pytest tests/test_pipeline.py tests/test_drt_engine.py tests/test_drt_fitresult_contract.py -v -rs
+        run: python -m pytest tests/test_pipeline.py tests/test_drt_engine.py tests/test_drt_fitresult_contract.py tests/test_drt_recompute.py -v -rs

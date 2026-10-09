@@ -37,7 +37,8 @@ def _state_after_an_analysis():
 
 
 def test_the_real_result_keys_are_reset_not_dead_ones():
-    assert set(ANALYSIS_RESULT_KEYS) == {"eis_sessions", "eis_validations", "eis_normalized", "cv_sessions"}
+    assert set(ANALYSIS_RESULT_KEYS) == {"eis_sessions", "eis_validations", "eis_normalized", "cv_sessions",
+                                         "eis_drt_store"}
     assert not {"eis_session", "eis_validation"} & set(SHARED_DEFAULTS)
 
 

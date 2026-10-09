@@ -121,7 +121,7 @@ def _yaml_value(v):
 
 
 def _fit_yaml(fit) -> dict:
-    return {
+    out = {
         "target_param": str(fit.target_param),
         "target_value": float(fit.target_value),
         "target_std": float(fit.target_std),
@@ -130,6 +130,15 @@ def _fit_yaml(fit) -> dict:
         "params": {k: _yaml_value(v) for k, v in fit.params.items()},
         "warnings": list(fit.warnings or []),
     }
+    if getattr(fit, "drt_mode", None) is not None:
+        # DRT : mode ET conditions du calcul (durée, date) — un résultat HMC (minutes) et un MAP
+        # (secondes) d'un même spectre ne se distinguent pas autrement dans la session.
+        out["drt_mode"] = fit.drt_mode
+        diag = fit.drt_diagnostics if isinstance(fit.drt_diagnostics, dict) else {}
+        run = {k: _yaml_value(diag[k]) for k in ("mode", "duration_s", "computed_at") if k in diag}
+        if run:
+            out["drt_run"] = run
+    return out
 
 
 def _aggregate_yaml(agg) -> dict:

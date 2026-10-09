@@ -29,7 +29,7 @@ from ui.tabs import render_eis_tabs
 _DEFAULT_CONFIG = config_to_dict(load_config())
 
 #: Clés de st.session_state des résultats EIS (sous-ensemble de core.app_state).
-_EIS_RESULT_KEYS = ("eis_sessions", "eis_validations", "eis_normalized")
+_EIS_RESULT_KEYS = ("eis_sessions", "eis_validations", "eis_normalized", "eis_drt_store")
 
 
 def _render_analysis_status(sessions: dict) -> None:
@@ -378,6 +378,7 @@ def main() -> None:
                 return
 
         st.session_state["eis_sessions"]    = sessions
+        st.session_state["eis_drt_store"]   = {}     # nouvelle analyse : registre DRT vierge
         st.session_state["eis_config"]      = cfg
         st.session_state["eis_validations"] = validations
         st.session_state["eis_inputs"]      = inputs

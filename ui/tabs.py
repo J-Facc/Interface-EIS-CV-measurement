@@ -9,7 +9,20 @@ import pandas as pd
 import streamlit as st
 
 from core.models import GROUP_ERROR_STRUCTURE_UNAVAILABLE
-from core.pipeline import DRT_MODEL_NAME, recompute_drt
+from core.drt_recompute import (
+    MODE_OPTIMIZE,
+    MODE_SAMPLE,
+    STORE_KEY,
+    estimate_sample_minutes,
+    iter_targets,
+    recalculate,
+    recalculate_many,
+    revert_many,
+    revert_to_optimize,
+    run_info,
+    target_of,
+)
+from core.pipeline import DRT_MODEL_NAME
 from core.results_table import (
     DRT_ABSENT,
     DRT_FAILED,
@@ -504,7 +517,93 @@ def _render_drt_spectrum_panel(r: dict) -> None:
         st.error("⛔ DRT NON convergée : ne pas exploiter ce Rct.")
 
 
-def _render_drt_group(an, mean_sp, reps, key: str, config: dict, session, drt_ok: bool) -> None:
+_MODE_TXT = {MODE_SAMPLE: "HMC (sample)", MODE_OPTIMIZE: "MAP (optimize)"}
+
+#: Clé transitoire de ``st.session_state`` : messages d'un recalcul, affichés au rerun suivant
+#: (sans elle, un ``st.warning`` posé juste avant ``st.rerun()`` disparaîtrait aussitôt).
+_NOTICE_KEY = "eis_drt_notice"
+
+
+def _sample_warning(n_spectra: int = 1) -> str:
+    lo, hi = estimate_sample_minutes(n_spectra)
+    scope = "par spectre" if n_spectra == 1 else f"par spectre — soit {lo} à {hi} min pour {n_spectra} spectres"
+    return (f"⚠️ **Le mode sample (HMC) prend 2 à 5 minutes {scope}**, et peut être instable "
+            "(divergences, R̂ élevé) : lisez les diagnostics avant d'exploiter un résultat. Le calcul "
+            "bloque la page jusqu'à sa fin. Tout est calculé d'abord en optimize (MAP, ~1 s).")
+
+
+def _drt_store() -> dict:
+    """Registre ``{clé de spectre: {mode: FitResult}}`` de la session (créé s'il manque)."""
+    store = st.session_state.get(STORE_KEY)
+    if store is None:
+        store = st.session_state[STORE_KEY] = {}
+    return store
+
+
+def _fmt_duration(seconds) -> str:
+    if seconds is None:
+        return "—"
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    return f"{int(seconds // 60)} min {int(seconds % 60):02d} s"
+
+
+def _queue_notice(outcomes: list, done_text: str) -> None:
+    """Range le bilan d'un recalcul pour le prochain rerun : un ``st.warning`` PAR spectre en
+    échec (avec son label), puis une ligne de bilan."""
+    notices = [("warning", f"⚠️ « {o.display} » : DRT non recalculée — {o.error} "
+                           "L'ancien résultat de ce spectre est conservé.")
+               for o in outcomes if not o.ok]
+    n_ok = sum(1 for o in outcomes if o.ok)
+    if n_ok:
+        notices.append(("success", f"{done_text} : {n_ok} spectre(s) sur {len(outcomes)}."))
+    st.session_state[_NOTICE_KEY] = notices
+
+
+def _progress_bar(total: int):
+    """(callback ``on_progress``, barre) : ``st.progress`` affichant « n/N — spectre en cours »."""
+    bar = st.progress(0.0, text=f"0/{total}")
+
+    def on_progress(done: int, tot: int, label: str) -> None:
+        text = f"{done}/{tot}" + (f" — calcul de {label}…" if label else " — terminé")
+        bar.progress(done / tot if tot else 1.0, text=text)
+
+    return on_progress
+
+
+def _render_drt_row_actions(electrode, session, mean_sp, reps, config, drt_ok: bool) -> None:
+    """Une ligne par spectre du groupe : label, mode actuel, durée, et les deux boutons."""
+    store = _drt_store()
+    rows = [(f"Réplicat {i + 1}", sp) for i, sp in enumerate(reps)] + [("Moyenne", mean_sp)]
+    head = st.columns([3, 2, 1.5, 2.5, 2.5])
+    for col, title in zip(head, ("Spectre", "Mode actuel", "Durée", "", "")):
+        col.markdown(f"**{title}**" if title else "")
+    for name, sp in rows:
+        target = target_of(electrode, session, sp)
+        info = run_info(sp.fit_results.get(DRT_MODEL_NAME))
+        c_name, c_mode, c_dur, c_sample, c_back = st.columns([3, 2, 1.5, 2.5, 2.5])
+        c_name.write(f"{name} · {sp.label}")
+        c_mode.write(_MODE_TXT.get(info.mode, info.mode or "—") if info else "—")
+        c_dur.write(_fmt_duration(info.duration_s) if info else "—")
+        if c_sample.button("Recalculer en sample", key=f"drt_row_sample_{target.key}", disabled=not drt_ok,
+                           help="Échantillonnage HMC de CE spectre : R̂, divergences, ESS et intervalles. "
+                                "Le résultat persiste ; les autres spectres ne sont pas touchés."):
+            with st.spinner(f"Échantillonnage HMC de « {target.display} »… (2 à 5 minutes)"):
+                outcome = recalculate(target, config, MODE_SAMPLE, store)
+            _queue_notice([outcome], "DRT sample recalculée")
+            st.rerun()
+        at_optimize = info is not None and info.mode == MODE_OPTIMIZE
+        if c_back.button("Revenir en optimize", key=f"drt_row_optimize_{target.key}",
+                         disabled=at_optimize or (not drt_ok and not store.get(target.key, {}).get(MODE_OPTIMIZE)),
+                         help="Rend le résultat MAP (rapide) de ce spectre. Le résultat HMC est conservé."):
+            with st.spinner(f"Retour en optimize de « {target.display} »…"):
+                outcome = revert_to_optimize(target, config, store)
+            _queue_notice([outcome], "DRT remise en optimize")
+            st.rerun()
+
+
+def _render_drt_group(an, mean_sp, reps, key: str, config: dict, session, drt_ok: bool,
+                      electrode) -> None:
     rows = drt_diagnostic_rows(an, mean_sp, reps)
     if an is not None and not an.ok:
         st.info(f"⛔ Groupe arrêté : aucune DRT n'a été calculée. {an.message or ''}")
@@ -571,22 +670,35 @@ def _render_drt_group(an, mean_sp, reps, key: str, config: dict, session, drt_ok
                             key=f"drt_fig_{key}")
             _render_drt_spectrum_panel(row)
 
-    # Recalcul bayésien d'un spectre du groupe
-    st.markdown("**Recalcul bayésien (HMC) — 2 à 5 minutes par spectre**")
-    targets = {f"Réplicat {i + 1} ({sp.label})": sp for i, sp in enumerate(reps)}
-    targets["Spectre moyen"] = mean_sp
-    c1, c2 = st.columns([3, 1])
-    sel = c1.selectbox("Spectre à recalculer", list(targets.keys()), key=f"drt_recalc_sel_{key}")
-    if c2.button("🎲 Recalculer en HMC", key=f"drt_recalc_btn_{key}", disabled=not drt_ok,
-                 help="Échantillonnage HMC ; fournit R̂, divergences, ESS et intervalles. Le résultat persiste."):
-        with st.spinner(f"Échantillonnage HMC de « {sel} »… (plusieurs minutes)"):
-            try:
-                recompute_drt(session, targets[sel], config, mode="sample")
-            except (ValueError, RuntimeError) as exc:   # spectre invalide / échec de CmdStan
-                st.error(f"Échec du recalcul bayésien : {exc}")
-            else:
-                st.success(f"DRT bayésienne calculée pour « {sel} ».")
-                st.rerun()
+    # Recalcul d'un spectre du groupe : une ligne par spectre
+    st.markdown("**Recalcul de la DRT, spectre par spectre**")
+    st.warning(_sample_warning())
+    _render_drt_row_actions(electrode, session, mean_sp, reps, config, drt_ok)
+
+
+def _render_drt_global_actions(sessions: dict, config: dict, drt_ok: bool) -> None:
+    """Recalcul de TOUS les spectres analysés (toutes électrodes) avec progression n/N."""
+    targets = iter_targets(sessions)
+    if not targets:
+        return
+    n = len(targets)
+    store = _drt_store()
+    with st.container(border=True):
+        st.markdown(f"**Recalcul global — {n} spectres**")
+        st.warning(_sample_warning(n))
+        c1, c2 = st.columns(2)
+        if c1.button("Tout recalculer en sample", key="drt_all_sample", disabled=not drt_ok,
+                     help="Relance la DRT en HMC sur chaque spectre, l'un après l'autre. Un spectre en "
+                          "échec est signalé et le calcul continue."):
+            outcomes = recalculate_many(targets, config, MODE_SAMPLE, store, _progress_bar(n))
+            _queue_notice(outcomes, "DRT sample recalculée")
+            st.rerun()
+        if c2.button("Revenir en optimize (tout)", key="drt_all_optimize", disabled=not drt_ok,
+                     help="Remet chaque spectre en MAP : le résultat optimize conservé est repris tel "
+                          "quel, sinon il est recalculé (~1 s). Les résultats HMC sont conservés."):
+            outcomes = revert_many(targets, config, store, _progress_bar(n))
+            _queue_notice(outcomes, "DRT remise en optimize")
+            st.rerun()
 
 
 def _render_drt_tab(sessions: dict) -> None:
@@ -614,6 +726,9 @@ def _render_drt_tab(sessions: dict) -> None:
         st.info("La DRT n'a pas été lancée par cette analyse (désactivée dans ⚙️, ou moteur "
                 "indisponible au moment de l'analyse). Un recalcul HMC reste possible spectre par spectre.")
     config = st.session_state.get("eis_config", {})
+    for level, text in st.session_state.pop(_NOTICE_KEY, None) or []:
+        getattr(st, level)(text)
+    _render_drt_global_actions(sessions, config, drt_ok)
     elec_tabs = st.tabs([f"Électrode {e}" for e in electrodes])
     for e, tab in zip(electrodes, elec_tabs):
         with tab:
@@ -628,7 +743,7 @@ def _render_drt_tab(sessions: dict) -> None:
             label, mean_sp, reps, an = picked
             st.markdown(f"#### {label}")
             _render_drt_group(an, mean_sp, reps, key=f"e{e}_{label}", config=config, session=session,
-                              drt_ok=drt_ok)
+                              drt_ok=drt_ok, electrode=e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

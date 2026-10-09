@@ -64,6 +64,7 @@ Interface-EIS-CV-measurement/
 │   ├── measurement_model.py  measurement model de Voigt : structure d'erreur σ(ω) + verdict KK
 │   ├── validator.py          verdict KK affiché au prétraitement, dérive inter-réplicats
 │   ├── results_table.py      tables intra-fit / inter-réplicats / diagnostics HMC (UI + export)
+│   ├── drt_recompute.py      recalcul DRT à la demande : un spectre, tous, retour à optimize (registre à clés stables)
 │   ├── calibration.py        régressions de calibration EIS et CV — source unique
 │   ├── models.py             EISSpectrum, GroupAnalysis, ConcentrationGroup, EISSession
 │   ├── cv_models.py · cv_loader.py · cv_pipeline.py · cv_peaks.py   voltammétrie cyclique
@@ -190,7 +191,10 @@ fits/orazem_fit.fit_replicate_group
      moyenne, Q de Cochran
         ↓
 drt/engine.fit_drt sur CHAQUE réplicat ET la moyenne (mode fit.drt.mode)
-   • Rct DRT agrégé sur les réplicats ; recompute_drt(…, mode='sample') à la demande
+   • Rct DRT agrégé sur les réplicats ; chaque FitResult DRT porte mode, duration_s et
+     computed_at dans drt_diagnostics (core.pipeline._fit_drt_timed)
+   • recalcul à la demande par core/drt_recompute.py (→ recompute_drt) : un spectre ou tous
+     en 'sample', retour à 'optimize' ; registre st.session_state['eis_drt_store']
         ↓
 core/models.py → EISSession { probe, groups[], *_replicate_spectra, *_analysis (GroupAnalysis) }
         ↓
@@ -248,7 +252,7 @@ absent). Les résultats sont présentés en **quatre onglets**, chacun découpé
 |---|---|
 | **1 · Visualisation** | Données mesurées seulement, aucun fit. Nyquist et Bode (\|Z\| et −phase) : réplicats superposés (traits fins) + moyenne (trait épais), une couleur par concentration, légende cliquable par groupe, filtre de groupes, bascule prétraitées / brutes (avant exclusions), référence « électrode nue » en pointillés, et une vue « Normalisé E1 + E2 » |
 | **2 · Measurement model & fit Orazem** | Récapitulatif de l'électrode (verdict KK, éléments de Voigt, fiabilité du fit, nombre d'alertes), puis pour le groupe choisi, **dans l'ordre de lecture** : (1) measurement model et verdict KK — conforme / non conforme / indéterminé —, éléments de Voigt retenus et points hors bande par spectre, résidus, structure d'erreur ; (2) fit Orazem — bandeau **rouge** si κ dépasse `fits.orazem_fit.CONDITION_NUMBER_WARN` (≈ 6,7·10⁷) ou si un paramètre n'est pas identifiable, alertes de fit affichées d'emblée (jamais dans un expander), paramètre cible mis en évidence (★), Nyquist expérimental + circuit ajusté et résidus, tableau des paramètres (intra-fit, inter-réplicats, incertitude de la moyenne, fit du spectre moyen), diagnostics de CHAQUE fit (κ, rang/P, non identifiables, dérivée unilatérale, bornes actives, χ²ᵣ avec son intervalle attendu, départs convergés). Un groupe arrêté (moins de 3 réplicats…) affiche son verdict « indéterminé » et la cause, pas une erreur ni un tableau vide |
-| **3 · DRT** | Par groupe : tableau des diagnostics de CHAQUE spectre, toujours affiché (R̂ max, divergences, ESS bulk/tail avec leurs seuils, E-BFMI, Rct ± σ a posteriori, IC 95 % de Rct, origine de Rct, Rp) ; vue agrégée (γ(τ) moyenne + bande LARGE de variabilité inter-réplicats, min–max) ou vue d'un réplicat / du spectre moyen (γ(τ) + bande FINE de crédibilité HMC, diagnostics en grand, alertes) ; échec de calcul d'un spectre nommé en rouge avec son motif (le pipeline continue sans DRT pour ce spectre) ; rappel permanent sur les intervalles de Rp et de Rct ; recalcul bayésien d'un spectre |
+| **3 · DRT** | Par groupe : tableau des diagnostics de CHAQUE spectre, toujours affiché (R̂ max, divergences, ESS bulk/tail avec leurs seuils, E-BFMI, Rct ± σ a posteriori, IC 95 % de Rct, origine de Rct, Rp) ; vue agrégée (γ(τ) moyenne + bande LARGE de variabilité inter-réplicats, min–max) ou vue d'un réplicat / du spectre moyen (γ(τ) + bande FINE de crédibilité HMC, diagnostics en grand, alertes) ; échec de calcul d'un spectre nommé en rouge avec son motif (le pipeline continue sans DRT pour ce spectre) ; rappel permanent sur les intervalles de Rp et de Rct ; une ligne par spectre (mode actuel, durée, « Recalculer en sample », « Revenir en optimize »), « Tout recalculer en sample » avec progression n/N et « Revenir en optimize (tout) » — un échec est signalé avec le label du spectre et n'arrête pas la suite ; avertissement permanent : sample = 2 à 5 min par spectre, parfois instable |
 | **4 · Calibration** | Courbes produites par `core/calibration.py`, les MÊMES fonctions que l'export CSV (`compute_calibration_all`, via `calibration_figure` ; `compute_calibration_loglog_all`, via `calibration_loglog_figure`) : signal normalisé \|Rct_probe − Rct_c\|/Rct_probe vs log10([c]) et log10(Rct) vs log10([c]) avec R², pour le paramètre cible du circuit (`orazem`) et pour le Rct de la DRT (`drt_bayes`) séparément. Valeur d'un groupe = fit du spectre MOYEN. Seuls les groupes dont le fit existe, a convergé, a une valeur cible > 0 et dont le verdict KK n'est pas « non conforme » entrent dans une régression (verdict indéterminé : non exclu) ; le probe, référence du signal normalisé, obéit aux mêmes règles. Un tableau liste CHAQUE point (retenu ou exclu) avec la raison : fit non convergé · KK non conforme · DRT non calculée (avec son motif) · groupe arrêté · valeur ≤ 0. Bouton de téléchargement du CSV d'export |
 
 Il n'y a plus d'onglet de reconstructions : les valeurs reconstruites restent produites par la

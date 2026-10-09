@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -301,10 +302,33 @@ def _log_drt_detail(label: str, exc: BaseException) -> None:
         log.error(f"DRT de « {label} » : diagnostic complet de l'échec\n{detail}")
 
 
+def _fit_drt_timed(spectrum: EISSpectrum, drt_kwargs: dict) -> FitResult:
+    """``drt.engine.fit_drt`` chronométré : mode, durée et date rangés dans ``drt_diagnostics``.
+
+    Point commun de l'analyse initiale (:func:`_run_drt`) et du recalcul
+    (:func:`recompute_drt`) : tout ``FitResult`` DRT de la session porte donc ``mode``,
+    ``duration_s`` et ``computed_at``, sans toucher à la dataclass (``drt_diagnostics`` est
+    un dict libre) ni au moteur. La durée est le temps MUR de ``fit_drt`` ; le tout premier
+    calcul d'un processus inclut la compilation du modèle Stan (≈ 25 s).
+
+    Raises:
+        ValueError / RuntimeError de ``fit_drt`` (rien n'est alors écrit nulle part).
+    """
+    t0 = time.perf_counter()
+    fr = drt_engine.fit_drt(spectrum, **drt_kwargs)
+    duration = time.perf_counter() - t0
+    diag = fr.drt_diagnostics if isinstance(fr.drt_diagnostics, dict) else {}
+    diag["mode"] = fr.drt_mode or drt_kwargs.get("mode")
+    diag["duration_s"] = round(duration, 3)
+    diag["computed_at"] = datetime.now().isoformat(timespec="seconds")
+    fr.drt_diagnostics = diag
+    return fr
+
+
 def _run_drt(sp: EISSpectrum, drt_kwargs: dict, analysis: GroupAnalysis) -> None:
     """DRT d'un spectre ; spectre invalide ou échec de CmdStan → ``drt_failures``."""
     try:
-        fr = drt_engine.fit_drt(sp, **drt_kwargs)
+        fr = _fit_drt_timed(sp, drt_kwargs)
     except (ValueError, RuntimeError) as exc:     # contrat de drt.engine.fit_drt
         analysis.drt_failures[sp.label] = str(exc)
         msg = f"DRT de « {sp.label} » non calculée : {exc}"
@@ -510,10 +534,24 @@ def recompute_drt(
         raise ValueError(f"Spectre introuvable dans la session : {spectrum_id!r}.")
     drt_kwargs = _drt_request(config, True, mode)
     try:
-        fr = drt_engine.fit_drt(spectrum, **drt_kwargs)
+        fr = _fit_drt_timed(spectrum, drt_kwargs)
     except (ValueError, RuntimeError) as exc:     # relevée telle quelle à l'UI, mais journalisée
         _log_drt_detail(spectrum.label, exc)
         raise
+    install_drt_result(session, spectrum, fr)
+    log.info(f"recompute_drt [{spectrum.label}] mode={mode} {fr.target_param}={fr.target_value:.4g} "
+             f"source={fr.params.get('rct_source')}")
+    return fr
+
+
+def install_drt_result(session: EISSession, spectrum: EISSpectrum, fr: FitResult) -> None:
+    """Fait de ``fr`` la DRT ACTIVE de ``spectrum`` et remet à jour les agrégats du groupe.
+
+    Écrit ``spectrum.fit_results['drt_bayes']`` — et rien d'autre : les DRT des autres
+    spectres ne sont jamais touchées. Si le spectre est un réplicat, le Rct DRT agrégé de son
+    groupe est recalculé ; un échec DRT enregistré pour ce spectre est effacé. Partagée par
+    :func:`recompute_drt` et par ``core.drt_recompute`` (retour à un résultat déjà calculé).
+    """
     spectrum.fit_results[DRT_MODEL_NAME] = fr
 
     owners = [(session.bare_analysis, session.bare, session.bare_replicate_spectra),
@@ -528,6 +566,3 @@ def recompute_drt(
                                  if not w.startswith(f"DRT de « {spectrum.label} » non calculée")]
         if is_rep:
             _refresh_drt_target(analysis, reps)
-    log.info(f"recompute_drt [{spectrum.label}] mode={mode} {fr.target_param}={fr.target_value:.4g} "
-             f"source={fr.params.get('rct_source')}")
-    return fr
