@@ -337,6 +337,7 @@ def main() -> None:
     if st.button("↺ Relancer l'analyse", key="eis_rerun_btn"):
         for key in _EIS_RESULT_KEYS:
             st.session_state[key] = None
+        st.session_state["eis_failures"] = None
         st.rerun()
 
     if not st.session_state.get("eis_sessions"):
@@ -347,10 +348,12 @@ def main() -> None:
         n_elec = experiment.get("n_electrodes", 2)
         sessions = {}
         validations = {}
+        failures: dict = {}      # {n° électrode: message} — conservé pour les reruns suivants
         with st.spinner("Analyse EIS en cours…" + (" (DRT HMC : plusieurs minutes par spectre)"
                                                    if run_drt and drt_mode == "sample" else "")):
-            try:
-                for e in range(1, n_elec + 1):
+            # Isolation PAR ÉLECTRODE : une exception sur l'une ne fait pas perdre les autres.
+            for e in range(1, n_elec + 1):
+                try:
                     file_assignments = _build_file_assignments_electrode(experiment, e)
                     if not file_assignments:
                         continue
@@ -366,16 +369,21 @@ def main() -> None:
                         session.raw_groups = _load_raw_groups(raw_experiment, e, cfg)
                     sessions[e] = session
                     validations[e] = vr_pipeline or None
-            except InvalidAnalysisInput as exc:          # saisie invalide : message clair
-                st.error(f"❌ {exc}")
-                return
-            except Exception as exc:                     # bug logiciel : jamais avalé
-                st.error(
-                    "❌ Erreur LOGICIELLE pendant l'analyse EIS — elle ne vient pas de vos "
-                    "données. Merci de la signaler avec le détail ci-dessous."
-                )
-                st.exception(exc)
-                return
+                except InvalidAnalysisInput as exc:      # saisie invalide : message clair
+                    failures[e] = f"⚠️ Électrode {e} non analysée : {exc}"
+                except Exception as exc:                 # bug logiciel : jamais avalé
+                    failures[e] = (
+                        f"⚠️ Électrode {e} non analysée — erreur LOGICIELLE (elle ne vient "
+                        "pas de vos données ; merci de la signaler). "
+                        f"Les autres électrodes sont conservées. Détail : {exc!r}"
+                    )
+                    st.exception(exc)
+
+        if failures and not sessions:       # rien à conserver : le prochain rerun réessaie
+            for msg in failures.values():
+                st.warning(msg)
+            return
+        st.session_state["eis_failures"] = failures
 
         st.session_state["eis_sessions"]    = sessions
         st.session_state["eis_config"]      = cfg
@@ -386,6 +394,9 @@ def main() -> None:
     if not sessions:
         st.warning("⚠️ Aucun spectre EIS trouvé dans l'expérience. Vérifiez le prétraitement.")
         return
+
+    for msg in (st.session_state.get("eis_failures") or {}).values():
+        st.warning(msg)
 
     if st.session_state.get("eis_inputs") != inputs:
         st.info("ℹ️ Le circuit ou les réglages DRT ont changé depuis cette analyse : "

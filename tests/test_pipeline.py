@@ -911,6 +911,31 @@ def test_ui_a_software_bug_is_shown_as_such_not_as_a_data_problem(monkeypatch):
 
     monkeypatch.setattr(pipeline, "fit_replicate_group", boom)
     at = _run_eis_page(monkeypatch, _experiment_clean(n_rep=3))
-    assert any("Erreur LOGICIELLE" in e.value for e in at.error)
+    assert any("Électrode 1 non analysée" in w.value and "erreur LOGICIELLE" in w.value
+               for w in at.warning)
     assert any("bug simulé" in str(e.value) for e in at.exception)     # trace affichée (st.exception)
     assert "eis_sessions" not in at.session_state                       # rien de faux n'est stocké
+
+
+def test_ui_a_failing_electrode_does_not_lose_the_others(monkeypatch):
+    """Isolation par électrode : un bug sur l'électrode 2 laisse l'électrode 1 intacte,
+    et l'avertissement porte le numéro de l'électrode fautive."""
+    experiment = _experiment_clean(n_rep=3)
+    experiment["n_electrodes"] = 2
+    experiment["probe"]["eis"]["electrode_2"] = experiment["probe"]["eis"]["electrode_1"]
+    experiment["calibration"]["eis"]["electrode_2"] = experiment["calibration"]["eis"]["electrode_1"]
+    real = pipeline.run_pipeline
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:                       # 2ᵉ électrode analysée
+            raise RuntimeError("bug simulé électrode 2")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "run_pipeline", flaky)
+    at = _run_eis_page(monkeypatch, experiment)
+    assert any("Électrode 2 non analysée" in w.value for w in at.warning)
+    assert not any("Électrode 1 non analysée" in w.value for w in at.warning)
+    sessions = at.session_state["eis_sessions"]
+    assert set(sessions) == {1}
