@@ -45,7 +45,9 @@ def drt_hmc_summary(fr) -> dict:
     Returns:
         ``mode``, ``converged``, ``rhat_max``, ``divergences``, ``ess_bulk_min``,
         ``ess_tail_min`` (None si non applicable : mode 'optimize'), ``alerts`` (codes
-        des alertes, convergence ET qualité).
+        des alertes, convergence ET qualité), ``duration_s`` et ``computed_at`` (durée et
+        date du calcul, rangées par ``core.pipeline`` dans ``drt_diagnostics`` ; None pour un
+        résultat qui n'en porte pas).
     """
     diag = getattr(fr, "drt_diagnostics", None) or {}
     sampler = diag.get("sampler") or {}
@@ -58,6 +60,8 @@ def drt_hmc_summary(fr) -> dict:
         "ess_bulk_min": sampler.get("ess_bulk_min") if hmc else None,
         "ess_tail_min": sampler.get("ess_tail_min") if hmc else None,
         "alerts": [a.get("code") for a in diag.get("alerts", []) if isinstance(a, dict)],
+        "duration_s": diag.get("duration_s"),
+        "computed_at": diag.get("computed_at"),
     }
 
 
@@ -89,6 +93,8 @@ def _spectrum_row(electrode, group: str, kind: str, sp, circuit_model: Optional[
             "drt_ess_bulk_min": h["ess_bulk_min"],
             "drt_ess_tail_min": h["ess_tail_min"],
             "drt_alerts": ", ".join(c for c in h["alerts"] if c),
+            "drt_duration_s": h["duration_s"],
+            "drt_computed_at": h["computed_at"],
         })
     return row
 
