@@ -57,7 +57,30 @@ jobs:
       - name: Check the DRT stack is really available
         run: |
           python -c "import drt.engine as e; ok, why = e.engine_available(); assert ok, why; print('Moteur drt/ OK')"
-      # tests/test_drt_engine.py : moteur durci drt/ (HMC par défaut, ~2-5 min par spectre sur
-      # 4 cœurs — les 7 cas DRT-1 + reproductibilité, marqués slow, sont exécutés ici).
-      - name: Run DRT tests (MAP + HMC)
-        run: python -m pytest tests/test_pipeline.py tests/test_drt_engine.py tests/test_drt_fitresult_contract.py -v -rs
+      # Toute la suite, pas une liste de fichiers : avec la pile DRT réelle, les tests qui
+      # s'y SAUTENT ailleurs s'exécutent ici (test_cmdstan_version.py:215 « job CI drt »,
+      # test_stan_compile.py, test_setup_drt.py, test_drt_failure_diagnostics.py, test_eis_tabs.py…).
+      # Les tests HMC (test_drt_engine.py, test_pipeline.py : 7 cas DRT-1 + reproductibilité,
+      # marqués slow, ~2-5 min par spectre sur 4 cœurs) sont inclus.
+      - name: Run all tests (MAP + HMC, slow included)
+        run: python -m pytest tests/ -v -rs
+
+  # Suite RAPIDE sous Windows, cible réelle des utilisateurs (launch.bat) : chemins, encodages,
+  # séparateurs. Sans CmdStan ni tests slow (HMC) : la DRT réelle reste couverte par le job `drt`.
+  validate-windows:
+    name: Suite rapide (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Compile all sources
+        run: python -m compileall app.py setup_drt_bayesien.py core fits drt circuit plotting exports ui pages tests
+      - name: Run fast tests
+        run: python -m pytest tests/ -v -m "not slow" -rs
