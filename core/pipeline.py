@@ -152,6 +152,11 @@ def circuit_fit_from_config(config: Optional[dict]) -> CircuitFit:
     return build_circuit_fit(c["expression"], params, c.get("target_param"))
 
 
+#: Clés de ``fit.drt`` transmises telles quelles à ``drt.engine.fit_drt`` (hors enabled/mode).
+_DRT_ENGINE_KEYS = ("nonneg", "init_from_ridge", "random_seed", "chains", "warmup", "samples",
+                    "adapt_delta", "max_iter")
+
+
 def _drt_request(config: Optional[dict], run_drt: Optional[bool],
                  mode: Optional[str]) -> Optional[dict]:
     """Arguments de ``drt.engine.fit_drt`` demandés, ou None si la DRT est désactivée.
@@ -164,6 +169,8 @@ def _drt_request(config: Optional[dict], run_drt: Optional[bool],
     if not enabled:
         return None
     kwargs = {"mode": mode or dcfg.get("mode") or drt_engine.DEFAULT_MODE}
+    # Réglages d'inversion configurés (les clés absentes gardent le défaut du moteur).
+    kwargs.update({k: dcfg[k] for k in _DRT_ENGINE_KEYS if dcfg.get(k) is not None})
     try:
         drt_engine.DRTSettings(**kwargs)
     except ValueError as exc:
