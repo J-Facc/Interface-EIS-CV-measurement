@@ -53,7 +53,14 @@ le porte dans ses alertes (`drt_diagnostics['cmdstan_version']`).
 
 La page EIS propose le mode (le pipeline d'analyse utilise `fit.drt.mode`, `optimize` par défaut
 dans `config/default.yaml` pour garder l'analyse d'ensemble rapide) ; un spectre peut être
-recalculé en `sample` à la demande depuis l'onglet « DRT » (section « Recalcul bayésien » de chaque groupe).
+recalculé en `sample` à la demande depuis l'onglet « DRT » : chaque groupe affiche une ligne par spectre
+(mode actuel, durée, **Recalculer en sample**, **Revenir en optimize**), et un bloc « Recalcul global » propose
+**Tout recalculer en sample** (barre de progression n/N ; un spectre en échec est signalé par son label et le
+calcul continue) et **Revenir en optimize (tout)**. Le résultat `optimize` d'origine est conservé : le retour est
+instantané et le résultat `sample` n'est écrasé que par un nouveau clic ou une nouvelle analyse. Le mode et la durée
+de chaque calcul sont enregistrés (`drt_diagnostics['mode' / 'duration_s' / 'computed_at']`) et exportés (YAML de
+session, CSV « résultats par réplicat »). La durée est le temps mur de `fit_drt` : le tout premier calcul d'un
+processus inclut la compilation du modèle Stan (≈ 25 s).
 
 ### HMC / NUTS en deux phrases
 
