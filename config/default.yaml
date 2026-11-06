@@ -42,3 +42,14 @@ fit:
     # recalculé en 'sample' à la demande depuis l'onglet DRT (core.pipeline.recompute_drt).
     enabled: true
     mode: optimize
+    # Réglages d'inversion de drt/engine.py : valeurs = défauts du moteur
+    # (drt/VALIDATION_REGLAGES.md), à ne changer qu'en connaissance de cause. Toute clé
+    # inconnue sous fit.drt est refusée au chargement.
+    nonneg: true          # DRT >= 0 (modèle Stan Series_pos)
+    init_from_ridge: true
+    random_seed: 1234
+    chains: 4             # HMC ('sample') seulement
+    warmup: 500
+    samples: 2000
+    adapt_delta: 0.99
+    max_iter: 50000       # L-BFGS ('optimize') seulement

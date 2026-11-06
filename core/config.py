@@ -4,7 +4,7 @@ from typing import Optional
 
 import yaml
 from pathlib import Path
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CircuitParameterSettings(BaseModel):
@@ -53,8 +53,24 @@ class DRTSettings(BaseModel):
     # groupe : 'optimize' (MAP, aperçu ~1 s) ou 'sample' (HMC, diagnostics de
     # convergence et intervalles, plusieurs minutes par spectre). La grille τ n'est
     # PAS configurée ici : bayes_drt2 la construit depuis les fréquences mesurées.
+    #
+    # Les réglages d'inversion ci-dessous reprennent À L'IDENTIQUE les défauts de
+    # drt/engine.py (DEFAULT_*, justifiés dans drt/VALIDATION_REGLAGES.md) :
+    # tests/test_config.py garde cette égalité. Les omettre = ces défauts.
+    # Clé inconnue = ValidationError (extra='forbid') : une faute de frappe ne doit
+    # pas être ignorée en silence. Ni tau_min ni tau_max n'existent : le moteur ne les lit pas.
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = True
     mode: str = "optimize"
+    nonneg: bool = True
+    init_from_ridge: bool = True
+    random_seed: int = 1234
+    chains: int = 4             # HMC seulement
+    warmup: int = 500           # HMC seulement
+    samples: int = 2000         # HMC seulement
+    adapt_delta: float = 0.99   # HMC seulement
+    max_iter: int = 50000       # L-BFGS ('optimize') seulement
 
     @field_validator("mode")
     @classmethod
