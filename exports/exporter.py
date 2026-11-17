@@ -213,7 +213,10 @@ def export_calibration_csv(sessions: dict, strict: bool = False) -> bytes:
                                               cal.kk_flags):
                 writer.writerow([
                     e, cal.model, conc, lc, sig, rct, cal.probe_rct,
-                    cal.slope, cal.intercept, cal.r2, cal.pvalue, cal.stderr, bool(kk),
+                    # Champs de régression None (< 3 points) → cellules vides
+                    *("" if v is None else v for v in
+                      (cal.slope, cal.intercept, cal.r2, cal.pvalue, cal.stderr)),
+                    bool(kk),
                 ])
 
     return buf.getvalue().encode()

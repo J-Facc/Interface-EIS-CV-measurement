@@ -174,7 +174,7 @@ def _section_session_declaration() -> tuple[str, list[float], int, int]:
     with col1:
         n_conc = st.number_input(
             "Nombre de concentrations",
-            min_value=3, max_value=20,
+            min_value=2, max_value=20,
             value=st.session_state[_sk("n_conc")],
             step=1, key=_sk("n_conc_input"),
         )
