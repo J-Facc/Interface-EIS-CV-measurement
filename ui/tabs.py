@@ -22,6 +22,7 @@ from core.drt_recompute import (
     run_info,
     target_of,
 )
+from core.calibration import MSG_REGRESSION_MIN_POINTS
 from core.pipeline import DRT_MODEL_NAME
 from core.results_table import (
     DRT_ABSENT,
@@ -806,6 +807,9 @@ def _render_calibration_tab(sessions: dict) -> None:
                 if ref is not None and not ref["included"]:
                     st.error(f"**{model}** : référence probe exclue ({' ; '.join(ref['reasons'])}) — le "
                              "signal normalisé n'est pas calculé pour cette méthode.")
+                if len(kept) == 2:
+                    st.info(f"**{model}** : 2 points retenus — points affichés sans régression. "
+                            f"{MSG_REGRESSION_MIN_POINTS}.")
                 if len(kept) < 2:
                     st.warning(f"**{model}** : pas de régression — {len(kept)} point(s) retenu(s) sur "
                                f"{len(pts)} (minimum 2). Voir les exclusions ci-dessous.")

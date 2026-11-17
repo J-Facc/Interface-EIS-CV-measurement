@@ -45,6 +45,16 @@ REASON_DRT_MISSING = "DRT non calculée"
 REASON_GROUP_STOPPED = "groupe arrêté (aucun fit)"
 REASON_NONPOSITIVE = "valeur cible ≤ 0"
 
+#: Nombre minimal de points retenus pour calculer une régression EIS (pente, R², p-value…).
+#: Avec 2 points la droite passe exactement par eux (R² = 1 trivial, aucun degré de liberté) :
+#: les points restent exposés, la régression est absente (champs ``None``).
+MIN_POINTS_REGRESSION = 3
+#: Message affiché (figures, UI) quand il y a trop peu de points pour la régression.
+MSG_REGRESSION_MIN_POINTS = (
+    f"Au moins {MIN_POINTS_REGRESSION} concentrations sont nécessaires "
+    "pour la régression d'étalonnage"
+)
+
 
 @dataclass
 class CalibrationResult:
@@ -57,13 +67,27 @@ class CalibrationResult:
     rcts: np.ndarray
     errs: np.ndarray           # reconstruction_error par point (0 si absent)
     probe_rct: float           # Rct probe (NaN pour la variante log-log)
-    slope: float
-    intercept: float
-    r2: float
-    pvalue: float
-    stderr: float
+    slope: Optional[float]     # None (ainsi qu'intercept, r2, pvalue, stderr) si n < MIN_POINTS_REGRESSION
+    intercept: Optional[float]
+    r2: Optional[float]
+    pvalue: Optional[float]
+    stderr: Optional[float]
     n: int
     kk_flags: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))  # KK non conforme
+
+    @property
+    def has_regression(self) -> bool:
+        """Vrai si la régression a pu être calculée (≥ ``MIN_POINTS_REGRESSION`` points)."""
+        return self.slope is not None
+
+
+def _regression_fields(log_c, y) -> dict:
+    """Champs de régression de ``CalibrationResult`` ; tous ``None`` sous le seuil de points."""
+    if len(log_c) < MIN_POINTS_REGRESSION:
+        return dict(slope=None, intercept=None, r2=None, pvalue=None, stderr=None)
+    reg = stats.linregress(log_c, y)
+    return dict(slope=float(reg.slope), intercept=float(reg.intercept),
+                r2=float(reg.rvalue ** 2), pvalue=float(reg.pvalue), stderr=float(reg.stderr))
 
 
 @dataclass(frozen=True)
@@ -173,7 +197,9 @@ def compute_calibration(session, model: str, strict: bool = False):
         model: nom du modèle de fit (ex. "orazem", "drt_bayes").
 
     Returns:
-        CalibrationResult, ou None si pas de fit probe valide ou < 2 points.
+        CalibrationResult, ou None si pas de fit probe valide ou < 2 points. Avec 2 points,
+        les points sont rendus mais les champs de régression valent None (voir
+        ``MIN_POINTS_REGRESSION``).
     """
     ref = calibration_reference(session, model, strict)
     if ref is None or not ref.included:
@@ -186,14 +212,11 @@ def compute_calibration(session, model: str, strict: bool = False):
 
     signal = [abs(probe_rct - r) / abs(probe_rct) for r in rcts]
     log_c = np.log10(concs)
-    reg = stats.linregress(log_c, signal)
     return CalibrationResult(
         model=model, log_c=log_c, y=np.asarray(signal),
         concentrations=np.asarray(concs), rcts=np.asarray(rcts), errs=np.asarray(errs),
         probe_rct=probe_rct, kk_flags=np.asarray(kk, dtype=bool),
-        slope=float(reg.slope), intercept=float(reg.intercept),
-        r2=float(reg.rvalue ** 2), pvalue=float(reg.pvalue), stderr=float(reg.stderr),
-        n=len(concs),
+        **_regression_fields(log_c, signal), n=len(concs),
     )
 
 
@@ -212,14 +235,11 @@ def compute_calibration_loglog(session, model: str, strict: bool = False):
         return None
     log_c = np.log10(concs)
     log_rct = np.log10(rcts)
-    reg = stats.linregress(log_c, log_rct)
     return CalibrationResult(
         model=model, log_c=log_c, y=log_rct,
         concentrations=np.asarray(concs), rcts=np.asarray(rcts), errs=np.asarray(errs),
         probe_rct=float("nan"), kk_flags=np.asarray(kk, dtype=bool),
-        slope=float(reg.slope), intercept=float(reg.intercept),
-        r2=float(reg.rvalue ** 2), pvalue=float(reg.pvalue), stderr=float(reg.stderr),
-        n=len(concs),
+        **_regression_fields(log_c, log_rct), n=len(concs),
     )
 
 

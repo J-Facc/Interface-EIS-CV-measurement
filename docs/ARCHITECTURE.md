@@ -34,7 +34,7 @@ cible — l'application :
 `scipy.stats.linregress`). La référence est la **sonde** (pas l'électrode nue). Une
 référence « électrode nue » peut être importée, mais elle n'est qu'**affichée** sur les
 Nyquist (`EISSession.bare_reference`) et n'entre dans aucun calcul. Une seconde régression
-log10(Rct) vs log10([c]) existe pour la DRT. L'application ne calcule ni taux de
+log10(Rct) vs log10([c]) existe pour la DRT. La régression exige **≥ 3 points retenus** (`MIN_POINTS_REGRESSION`) : avec exactement 2 concentrations l'analyse, la visualisation et les exports fonctionnent, les points sont affichés sans droite ni R², et pente/intercept/R²/p-value/std_err valent `None` (cellules vides dans le CSV). L'application ne calcule ni taux de
 recouvrement ni limite de détection.
 
 Le circuit n'est **pas** fixe : l'expression par défaut est un Randles complet

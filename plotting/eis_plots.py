@@ -9,7 +9,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from core.models import EISSession, EISSpectrum
-from core.calibration import compute_calibration_all, compute_calibration_loglog_all
+from core.calibration import (
+    MSG_REGRESSION_MIN_POINTS,
+    compute_calibration_all,
+    compute_calibration_loglog_all,
+)
 from plotting.theme import get_theme, apply_theme_to_figure
 
 
@@ -502,6 +506,13 @@ def _coerce_drt_items(results):
 
 # ── Calibration ─────────────────────────────────────────────────────────────
 
+def _fmt_reg(value, spec: str) -> str:
+    """Valeur de régression formatée ; « — » si absente (None/NaN : moins de 3 points)."""
+    if value is None or not np.isfinite(value):
+        return "—"
+    return format(value, spec)
+
+
 def calibration_figure(session: EISSession, strict: bool = False) -> go.Figure:
     """Calibration: one regression curve per model + metrics table below.
 
@@ -529,6 +540,7 @@ def calibration_figure(session: EISSession, strict: bool = False) -> go.Figure:
     model_data = []
     for mi, cal in enumerate(compute_calibration_all(session, strict)):
         model_data.append({
+            "has_reg": cal.has_regression,
             "kk": cal.kk_flags,
             "model": cal.model,
             "log_c": cal.log_c,
@@ -561,14 +573,6 @@ def calibration_figure(session: EISSession, strict: bool = False) -> go.Figure:
 
     for d in model_data:
         log_c = d["log_c"]
-        log_c_line = np.linspace(log_c.min(), log_c.max(), 200)
-        y_line = d["slope"] * log_c_line + d["intercept"]
-        sign = "+" if d["intercept"] >= 0 else "-"
-        legend_label = (
-            f"{d['model']}  "
-            f"R²={d['r2']:.3f}  "
-            f"y={d['slope']:.3f}x {sign} {abs(d['intercept']):.3f}"
-        )
 
         # Data points (KK conformes ou indéterminés)
         kk = np.asarray(d["kk"], dtype=bool)
@@ -593,15 +597,24 @@ def calibration_figure(session: EISSession, strict: bool = False) -> go.Figure:
                 showlegend=True,
             ), row=1, col=2)
 
-        # Regression line
-        fig.add_trace(go.Scatter(
-            x=log_c_line, y=y_line,
-            mode="lines",
-            name=legend_label,
-            legendgroup=d["model"],
-            line=dict(color=d["color"], dash=d["dash"], width=2),
-            showlegend=True,
-        ), row=1, col=2)
+        # Regression line — absente sous MIN_POINTS_REGRESSION points (slope/intercept/r2 = None)
+        if d["has_reg"]:
+            log_c_line = np.linspace(log_c.min(), log_c.max(), 200)
+            y_line = d["slope"] * log_c_line + d["intercept"]
+            sign = "+" if d["intercept"] >= 0 else "-"
+            legend_label = (
+                f"{d['model']}  "
+                f"R²={d['r2']:.3f}  "
+                f"y={d['slope']:.3f}x {sign} {abs(d['intercept']):.3f}"
+            )
+            fig.add_trace(go.Scatter(
+                x=log_c_line, y=y_line,
+                mode="lines",
+                name=legend_label,
+                legendgroup=d["model"],
+                line=dict(color=d["color"], dash=d["dash"], width=2),
+                showlegend=True,
+            ), row=1, col=2)
 
     # Metrics table
     n = len(model_data)
@@ -616,11 +629,11 @@ def calibration_figure(session: EISSession, strict: bool = False) -> go.Figure:
         cells=dict(
             values=[
                 [d["model"] for d in model_data],
-                [f"{d['r2']:.4f}" for d in model_data],
-                [f"{d['slope']:.4f}" for d in model_data],
-                [f"{d['intercept']:.4f}" for d in model_data],
-                [f"{d['pvalue']:.2e}" for d in model_data],
-                [f"{d['stderr']:.4f}" for d in model_data],
+                [_fmt_reg(d["r2"], ".4f") for d in model_data],
+                [_fmt_reg(d["slope"], ".4f") for d in model_data],
+                [_fmt_reg(d["intercept"], ".4f") for d in model_data],
+                [_fmt_reg(d["pvalue"], ".2e") for d in model_data],
+                [_fmt_reg(d["stderr"], ".4f") for d in model_data],
             ],
             fill_color=[row_colors] * 6,
             align="center",
@@ -635,6 +648,12 @@ def calibration_figure(session: EISSession, strict: bool = False) -> go.Figure:
         legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
         hovermode="closest",
     )
+    if not all(d["has_reg"] for d in model_data):
+        fig.add_annotation(
+            text=f"{MSG_REGRESSION_MIN_POINTS} (points seuls affichés).",
+            xref="paper", yref="paper", x=1.0, y=-0.18, xanchor="right", showarrow=False,
+            font=dict(size=12, color="#B45309"),
+        )
     apply_theme_to_figure(fig, "light")
     return fig
 
@@ -932,6 +951,8 @@ def calibration_loglog_figure(session: EISSession, theme_mode: str = "light",
                 marker=dict(color="#E67E22", size=12, symbol="diamond-open", line=dict(width=2)),
                 hovertemplate="⚠️ KK non conforme<br>log([c]) = %{x:.2f}<br>log(Rct) = %{y:.4f}"
                               "<extra></extra>"), row=1, col=1)
+        if not cal.has_regression:      # < 3 points : points seuls, ni droite ni résidus
+            continue
         sign = "+" if cal.intercept >= 0 else "−"
         fig.add_trace(go.Scatter(
             x=x_line, y=cal.slope * x_line + cal.intercept, mode="lines", legendgroup=cal.model,
@@ -941,7 +962,12 @@ def calibration_loglog_figure(session: EISSession, theme_mode: str = "light",
             x=cal.log_c, y=cal.y - (cal.slope * cal.log_c + cal.intercept), mode="markers",
             name=f"{cal.model} — résidus", legendgroup=cal.model, showlegend=False,
             marker=dict(color=color, size=9)), row=1, col=2)
-    fig.add_hline(y=0, line=dict(color="#9ca3af", width=1), row=1, col=2)
+    if all(c.has_regression for c in cals):
+        fig.add_hline(y=0, line=dict(color="#9ca3af", width=1), row=1, col=2)
+    else:
+        fig.add_annotation(text=f"{MSG_REGRESSION_MIN_POINTS} (points seuls affichés).",
+                           xref="paper", yref="paper", x=1.0, y=-0.4, xanchor="right",
+                           showarrow=False, font=dict(size=12, color="#B45309"))
     fig.update_xaxes(title_text="log([c] / M)")
     fig.update_yaxes(title_text="log(Rct / Ω)", row=1, col=1)
     fig.update_yaxes(title_text="Résidu", row=1, col=2)
