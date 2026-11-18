@@ -41,11 +41,22 @@ Le cache est valide si le SHA-256 du ``.stan`` ET la version de CmdStan notés d
 Ce module n'importe pas ``cmdstanpy`` au chargement (``setup_drt_bayesien.py`` en dépend avant
 que l'extra DRT soit forcément installé) : il le résout à l'appel.
 """
-import os, glob
+from __future__ import annotations
 
-def _ajouter_rtools_au_path():
-    """Ajoute RTools (4.x) au PATH si mingw32-make n'est pas déjà trouvable."""
-    import shutil
+import glob
+import hashlib
+import json
+import os
+import shutil
+import tempfile
+from pathlib import Path
+from typing import List, Optional
+
+from drt.cmdstan_version import installed_version
+
+
+def _ajouter_rtools_au_path() -> None:
+    """Ajoute RTools 4.x au PATH si mingw32-make n'est pas déjà trouvable."""
     if shutil.which("mingw32-make"):
         return
     for rt in sorted(glob.glob(r"C:\rtools4*"), reverse=True):   # version la plus récente d'abord
@@ -59,18 +70,10 @@ def _ajouter_rtools_au_path():
             os.environ["PATH"] = ";".join(dossiers) + ";" + os.environ["PATH"]
             return
 
-_ajouter_rtools_au_path()
-from __future__ import annotations
 
-import hashlib
-import json
-import os
-import shutil
-import tempfile
-from pathlib import Path
-from typing import List, Optional
+if os.name == "nt":
+    _ajouter_rtools_au_path()
 
-from drt.cmdstan_version import installed_version
 
 #: Suffixe de l'exécutable compilé par CmdStan (même règle que ``setup_drt_bayesien._exe_path``).
 EXE_SUFFIX = ".exe" if os.name == "nt" else ""
