@@ -56,19 +56,21 @@ from drt.cmdstan_version import installed_version
 
 
 def _ajouter_rtools_au_path() -> None:
-    """Ajoute RTools 4.x au PATH si mingw32-make n'est pas déjà trouvable."""
-    if shutil.which("mingw32-make"):
-        return
-    for rt in sorted(glob.glob(r"C:\rtools4*"), reverse=True):   # version la plus récente d'abord
-        dossiers = [
-            rf"{rt}\usr\bin",
-            rf"{rt}\ucrt64\bin",
-            rf"{rt}\x86_64-w64-mingw32.static.posix\bin",
-        ]
-        dossiers = [d for d in dossiers if os.path.isdir(d)]
-        if dossiers:
-            os.environ["PATH"] = ";".join(dossiers) + ";" + os.environ["PATH"]
-            return
+    """Ajoute RTools 4.x au PATH ; RTools 4.4 ne fournit pas mingw32-make, seulement make."""
+    if not shutil.which("g++"):
+        for rt in sorted(glob.glob(r"C:\rtools4*"), reverse=True):   # version la plus récente d'abord
+            dossiers = [
+                rf"{rt}\usr\bin",
+                rf"{rt}\ucrt64\bin",
+                rf"{rt}\x86_64-w64-mingw32.static.posix\bin",
+            ]
+            dossiers = [d for d in dossiers if os.path.isdir(d)]
+            if dossiers:
+                os.environ["PATH"] = ";".join(dossiers) + ";" + os.environ["PATH"]
+                break
+    # cmdstanpy appelle « mingw32-make » par défaut ; sinon on lui indique « make ».
+    if not shutil.which("mingw32-make") and shutil.which("make"):
+        os.environ.setdefault("MAKE", "make")
 
 
 if os.name == "nt":
