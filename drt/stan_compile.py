@@ -41,7 +41,25 @@ Le cache est valide si le SHA-256 du ``.stan`` ET la version de CmdStan notés d
 Ce module n'importe pas ``cmdstanpy`` au chargement (``setup_drt_bayesien.py`` en dépend avant
 que l'extra DRT soit forcément installé) : il le résout à l'appel.
 """
+import os, glob
 
+def _ajouter_rtools_au_path():
+    """Ajoute RTools (4.x) au PATH si mingw32-make n'est pas déjà trouvable."""
+    import shutil
+    if shutil.which("mingw32-make"):
+        return
+    for rt in sorted(glob.glob(r"C:\rtools4*"), reverse=True):   # version la plus récente d'abord
+        dossiers = [
+            rf"{rt}\usr\bin",
+            rf"{rt}\ucrt64\bin",
+            rf"{rt}\x86_64-w64-mingw32.static.posix\bin",
+        ]
+        dossiers = [d for d in dossiers if os.path.isdir(d)]
+        if dossiers:
+            os.environ["PATH"] = ";".join(dossiers) + ";" + os.environ["PATH"]
+            return
+
+_ajouter_rtools_au_path()
 from __future__ import annotations
 
 import hashlib
