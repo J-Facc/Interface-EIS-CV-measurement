@@ -242,3 +242,53 @@ def revert_many(targets: Iterable[DRTTarget], config: Optional[dict],
                 on_progress: Optional[ProgressCallback] = None) -> list:
     """``revert_to_optimize`` sur chaque spectre ; un échec n'interrompt pas la suite."""
     return _run_many(lambda t: revert_to_optimize(t, config, store), targets, on_progress)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Calcul DIFFÉRÉ de la DRT (après l'affichage des spectres) — reprenable
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pending_targets(sessions: dict) -> list:
+    """Spectres analysables qui n'ont NI DRT NI échec DRT enregistré (reste à calculer)."""
+    failed = {}
+    for e, session in sessions.items():
+        for _lbl, mean_sp, reps, an in session.iter_groups():
+            for sp in [mean_sp, *(reps or [])]:
+                failed[id(sp)] = an is not None and sp.label in an.drt_failures
+    return [t for t in iter_targets(sessions)
+            if DRT_MODEL_NAME not in t.spectrum.fit_results and not failed.get(id(t.spectrum))]
+
+
+def _record_failure(target: DRTTarget, error: str) -> None:
+    """Range un échec DRT dans ``GroupAnalysis.drt_failures`` (comme ``pipeline._run_drt``)."""
+    for _lbl, mean_sp, reps, an in target.session.iter_groups():
+        if an is not None and (target.spectrum is mean_sp or any(target.spectrum is r for r in reps or [])):
+            an.drt_failures[target.spectrum.label] = error
+            an.warnings.append(f"DRT de « {target.spectrum.label} » non calculée : {error}")
+            return
+
+
+def compute_pending_drt(sessions: dict, config: Optional[dict], mode: str,
+                        store: Optional[MutableMapping] = None,
+                        on_progress: Optional[ProgressCallback] = None) -> list:
+    """Calcule la DRT des spectres qui n'en ont pas encore, dans ``mode``.
+
+    Permet d'afficher d'abord les spectres et les fits, puis de calculer la DRT. REPRENABLE :
+    un spectre déjà calculé (ou déjà en échec) est ignoré, donc un calcul interrompu (rerun
+    Streamlit, fermeture) repart où il s'était arrêté, sans rien refaire. Un échec est rangé
+    dans ``GroupAnalysis.drt_failures`` et n'arrête pas la suite ; le Rct DRT agrégé de
+    chaque groupe est mis à jour par ``install_drt_result``.
+
+    Returns:
+        Un ``RecalcOutcome`` par spectre traité.
+    """
+    for session in sessions.values():
+        session.drt_mode = mode
+
+    def action(target: DRTTarget) -> RecalcOutcome:
+        outcome = recalculate(target, config, mode, store)
+        if not outcome.ok:
+            _record_failure(target, outcome.error or "échec inconnu")
+        return outcome
+
+    return _run_many(action, pending_targets(sessions), on_progress)

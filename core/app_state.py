@@ -27,8 +27,10 @@ from typing import MutableMapping
 #: ``eis_drt_store`` = registre des DRT par spectre (``core.drt_recompute.STORE_KEY`` ; recopié
 #: ici car ce module ne doit rien importer). Il référence des ``FitResult`` des sessions :
 #: le garder après un nouvel import les rattacherait à des spectres qui n'existent plus.
+#: ``eis_drt_pending`` = mode DRT dont le calcul différé reste à faire (None = rien en attente) ;
+#: périmé dès que les sessions le sont.
 ANALYSIS_RESULT_KEYS = ("eis_sessions", "eis_validations", "eis_normalized", "cv_sessions",
-                        "eis_drt_store")
+                        "eis_drt_store", "eis_drt_pending")
 
 #: Valeurs initiales des clés partagées (``app.py``). Les résultats d'analyse valent
 #: None : « pas encore calculé », testé par ``not state.get(key)`` dans les pages.

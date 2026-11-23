@@ -12,24 +12,117 @@ mesurés), Measurement model & fit Orazem, DRT, Calibration.
 
 import copy
 import math
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from circuit import CircuitError, parse_circuit
-from core.app_state import preprocessing_ready
+from core.analysis_io import AnalysisFileError, ANALYSIS_KEYS, count_drt, load_analysis, save_analysis
+from core.app_state import preprocessing_ready, reset_analysis_results
+from core.drt_recompute import STORE_KEY, compute_pending_drt, pending_targets
 from core.config import load_config, config_to_dict
 from core.loader import load_spectrum, average_replicates
 from core.models import DisplayGroup
 from core.pipeline import InvalidAnalysisInput, build_circuit_fit, run_pipeline
+from drt import engine as drt_engine
 from plotting.eis_plots import _spectrum_label
 from ui.tabs import render_eis_tabs
 
 _DEFAULT_CONFIG = config_to_dict(load_config())
 
 #: Clés de st.session_state des résultats EIS (sous-ensemble de core.app_state).
-_EIS_RESULT_KEYS = ("eis_sessions", "eis_validations", "eis_normalized", "eis_drt_store")
+_EIS_RESULT_KEYS = ("eis_sessions", "eis_validations", "eis_normalized", "eis_drt_store",
+                    "eis_drt_pending")
+
+#: Clé de st.session_state : manifeste de l'analyse rechargée depuis un fichier (None sinon).
+_LOADED_KEY = "eis_loaded_manifest"
+
+
+def _render_analysis_file_io(has_results: bool) -> None:
+    """Chargement d'une analyse sauvegardée (toujours proposé) et bouton de sauvegarde.
+
+    Une analyse rechargée remplace l'analyse courante SANS aucun calcul : spectres, fits et DRT
+    déjà calculées sont relus tels quels.
+    """
+    with st.expander("💾 Sauvegarder / charger une analyse (DRT comprises)", expanded=not has_results):
+        up = st.file_uploader("Charger une analyse sauvegardée (.zip)", type=["zip"],
+                              key="eis_analysis_upload")
+        if up is not None and st.button("📂 Charger cette analyse", key="eis_analysis_load_btn"):
+            try:
+                loaded = load_analysis(up.getvalue())
+            except AnalysisFileError as exc:
+                st.error(f"Chargement impossible : {exc}")
+            else:
+                reset_analysis_results(st.session_state)
+                for k in ANALYSIS_KEYS:
+                    st.session_state[k] = loaded[k]
+                if st.session_state.get(STORE_KEY) is None:
+                    st.session_state[STORE_KEY] = {}
+                st.session_state["eis_drt_pending"] = None
+                st.session_state[_LOADED_KEY] = loaded["manifest"]
+                st.rerun()
+        if has_results:
+            sessions = st.session_state["eis_sessions"]
+            done, total = count_drt(sessions)
+            pending = bool(st.session_state.get("eis_drt_pending"))
+            st.caption(f"DRT calculées : {done}/{total} spectre(s)."
+                       + (" ⏳ Calcul en cours : attendez la fin pour une sauvegarde complète."
+                          if pending else ""))
+            try:
+                data = save_analysis(st.session_state)
+            except AnalysisFileError as exc:
+                st.error(str(exc))
+            else:
+                st.download_button(
+                    "💾 Sauvegarder l'analyse (spectres, fits et DRT)", data=data,
+                    file_name=f"analyse_eis_{datetime.now():%Y%m%d_%H%M}.zip", mime="application/zip",
+                    key="eis_analysis_save_btn",
+                    help="Enregistre tous les résultats, DRT calculées comprises : rechargez-les plus "
+                         "tard ici, sans rien recalculer. Ne contient pas les fichiers de mesure "
+                         "(pour ceux-ci, voir la page Import).")
+
+
+def _progress_bar(total: int):
+    """Callback ``on_progress`` affichant « n/N — spectre en cours » dans une ``st.progress``."""
+    bar = st.progress(0.0, text=f"0/{total}")
+
+    def on_progress(done: int, tot: int, label: str) -> None:
+        bar.progress(done / tot if tot else 1.0,
+                     text=f"{done}/{tot}" + (f" — DRT de {label}…" if label else " — terminé"))
+
+    return on_progress
+
+
+def _run_deferred_drt(sessions: dict) -> None:
+    """Calcule la DRT en attente APRÈS l'affichage des onglets, puis rafraîchit la page.
+
+    Reprenable : une interaction pendant le calcul relance le script, qui ne recalcule que les
+    spectres encore sans DRT.
+    """
+    mode = st.session_state.get("eis_drt_pending")
+    if not mode:
+        return
+    targets = pending_targets(sessions)
+    if targets:
+        ok, why = drt_engine.engine_available()
+        if not ok:
+            for s in sessions.values():
+                s.messages.append(f"DRT non calculée : moteur indisponible — {why}.")
+            st.session_state["eis_drt_pending"] = None
+            st.rerun()
+        st.info(f"⏳ Calcul de la DRT ({len(targets)} spectre(s), mode {mode}) — les onglets "
+                "ci-dessus sont déjà utilisables ; l'onglet DRT se met à jour à la fin.")
+        try:
+            compute_pending_drt(sessions, st.session_state.get("eis_config"), mode,
+                                st.session_state.get(STORE_KEY), _progress_bar(len(targets)))
+        except InvalidAnalysisInput as exc:
+            st.session_state["eis_drt_pending"] = None
+            st.error(f"DRT non calculée : {exc}")
+            return
+    st.session_state["eis_drt_pending"] = None
+    st.rerun()
 
 
 def _render_analysis_status(sessions: dict) -> None:
@@ -295,16 +388,21 @@ def main() -> None:
     st.title("📡 Analyse EIS — Spectroscopie d'impédance")
     st.caption("Visualisation · Measurement model & Kramers-Kronig, fit Orazem du circuit · DRT · Calibration")
 
-    # Vérification que les données sont disponibles (B-STATE-b : jamais de KeyError)
-    if not preprocessing_ready(st.session_state):
+    has_results = bool(st.session_state.get("eis_sessions"))
+    _render_analysis_file_io(has_results)
+
+    # Vérification que les données sont disponibles (B-STATE-b : jamais de KeyError). Une analyse
+    # rechargée d'un fichier se consulte sans données de mesure.
+    can_analyze = preprocessing_ready(st.session_state)
+    if not has_results and not can_analyze:
         st.warning(
             "⚠️ Aucune donnée disponible. "
-            "Importez et prétraitez vos données d'abord."
+            "Importez et prétraitez vos données d'abord, ou chargez une analyse sauvegardée."
         )
         st.page_link("pages/0_import.py", label="→ Aller à l'import", icon="📂")
         st.stop()
 
-    experiment = st.session_state["experiment_clean"]
+    experiment = st.session_state.get("experiment_clean")
 
     with st.expander("⚙️ Circuit, DRT et pondération", expanded=False):
         circuit_fit, circuit_inputs = _circuit_editor(_DEFAULT_CONFIG)
@@ -334,10 +432,13 @@ def main() -> None:
     cfg = copy.deepcopy(_DEFAULT_CONFIG)   # copie isolée : le pipeline ne touche jamais au défaut
     inputs = {"circuit": circuit_inputs, "run_drt": run_drt, "drt_mode": drt_mode}
 
-    if st.button("↺ Relancer l'analyse", key="eis_rerun_btn"):
+    if st.button("↺ Relancer l'analyse", key="eis_rerun_btn", disabled=not can_analyze,
+                 help=None if can_analyze else "Les données de mesure ne sont pas chargées "
+                                               "(analyse rechargée d'un fichier)."):
         for key in _EIS_RESULT_KEYS:
             st.session_state[key] = None
         st.session_state["eis_failures"] = None
+        st.session_state[_LOADED_KEY] = None
         st.rerun()
 
     if not st.session_state.get("eis_sessions"):
@@ -349,16 +450,17 @@ def main() -> None:
         sessions = {}
         validations = {}
         failures: dict = {}      # {n° électrode: message} — conservé pour les reruns suivants
-        with st.spinner("Analyse EIS en cours…" + (" (DRT HMC : plusieurs minutes par spectre)"
-                                                   if run_drt and drt_mode == "sample" else "")):
+        with st.spinner("Analyse EIS en cours… (la DRT est calculée ensuite, spectres déjà visibles)"):
             # Isolation PAR ÉLECTRODE : une exception sur l'une ne fait pas perdre les autres.
             for e in range(1, n_elec + 1):
                 try:
                     file_assignments = _build_file_assignments_electrode(experiment, e)
                     if not file_assignments:
                         continue
+                    # DRT différée (run_drt=False) : les spectres et les fits s'affichent sans
+                    # l'attendre ; elle est calculée ensuite par _run_deferred_drt.
                     session, vr_pipeline = run_pipeline(
-                        file_assignments, cfg, circuit_fit, run_drt=run_drt, drt_mode=drt_mode,
+                        file_assignments, cfg, circuit_fit, run_drt=False,
                     )
                     # Référence « électrode nue » — attachée APRÈS l'analyse,
                     # jamais lue par run_pipeline (affichage seul).
@@ -390,6 +492,8 @@ def main() -> None:
         st.session_state["eis_config"]      = cfg
         st.session_state["eis_validations"] = validations
         st.session_state["eis_inputs"]      = inputs
+        st.session_state[_LOADED_KEY]       = None
+        st.session_state["eis_drt_pending"] = drt_mode if run_drt else None
 
     sessions = st.session_state.get("eis_sessions")
     if not sessions:
@@ -399,7 +503,11 @@ def main() -> None:
     for msg in (st.session_state.get("eis_failures") or {}).values():
         st.warning(msg)
 
-    if st.session_state.get("eis_inputs") != inputs:
+    loaded = st.session_state.get(_LOADED_KEY)
+    if loaded:
+        st.success(f"📂 Analyse rechargée depuis un fichier (sauvegardée le "
+                   f"{str(loaded.get('saved_at', '?')).replace('T', ' à ')}) — aucun calcul refait.")
+    elif st.session_state.get("eis_inputs") != inputs:
         st.info("ℹ️ Le circuit ou les réglages DRT ont changé depuis cette analyse : "
                 "cliquez sur **↺ Relancer l'analyse** pour les appliquer.")
 
@@ -410,6 +518,7 @@ def main() -> None:
     normalized = _build_normalized_session(sessions)
     st.session_state["eis_normalized"] = normalized
     render_eis_tabs(sessions, normalized=normalized)
+    _run_deferred_drt(sessions)     # EN DERNIER : les onglets ci-dessus sont déjà affichés
 
 
 if __name__ == "__main__":

@@ -331,7 +331,10 @@ def test_the_tab_shows_one_row_per_spectrum_with_mode_duration_and_buttons(page)
     warnings = " ".join(w.value for w in at.warning)
     assert "2 à 5 minutes" in warnings and "instable" in warnings
     assert "pour 8 spectres" in warnings                        # le global annonce le total
-    assert at.session_state["eis_drt_store"] == {}              # créé à l'analyse, vide
+    # La DRT différée range chaque résultat MAP dans le registre (retour à optimize sans calcul).
+    store = at.session_state["eis_drt_store"]
+    assert len(store) == 8 and all(set(v) == {"optimize"} for v in store.values())
+    assert at.session_state["eis_drt_pending"] is None
 
 
 def test_clicking_a_row_recalculates_that_spectrum_in_sample_and_the_result_persists(page):

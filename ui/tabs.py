@@ -723,7 +723,10 @@ def _render_drt_tab(sessions: dict) -> None:
     if not electrodes:
         st.info("Lancez une analyse pour voir les résultats.")
         return
-    if all(sessions[e].drt_mode is None for e in electrodes):
+    if st.session_state.get("eis_drt_pending"):
+        st.info("⏳ DRT en cours de calcul : les résultats apparaissent ici à la fin du calcul "
+                "(le calcul reprend là où il s'est arrêté si vous interagissez avec la page).")
+    elif all(sessions[e].drt_mode is None for e in electrodes):
         st.info("La DRT n'a pas été lancée par cette analyse (désactivée dans ⚙️, ou moteur "
                 "indisponible au moment de l'analyse). Un recalcul HMC reste possible spectre par spectre.")
     config = st.session_state.get("eis_config", {})
