@@ -388,7 +388,8 @@ def test_a_new_analysis_empties_the_store(page):
     at = at.button(key="drt_row_sample_e1|probe#0").click().run()
     assert at.session_state["eis_drt_store"]
     at = at.button(key="eis_rerun_btn").click().run()
-    assert at.session_state["eis_drt_store"] == {}
+    store = at.session_state["eis_drt_store"]       # repart de zéro : seulement les MAP recalculés
+    assert len(store) == 8 and all(set(v) == {"optimize"} for v in store.values())
     assert at.session_state["eis_sessions"][1].probe_replicate_spectra[0] \
         .fit_results[DRT_MODEL_NAME].drt_mode == "optimize"    # relancée avec le mode de la page
 
