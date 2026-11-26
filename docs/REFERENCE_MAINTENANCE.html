@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EIS Analyzer — maintenance</title>
+<style>
+:root {
+  --bg: #ffffff; --surface: #f5f7fa; --text: #1f2933; --muted: #5f6b7a; --border: #d9e0e8;
+  --accent: #1f5fa8; --code-bg: #eef2f7; --warn: #a15c00; --warn-bg: #fff6e5;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14181f; --surface: #1c222b; --text: #e3e8ef; --muted: #9aa6b5; --border: #2c3542;
+    --accent: #7fb2f0; --code-bg: #232b36; --warn: #f0b45a; --warn-bg: #2b2416;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14181f; --surface: #1c222b; --text: #e3e8ef; --muted: #9aa6b5; --border: #2c3542;
+  --accent: #7fb2f0; --code-bg: #232b36; --warn: #f0b45a; --warn-bg: #2b2416;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.7rem; margin: 0 0 4px; }
+h2 { font-size: 1.25rem; margin: 2.2rem 0 .6rem; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+h3 { font-size: 1.02rem; margin: 1.3rem 0 .4rem; }
+p.lead { color: var(--muted); margin-top: 0; }
+a { color: var(--accent); }
+nav { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+nav a { display: inline-block; margin: 2px 14px 2px 0; text-decoration: none; }
+code, pre { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: .88em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--code-bg); padding: 10px 12px; border-radius: 6px; overflow-x: auto; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; margin: .4rem 0 1rem; font-size: .93em; }
+th, td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; }
+th { background: var(--surface); }
+.note { background: var(--warn-bg); color: var(--text); border-left: 4px solid var(--warn); padding: 8px 12px;
+  border-radius: 4px; margin: .8rem 0; }
+.flow { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin: .6rem 0 1rem; }
+.flow div { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.flow b { display: block; }
+.flow span { color: var(--muted); font-size: .88em; }
+</style>
+</head>
+<body>
+<main>
+<h1>EIS Analyzer v3 — référence de maintenance</h1>
+<p class="lead">Aide-mémoire pour faire évoluer l'application sans casser ses invariants. Le détail est dans
+<code>docs/ARCHITECTURE.md</code> ; le code fait foi.</p>
+
+<nav>
+<a href="#parcours">Parcours</a><a href="#ou">Où modifier quoi</a><a href="#regles">Règles</a>
+<a href="#config">Réglages</a><a href="#donnees">Données</a><a href="#archive">Archive</a>
+<a href="#tests">Tests</a><a href="#recettes">Recettes</a><a href="#pannes">Pannes</a>
+</nav>
+
+<h2 id="parcours">Parcours et flux d'état</h2>
+<div class="flow">
+  <div><b>1 · Configuration</b><span><code>ui/page_config.py</code> → <code>experiment</code></span></div>
+  <div><b>2 · Import &amp; nettoyage</b><span><code>ui/page_import.py</code> → <code>measurements</code></span></div>
+  <div><b>3 · Visualisation</b><span><code>ui/page_viz.py</code> — aucun calcul</span></div>
+  <div><b>4 · Analyse</b><span><code>ui/page_analysis.py</code> → <code>analysis_run</code> → <code>results</code></span></div>
+  <div><b>5 · Export</b><span><code>ui/page_export.py</code> — zip, PDF, HTML</span></div>
+</div>
+<p>Les clés de <code>st.session_state</code> et leurs invalidations sont dans <code>core/app_state.py</code>
+(logique pure, testée). Toute modification en amont efface l'aval : jamais de résultat périmé affiché.</p>
+
+<h2 id="ou">Où modifier quoi</h2>
+<div class="table-wrap"><table>
+<tr><th>Je veux changer…</th><th>Fichier(s)</th><th>Attention</th></tr>
+<tr><td>les champs de la configuration (biomarqueurs, canaux, concentrations)</td><td><code>core/experiment.py</code>, <code>ui/page_config.py</code></td><td>sérialisation <code>to_dict/from_dict</code> (archive) ; <code>validate_experiment</code></td></tr>
+<tr><td>le dossier des données persistantes</td><td><code>core/config.py::user_data_dir</code>, <code>core/user_data.py</code></td><td>jamais dans <code>eis_app/</code> (remplacé à chaque mise à jour)</td></tr>
+<tr><td>le pré-remplissage ou les contrôles de l'assignation</td><td><code>core/assignment.py</code></td><td>erreurs = bloquantes, avertissements = non</td></tr>
+<tr><td>le nettoyage EIS</td><td><code>core/loader.py</code> (<code>load_spectrum</code>, <code>_clean_spectrum</code>)</td><td>convention Zim = −Im(Z) &gt; 0, tri HF → BF</td></tr>
+<tr><td>le nettoyage CV (colonnes, cycle)</td><td><code>core/cv_loader.py::load_cv_measurement</code>, <code>core/robust_loader.py</code></td><td>ordre chronologique, jamais trié par E</td></tr>
+<tr><td>le fit du circuit, la pondération</td><td><code>fits/orazem_fit.py</code>, <code>core/pipeline.py</code>, repli dans <code>core/analysis.py::_fallback</code></td><td>≥ 3 réplicats pour la structure d'erreur</td></tr>
+<tr><td>l'extraction de Rct par DRT</td><td><code>core/drt_peak.py</code>, <code>fit.drt.tau_window</code></td><td>le moteur <code>drt/</code> n'est pas modifié</td></tr>
+<tr><td>le pic CV, ΔI/I</td><td><code>core/cv.py</code>, <code>cv.peak_window_V</code></td><td>normalisation par la moyenne probe de l'électrode</td></tr>
+<tr><td>les étalonnages</td><td><code>core/calibration.py</code></td><td>source unique (UI, archive, PDF, HTML)</td></tr>
+<tr><td>une colonne de tableau</td><td><code>core/report_tables.py</code></td><td>lu par l'UI, l'archive et les rapports</td></tr>
+<tr><td>un résultat stocké</td><td><code>core/results.py</code> (+ <code>meta/from_meta</code>) puis <code>exports/archive.py</code></td><td>incrémenter <code>ARCHIVE_SCHEMA_VERSION</code> si le format change</td></tr>
+<tr><td>une figure</td><td><code>plotting/*.py</code> (Plotly) et <code>plotting/mpl_plots.py</code> (PDF)</td><td>reçoivent des données, ne calculent rien</td></tr>
+<tr><td>le parallélisme</td><td><code>core/background.py</code>, <code>analysis.max_workers</code></td><td>contexte <code>spawn</code> ; fonctions de tâche au niveau module</td></tr>
+</table></div>
+
+<h2 id="regles">Règles d'architecture (vérifiées par les tests)</h2>
+<ul>
+<li><code>core/</code>, <code>fits/</code>, <code>drt/</code>, <code>circuit/</code> : aucun import Streamlit.
+<code>fits/</code>, <code>drt/</code>, <code>circuit/</code> n'importent jamais <code>core</code> (<code>tests/test_architecture.py</code>).</li>
+<li><code>plotting/</code> reçoit des données ; <code>ui/</code> n'implémente pas de physique ; la page Visualisation
+n'importe ni fit ni DRT (<code>tests/test_ui_pages.py</code>).</li>
+<li>Un <code>__init__.py</code> dans chaque paquet, y compris un nouveau dossier.</li>
+<li>Les tâches de calcul sont des fonctions <b>de niveau module</b> (picklables) qui renvoient des
+enregistrements <code>core/results.py</code>, jamais les objets internes du pipeline.</li>
+</ul>
+<div class="note"><b>Ne pas supprimer <code>core/app_state.py</code></b> : <code>launch.bat</code> exige sa présence dans une
+mise à jour (ligne <code>for %%F in (app.py …)</code>) ; sans lui, plus aucune mise à jour ne s'installe.
+<code>tests/test_app_state.py</code> vérifie tous les fichiers de cette liste.</div>
+
+<h2 id="config">Réglages (<code>config/default.yaml</code>)</h2>
+<div class="table-wrap"><table>
+<tr><th>Clé</th><th>Défaut</th><th>Rôle</th></tr>
+<tr><td><code>fit.circuit</code></td><td>Randles d'Orazem, 8 paramètres</td><td>circuit proposé (modifiable dans la page Analyse)</td></tr>
+<tr><td><code>fit.error_structure.min_replicates</code></td><td>3</td><td>en dessous : repli σ = 1 %·|Z|, signalé</td></tr>
+<tr><td><code>fit.n_freqs_parasites</code>, <code>tol_parasites</code></td><td>[50, 100] Hz, ±3 Hz</td><td>fréquences retirées au nettoyage</td></tr>
+<tr><td><code>fit.drt.mode</code></td><td>optimize</td><td><code>sample</code> = HMC, 2 à 5 min par spectre</td></tr>
+<tr><td><code>fit.drt.tau_window</code></td><td>[1e-5, 1e-1] s</td><td>fenêtre du pic principal (τ_ct ≈ Rct·Qdl) — à calibrer</td></tr>
+<tr><td><code>cv.peak_window_V</code></td><td>[0.0, 0.25] V</td><td>fenêtre du pic anodique (balayages ±0,2 V)</td></tr>
+<tr><td><code>cv.cycle</code></td><td>last</td><td>cycle conservé : <code>last</code>, <code>first</code> ou numéro</td></tr>
+<tr><td><code>analysis.max_workers</code></td><td>null</td><td>null = cœurs − 1 ; réduit en HMC</td></tr>
+</table></div>
+<p>Variables d'environnement : <code>EIS_USER_DATA_DIR</code> (dossier des biomarqueurs), <code>EIS_EXECUTOR</code>
+(<code>sync</code> ou <code>thread</code> au lieu des processus — tests, débogage).</p>
+
+<h2 id="donnees">Modèle de données</h2>
+<pre>Experiment  {name, biomarkers, channels: [Channel], app_version, created_at}
+Channel     {id, biomarker, concentrations}         2 électrodes ; mode déduit
+Measurement {channel_id, electrode, step, replicate, kind, source_filename, data}
+            step : bare | probe | conc_i  (conc_i ↔ concentrations[i-1])
+AnalysisResults → EISResults {groups, spectra} · cv · failures
+  clés : groupe C1_E2_probe ; spectre EIS_C1_E2_probe_r1 / EIS_C1_E2_probe_mean</pre>
+
+<h2 id="archive">Archive .zip (schéma v3)</h2>
+<p><code>manifest.json</code> (version de schéma, expérience, assignation, config, SHA-256 de chaque fichier)
++ <code>data/</code> (données nettoyées) + <code>results/</code> (JSON + CSV). Les nombres sont écrits avec
+<code>repr</code> : l'aller-retour est exact. Toute évolution du format :</p>
+<ol>
+<li>incrémenter <code>ARCHIVE_SCHEMA_VERSION</code> (<code>core/version.py</code>) ;</li>
+<li>garder la lecture de l'ancienne version (ou refuser avec un message clair) ;</li>
+<li>étendre <code>tests/test_archive_v3.py</code> (aller-retour exact, aucun appel aux fits).</li>
+</ol>
+<p>Archives v2 (<code>experiment.yaml</code>) : <code>core/legacy_import.py</code> (configuration + fichiers bruts).</p>
+
+<h2 id="tests">Tests et vérifications</h2>
+<pre>python -m pytest tests/ -m "not slow"     # suite rapide
+python -m pytest tests/ -v                # tout, HMC compris (CmdStan requis)
+python -m compileall app.py setup_drt_bayesien.py core fits drt circuit plotting exports ui tests
+EIS_USER_DATA_DIR=/tmp/ud streamlit run app.py   # essai manuel sans toucher vos biomarqueurs</pre>
+<p>Les tests DRT réels sont sautés sans CmdStan ; le job CI <code>drt</code> les exécute.</p>
+
+<h2 id="recettes">Recettes</h2>
+<h3>Ajouter une page</h3>
+<ol><li><code>ui/page_xxx.py</code> avec <code>render()</code> ;</li>
+<li>l'enregistrer dans <code>app.py</code> (<code>nav.PAGES</code>, <code>url_path</code> unique) ;</li>
+<li>un test AppTest dans <code>tests/test_ui_pages.py</code>.</li></ol>
+<h3>Ajouter un résultat calculé</h3>
+<ol><li>le calculer dans <code>core/</code> (fonction pure + test) ;</li>
+<li>l'ajouter à <code>core/results.py</code> avec <code>meta/from_meta</code> ;</li>
+<li>l'écrire/relire dans <code>exports/archive.py</code> ; l'afficher via <code>core/report_tables.py</code>.</li></ol>
+<h3>Changer la sélection du pic DRT</h3>
+<p><code>core/drt_peak.py::main_peak</code> ; ajuster <code>tests/test_drt_peak.py</code>, dont le test sur moteur réel
+(Rs + Rct∥C, ±5 %).</p>
+<h3>Ajouter une option de ligne de base CV</h3>
+<p>Dans <code>core/cv.py::anodic_peak</code> (option de config <code>cv.baseline</code> à ajouter dans
+<code>core/config.py::CVSettings</code>) ; documenter et tester sur <code>tests/data/cv_bare_2cycles.txt</code>.</p>
+
+<h2 id="pannes">Pannes fréquentes</h2>
+<div class="table-wrap"><table>
+<tr><th>Symptôme</th><th>Cause probable</th><th>Action</th></tr>
+<tr><td>Analyse bloquée à 0, processus qui ne démarrent pas</td><td>module principal sans garde <code>if __name__ == "__main__"</code> (script maison)</td><td>lancer par <code>python -m streamlit run app.py</code> (launch.bat le fait)</td></tr>
+<tr><td>« DRT non calculée : moteur indisponible »</td><td>extra DRT ou CmdStan absent</td><td>relancer <code>launch.bat</code> ou <code>python setup_drt_bayesien.py --ensure</code></td></tr>
+<tr><td>Groupe en repli 🟠</td><td>&lt; 3 réplicats ou structure d'erreur non caractérisable</td><td>normal ; fournir 3 réplicats pour un fit Orazem pondéré</td></tr>
+<tr><td>« Aucun pic … dans la fenêtre τ »</td><td><code>fit.drt.tau_window</code> mal placée</td><td>ajuster la fenêtre (onglet DRT : fenêtre grisée sur la figure)</td></tr>
+<tr><td>CV : « aucun point de la branche anodique »</td><td><code>cv.peak_window_V</code> hors balayage</td><td>ajuster la fenêtre</td></tr>
+<tr><td>Archive refusée (somme de contrôle)</td><td>fichier modifié après export</td><td>ré-exporter depuis l'application</td></tr>
+<tr><td>Biomarqueurs « perdus » après mise à jour</td><td>app lancée hors de <code>eis_app/</code> avec un autre dossier de travail</td><td>vérifier <code>user_data/</code> à côté de <code>launch.bat</code></td></tr>
+</table></div>
+</main>
+</body>
+</html>

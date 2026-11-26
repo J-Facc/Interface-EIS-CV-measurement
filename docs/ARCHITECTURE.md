@@ -1,45 +1,31 @@
-# EIS Analyzer — Architecture
+# EIS Analyzer — Architecture (v3)
 
 > Document de référence, aligné sur le code (le code fait foi). Dépôt :
 > https://github.com/J-Facc/Interface-EIS-CV-measurement — application web locale
-> (Python 3.12+, Streamlit) pour l'analyse de spectres d'impédance (EIS) et de
-> voltammétrie cyclique (CV) de biosenseurs microfluidiques ADN/ARN.
+> (Python 3.12+, Streamlit, Plotly, matplotlib) pour l'analyse de spectres d'impédance (EIS) et de
+> voltammétrie cyclique (CV) de biosenseurs microfluidiques ADN/ARN sur électrodes Pt.
 >
-> Documents associés : [MEASUREMENT_MODEL.md](MEASUREMENT_MODEL.md) (méthode d'Orazem, KK),
-> [CIRCUIT_UTILISATEUR.md](CIRCUIT_UTILISATEUR.md) (écrire son circuit),
-> [DRT_BAYESIENNE.md](DRT_BAYESIENNE.md) (DRT), `drt/PROVENANCE.md`,
-> `drt/VALIDATION_REGLAGES.md`. Les anciens rapports d'audit ne sont plus dans l'arbre :
-> `git show 60371c7:AUDIT.md` (et `AUDIT_REPORT.md`) les restituent.
+> Documents associés : [REFERENCE_MAINTENANCE.html](REFERENCE_MAINTENANCE.html) (aide-mémoire),
+> [MEASUREMENT_MODEL.md](MEASUREMENT_MODEL.md), [CIRCUIT_UTILISATEUR.md](CIRCUIT_UTILISATEUR.md),
+> [DRT_BAYESIENNE.md](DRT_BAYESIENNE.md), `drt/PROVENANCE.md`, `drt/VALIDATION_REGLAGES.md`.
+> L'architecture v2 (pages Import / Prétraitement / EIS seule / CV seule / Export) est dans
+> l'historique git (`git show 305ad88:docs/ARCHITECTURE.md`).
 
 ---
 
-## 1. Ce que fait l'application
+## 1. Parcours utilisateur
 
-Pour chaque groupe de mesures — sonde seule (« probe »), puis chaque concentration de la
-cible — l'application :
+| # | Page (`ui/`) | Rôle | Calcule ? |
+|---|---|---|---|
+| 1 | **Configuration** (`page_config.py`) | biomarqueurs, canaux, concentrations ; charger une archive | non |
+| 2 | **Import & nettoyage** (`page_import.py`) | dépôt, assignation manuelle, contrôles, nettoyage | nettoyage seul |
+| 3 | **Visualisation** (`page_viz.py`) | CV, Nyquist, Bode des données nettoyées | **aucun** |
+| 4 | **Analyse** (`page_analysis.py` + `calibration_tabs.py`) | fit Randles + DRT en arrière-plan, CV, étalonnages | oui |
+| 5 | **Export** (`page_export.py`) | archive .zip, rapport PDF, rapport HTML | non (assemblage) |
 
-1. caractérise le bruit de mesure (measurement model, structure d'erreur d'Orazem) et
-   vérifie la cohérence Kramers-Kronig des spectres ;
-2. ajuste le **circuit équivalent défini par l'utilisateur** (fit Orazem pondéré 1/σ²) sur
-   chaque réplicat et sur leur moyenne ;
-3. calcule la **DRT bayésienne** (distribution des temps de relaxation) de chaque réplicat
-   et de la moyenne ;
-4. en déduit, pour le paramètre désigné par l'utilisateur (par défaut `Rct`) et pour le
-   Rct de la DRT, une valeur par groupe avec deux incertitudes distinctes (intra-fit,
-   inter-réplicats), puis une **calibration** : régression linéaire du signal normalisé
-   sur log10([c]).
-
-**Signal de calibration** (`core/calibration.py`, source unique) :
-`signal = |Rct_probe − Rct_c| / |Rct_probe|`, régressé sur `log10([c])` (régression OLS,
-`scipy.stats.linregress`). La référence est la **sonde** (pas l'électrode nue). Une
-référence « électrode nue » peut être importée, mais elle n'est qu'**affichée** sur les
-Nyquist (`EISSession.bare_reference`) et n'entre dans aucun calcul. Une seconde régression
-log10(Rct) vs log10([c]) existe pour la DRT. La régression exige **≥ 3 points retenus** (`MIN_POINTS_REGRESSION`) : avec exactement 2 concentrations l'analyse, la visualisation et les exports fonctionnent, les points sont affichés sans droite ni R², et pente/intercept/R²/p-value/std_err valent `None` (cellules vides dans le CSV). L'application ne calcule ni taux de
-recouvrement ni limite de détection.
-
-Le circuit n'est **pas** fixe : l'expression par défaut est un Randles complet
-(`config/default.yaml`, `fit.circuit`), mais l'utilisateur écrit le sien dans la page EIS
-(expression, valeur initiale et bornes de chaque paramètre, paramètre cible).
+`app.py` : `st.set_page_config`, état DRT (CmdStan ré-enregistré, jamais installé), toggle jour/nuit
+des figures (sidebar), navigation `st.navigation` vers les fonctions `render()` des pages
+(`ui/nav.py` garde le registre des pages pour les liens).
 
 ---
 
@@ -47,184 +33,168 @@ Le circuit n'est **pas** fixe : l'expression par défaut est un Randles complet
 
 ```
 Interface-EIS-CV-measurement/
-├── app.py                    point d'entrée Streamlit : session_state, état de la DRT, navigation
-├── launch.bat                LANCEUR UNIQUE Windows (mise à jour, venv, dépendances, DRT) — §8
-├── setup_drt_bayesien.py     vérifie/installe CmdStan et compile les modèles Stan (appelé par launch.bat)
-├── requirements.txt          dépendances d'exécution, épinglées (Python >= 3.12)
-├── requirements-drt.txt      extra DRT épinglé : cvxopt, cmdstanpy
-├── requirements-optional.txt galvani (lecteur .mpr de secours)
-├── requirements-dev.txt      requirements.txt + pytest (tests / CI)
-├── pytest.ini · .gitattributes · .gitignore · THIRD_PARTY_LICENSES.md
-├── .github/workflows/validate.yml   CI : compileall + pytest ; job DRT réelle (cvxopt + CmdStan)
+├── app.py                    point d'entrée Streamlit (navigation, thème, état DRT)
+├── launch.bat                LANCEUR UNIQUE Windows (mise à jour, venv, dépendances, DRT) — §10
+├── setup_drt_bayesien.py     vérifie/installe CmdStan et compile les modèles Stan
+├── requirements*.txt         dépendances épinglées (matplotlib : rapport PDF)
+├── config/default.yaml       acquisition, fit (circuit, DRT, tau_window), cv, analysis
 │
-├── config/default.yaml       acquisition, fit (structure d'erreur, circuit par défaut, DRT)
+├── core/                     logique métier — JAMAIS d'import Streamlit
+│   ├── experiment.py         Experiment, Channel, Measurement ; étapes bare/probe/conc_i ; mode déduit
+│   ├── user_data.py          biomarkers.json persistant (hors du dossier de l'app)
+│   ├── config.py             YAML + Pydantic ; user_data_dir()
+│   ├── app_state.py          clés de session_state et invalidations (logique pure)
+│   ├── assignment.py         assignation (pré-remplissage, contrôles) et nettoyage EIS + CV
+│   ├── loader.py · robust_loader.py · mpr_converter.py · cv_loader.py   lecture EC-Lab
+│   ├── display.py            regroupement des mesures pour l'affichage (aucun calcul)
+│   ├── background.py         pool de processus, progression, erreurs isolées, annulation
+│   ├── analysis.py           AnalysisRun (fit par groupe, DRT par spectre, CV) ; DRTRecomputeRun
+│   ├── pipeline.py           orchestration d'UN groupe : measurement model + KK → fit Orazem → DRT
+│   ├── measurement_model.py · validator.py   structure d'erreur, verdict Kramers-Kronig
+│   ├── drt_peak.py           Rct_DRT = aire du pic principal de γ(τ)
+│   ├── cv.py                 pic anodique, ΔI/I
+│   ├── calibration.py        étalonnages (source unique) ; courbes v2 conservées
+│   ├── results.py            résultats SÉRIALISABLES (groupes, spectres, fits, DRT, CV, échecs)
+│   ├── report_tables.py      tableaux uniques (UI, CSV, PDF, HTML)
+│   ├── legacy_import.py · experiment_io.py   lecture des archives v2
+│   ├── models.py             EISSpectrum, GroupAnalysis… (pipeline)
+│   └── version.py · logger.py
 │
-├── core/                     logique métier et orchestration — JAMAIS d'import Streamlit
-│   ├── pipeline.py           orchestrateur EIS : MM + KK → fit Orazem → DRT, par groupe
-│   ├── measurement_model.py  measurement model de Voigt : structure d'erreur σ(ω) + verdict KK
-│   ├── validator.py          verdict KK affiché au prétraitement, dérive inter-réplicats
-│   ├── results_table.py      tables intra-fit / inter-réplicats / diagnostics HMC (UI + export)
-│   ├── drt_recompute.py      recalcul DRT à la demande : un spectre, tous, retour à optimize (registre à clés stables)
-│   ├── calibration.py        régressions de calibration EIS et CV — source unique
-│   ├── models.py             EISSpectrum, GroupAnalysis, ConcentrationGroup, EISSession
-│   ├── cv_models.py · cv_loader.py · cv_pipeline.py · cv_peaks.py   voltammétrie cyclique
-│   ├── loader.py · robust_loader.py · mpr_converter.py   import EC-Lab (texte, .mpr)
-│   ├── experiment_io.py      sauvegarde/chargement d'une expérience (ZIP v2, lecture v1)
-│   ├── app_state.py          clés session_state partagées et leur invalidation
-│   ├── config.py             YAML + Pydantic
-│   └── logger.py             journal fichier + console (écrit dans logs/)
-│
-├── fits/                     bibliothèque numérique du fit — n'importe JAMAIS core
-│   ├── orazem_fit.py         fit d'un circuit LIBRE (par réplicat + moyenne, agrégation)
-│   ├── regression_stats.py   covariance par SVD, conditionnement, identifiabilité
-│   ├── kk_validation.py      critère KK unique (kk_verdict), Lin-KK indicatif
-│   ├── physics.py            Z_D (référence de l'élément ZD_bounded)
-│   └── result.py             FitResult : contrat commun fit Orazem / DRT
-│
-├── circuit/                  circuit utilisateur : Python restreint, liste blanche AST (aucun eval)
-│   ├── parser.py · elements.py · registry_elements.py
-│
-├── drt/                      DRT — n'importe de fits que fits.result
-│   ├── engine.py             moteur durci (HMC par défaut, MAP en aperçu, gardes)
-│   ├── diagnostics.py        seuils R-hat / ESS / divergences / qualité de reconstruction
-│   ├── bayes_drt2/           clone identifié de bayes-drt2 (PROVENANCE.md) + modèles Stan
-│   ├── validation/           scripts et résultats bruts de la validation des réglages
-│   ├── PROVENANCE.md · VALIDATION_REGLAGES.md
-│
-├── plotting/                 reçoit des données, ne calcule rien (eis_plots, cv_plots, kk_plots, theme)
-├── exports/exporter.py       CSV, YAML, ZIP de session
-├── ui/tabs.py                render_eis_tabs / render_cv_tabs (appelés par les pages)
-├── pages/                    0_import · 1_pretraitement · A_eis · B_cv · E_export
-├── docs/                     ARCHITECTURE · MEASUREMENT_MODEL · CIRCUIT_UTILISATEUR · DRT_BAYESIENNE
-└── tests/                    pytest : circuit, fit, KK, DRT, pipeline, loader, CV, export, lanceur…
+├── fits/ · circuit/ · drt/   bibliothèques numériques (inchangées en v3) — n'importent jamais core
+├── plotting/                 reçoit des données, ne calcule rien
+│   ├── eis_plots.py          Nyquist/Bode (réplicats), fit, DRT (pic + zone), sélection de points
+│   ├── cv_plots.py · calibration_plots.py · theme.py      Plotly
+│   └── mpl_plots.py          matplotlib (rapport PDF), mêmes données
+├── exports/                  archive.py · report_pdf.py · report_html.py
+├── ui/                       pages + circuit_editor.py, archive_loader.py, calibration_tabs.py, nav.py
+├── docs/                     ARCHITECTURE (ce fichier) · REFERENCE_MAINTENANCE.html · …
+└── tests/                    pytest (dont tests/data/cv_bare_2cycles.txt : CV réelle anonymisée)
 ```
 
-Créés à l'exécution et ignorés par git : `logs/`, `sessions/`.
+Créés à l'exécution et ignorés par git : `logs/`, `user_data/` (en développement), `sessions/`.
 
 ---
 
 ## 3. Règles de modularité
 
 ```
-pages / ui / plotting / exports ──► core ──► drt ──► fits.result
-                                     │                  ▲
-                                     └────► fits ───────┘
-                                             └──► circuit (feuille)
+ui / plotting / exports ──► core ──► drt ──► fits.result
+                             │                  ▲
+                             └────► fits ───────┘
+                                     └──► circuit (feuille)
 ```
 
 | Couche | Règle |
 |---|---|
-| `core/` | Jamais d'import Streamlit. Importe `fits`/`drt`/`circuit` au niveau module (aucun import local masquant un cycle). |
-| `fits/`, `drt/`, `circuit/` | N'importent jamais `core`, `ui`, `pages`, `plotting`, `exports` ni Streamlit. `drt` n'importe de `fits` que `fits.result` ; `circuit` n'importe rien du projet. |
-| `plotting/` | Reçoit des données, ne les calcule pas (les régressions viennent de `core/calibration.py`). |
-| `ui/` | Appelle `core/`, n'implémente pas de physique. |
-| `exports/` | Doit contenir `__init__.py`, et n'est pas ignoré par `.gitignore`. |
+| `core/` | Jamais d'import Streamlit. |
+| `fits/`, `drt/`, `circuit/` | N'importent jamais `core`, `ui`, `plotting`, `exports` ni Streamlit. |
+| `plotting/` | Reçoit des données, ne calcule rien (étalonnages : `core/calibration.py`). |
+| `ui/` | Appelle `core/`, n'implémente pas de physique. La page Visualisation n'importe ni fit ni DRT (test). |
+| Tous les dossiers | Un `__init__.py` dans chaque paquet. |
 
-`tests/test_architecture.py` vérifie ces règles sur l'arbre d'imports réel. Il n'existe plus de
-registre de plugins : un seul moteur de fit (Orazem sur circuit utilisateur), une seule DRT,
-appelés explicitement par `core/pipeline.py`.
+`tests/test_architecture.py` vérifie ces règles sur l'arbre d'imports réel.
 
 ---
 
-## 4. Navigation et état
+## 4. Modèle de données (`core/experiment.py`, `core/results.py`)
 
 ```
-app.py → st.navigation({
-  "Données":  [0_import.py, 1_pretraitement.py],
-  "Analyse":  [A_eis.py,    B_cv.py           ],
-  "Export":   [E_export.py                    ],
-})
+Experiment  { name, biomarkers: [str], channels: [Channel], app_version, created_at }
+Channel     { id, biomarker, concentrations: [float] }           # 2 électrodes implicites
+            mode = "single" (1 concentration) | "multi" (plusieurs) — DÉDUIT
+Measurement { channel_id, electrode (1|2), step, replicate, kind ("EIS"|"CV"),
+              source_filename, data, warnings }
+            step ∈ {bare, probe, conc_1, conc_2, …}   (conc_i ↔ Channel.concentrations[i-1])
+            data : EIS {f, Zre, Zim} (HF→BF, Zim = −Im Z > 0) ; CV {E, I (A), cycle}
 ```
 
-Les onglets EIS/CV sont rendus par `ui/tabs.py::render_eis_tabs` / `render_cv_tabs`, appelés
-depuis `A_eis.py` et `B_cv.py`.
-
-Flux obligatoire (clés de `st.session_state`, `core/app_state.py`) :
+Résultats (`core/results.py`), produits dans les workers, seuls lus par l'UI, l'archive et les
+rapports :
 
 ```
-0_import.py          → experiment, import_validated
-1_pretraitement.py   → exclusions, experiment_clean, preprocessing_done, validation_results
-A_eis.py / B_cv.py   ← lisent experiment_clean ; st.warning + st.stop() si absent
-                     → eis_sessions, eis_validations, eis_normalized, eis_config, cv_sessions
-E_export.py          ← lit experiment_clean et les résultats d'analyse
+AnalysisResults { eis: EISResults, cv: {id: CVFeature}, failures: [Failure], config, … }
+EISResults      { groups: {C1_E1_probe: GroupRecord}, spectra: {clé: SpectrumRecord}, circuit, drt_mode }
+GroupRecord     statut (ok | fallback | failed), pondération, verdict KK, agrégats par paramètre
+SpectrumRecord  réplicat (EIS_C1_E1_probe_r1) ou moyenne (…_mean) : f, Zre, Zim, KK, FitRecord, DRTRecord
+DRTRecord       γ(τ), IC (sample), MainPeak (Rct_DRT), Rct moteur (contrôle), diagnostics
+CVFeature       I_pic, E_pic, I_probe, ΔI/I
 ```
 
-Toute modification des DONNÉES (import, rechargement de ZIP, re-prétraitement) invalide
-**tous** les résultats d'analyse (`reset_analysis_results`) : jamais d'analyse périmée affichée.
-L'état de la DRT (`drt_ready`, `drt_ready_msg`) est constaté une fois par process par `app.py`,
-sans rien installer.
-
-Structure de `experiment` :
-
-```python
-{
-  "name": str, "date": "YYYY-MM-DD",
-  "mode": "eis_only" | "cv_only" | "both",
-  "concentrations": [float, ...], "n_electrodes": int, "n_replicats": int,
-  "probe":       {"eis": {"electrode_1": [BytesIO, ...]}, "cv": {...}},
-  "calibration": {"eis": {"electrode_1": [[BytesIO, ...], ...]}, "cv": {...}},
-  "validation": {...} | None,
-}
-```
-
-`core/experiment_io.py` : `save_experiment(experiment) -> bytes` et `load_experiment(zip_bytes)`.
-Format v2 : `experiment.yaml` + `probe/{eis,cv}/electrode_N/*.txt` +
-`calibration/{eis,cv}/electrode_N/*.txt` (+ `validation/…`). Le format v1 (`.bin`) reste lisible.
+État de session (`core/app_state.py`) : `experiment` → `raw_files`, `assignment`,
+`excluded_points` → `measurements` → `analysis_run` → `results`. Toute modification en amont
+invalide l'aval ; un rechargement d'archive pose tout d'un coup (`results_source = "archive"`).
 
 ---
 
-## 5. Flux de données de l'analyse EIS
+## 5. Configuration, import et nettoyage
 
-```
-Fichiers CSV/TXT (export EC-Lab) ou .mpr
-        ↓  core/loader.py (+ robust_loader.py)
-réplicats BRUTS (EISSpectrum), conservés à chaque étape
-        ↓  par groupe : probe, chaque concentration (et bare si fourni, affichage seul)
-core/measurement_model.analyze_replicates          — sur les réplicats BRUTS, AVANT tout fit
-   • σ(ω) = structure d'erreur d'Orazem du groupe (≥ 3 réplicats)
-   • verdict Kramers-Kronig (réplicats + moyenne)   → ValidationResult (onglet « Measurement model & fit Orazem »)
-   • ErrorStructureUnavailable → groupe ARRÊTÉ (GroupAnalysis.status + message)
-        ↓
-fits/orazem_fit.fit_replicate_group
-   • fit de CHAQUE réplicat (poids 1/σ²) et de la moyenne (σ/√n) du circuit utilisateur
-   • agrégation : moyenne, écart inter-réplicats, incertitude intra-fit, incertitude de la
-     moyenne, Q de Cochran
-        ↓
-drt/engine.fit_drt sur CHAQUE réplicat ET la moyenne (mode fit.drt.mode)
-   • Rct DRT agrégé sur les réplicats ; chaque FitResult DRT porte mode, duration_s et
-     computed_at dans drt_diagnostics (core.pipeline._fit_drt_timed)
-   • recalcul à la demande par core/drt_recompute.py (→ recompute_drt) : un spectre ou tous
-     en 'sample', retour à 'optimize' ; registre st.session_state['eis_drt_store']
-        ↓
-core/models.py → EISSession { probe, groups[], *_replicate_spectra, *_analysis (GroupAnalysis) }
-        ↓
-core/results_table.py → tables intra / inter / diagnostics HMC   ·   core/calibration.py → régressions
-        ↓
-ui/tabs.py (pages/A_eis.py)   ·   exports/exporter.py (pages/E_export.py)
-```
-
-Erreurs : saisie invalide → `InvalidAnalysisInput` avant tout calcul ; donnée invalide →
-résultat dégradé + message rangé dans la session (`load_errors`, `GroupAnalysis.status/message`,
-`messages`) ; bug → l'exception remonte et la page l'affiche comme erreur logicielle. Une page
-n'affiche jamais « analyse terminée » si un groupe n'a aucun fit. Détail : docstring de
-`core/pipeline.py`.
-
-**Convention d'impédance** : le loader stocke `Zim = −Im(Z) > 0` ; bayes_drt2 attend `Z'' < 0`,
-d'où `Z = Zre − 1j·Zim` dans `drt/engine.py`.
-
-**Analyse CV** (`core/cv_pipeline.py`) : groupes par (étape, concentration), moyenne de
-réplicats par interpolation, `delta_signal = |I_probe − I_c| / |I_probe|`, régression sur
-log10([c]). Une voltammétrie cyclique est une boucle : `core/cv_loader.py` détecte les branches
-sur l'ordre de mesure et ne trie jamais par potentiel (qui entrelacerait aller et retour).
+* **Biomarqueurs persistants** : `core.config.user_data_dir()` = `<lanceur>/user_data/` quand
+  l'app tourne dans `<lanceur>/eis_app/` (que launch.bat remplace à chaque mise à jour), sinon
+  `<dépôt>/user_data/` ; `EIS_USER_DATA_DIR` force le dossier (tests).
+* **Assignation** (`core/assignment.py`) : une ligne par fichier
+  `fichier | type | canal | électrode | étape | réplicat | exclure`, pré-remplie d'après le contenu
+  (EIS/CV) et le nom (`canal2_E1_conc_3_r2…`), toujours corrigeable. Contrôles : fichier non
+  assigné, doublon, `conc_i` inexistante pour le canal, type incohérent avec le contenu (erreurs,
+  bloquantes) ; électrode sans `probe`, réplicats non consécutifs (avertissements).
+* **Nettoyage EIS** : `core.loader.load_spectrum` (séparateur, signe de Zim, 50/100 Hz, tri HF→BF)
+  puis retrait des points exclus au lasso. **Nettoyage CV** : `core.cv_loader.load_cv_measurement`
+  (colonnes auto, courant en A, cycle `cv.cycle` — dernier par défaut —, ordre chronologique).
+* **Réplicats conservés** : aucun moyennage au nettoyage. `core.loader.average_replicates` reste
+  un utilitaire (spectre moyen d'affichage du pipeline).
 
 ---
 
-## 6. Le circuit, le fit et la DRT
+## 6. Analyse (`core/analysis.py`, `core/background.py`)
+
+```
+« Lancer l'analyse » → AnalysisRun (validation du circuit AVANT tout calcul)
+   ├─ une tâche eis_group_task par (canal, électrode, étape)          [processus de calcul]
+   │     ≥ 3 réplicats : measurement model + KK → fit Orazem pondéré (core.pipeline._analyze_group)
+   │     sinon / structure indisponible : REPLI σ = 1 %·|Z| (signalé, KK « indéterminé »)
+   │     → GroupRecord + SpectrumRecord (réplicats + moyenne), convertis DANS le worker
+   ├─ une tâche drt_task par spectre (réplicats dès le départ, moyenne après son groupe)
+   │     drt.engine.fit_drt → core.drt_peak.main_peak → DRTRecord
+   └─ fin de TOUTES les tâches → CV (core.cv) → AnalysisResults publié
+```
+
+* **Pool** : `ProcessPoolExecutor`, contexte `spawn` (identique Windows/Linux), workers =
+  `os.cpu_count() − 1` (min. 1, `analysis.max_workers`), ramenés à `cœurs / chaînes` en mode HMC.
+  L'initialisation de chaque worker ré-enregistre CmdStan. `EIS_EXECUTOR=sync|thread` (tests).
+* **Progression** : la page interroge `run.poll()` dans un fragment Streamlit (`run_every = 1 s`) ;
+  barre + compteur « n/N tâches » ; rien n'est affiché avant la fin de tout.
+* **Erreurs isolées** : une exception dans une tâche devient une ligne `Failure` (élément, étape,
+  cause) ; les autres continuent. « Annuler » retire les tâches non démarrées.
+* **Recalcul DRT** (onglet DRT) : `DRTRecomputeRun` sur les spectres choisis, en `sample` ou
+  retour en `optimize` ; seul le `DRTRecord` de ces spectres est remplacé.
+* **Rct par DRT** (`core/drt_peak.py`) : pics de γ(τ) (`scipy.signal.find_peaks`, ≥ 1 % du max)
+  dans `fit.drt.tau_window` (défaut [1e-5 ; 1e-1] s, à calibrer : τ_ct ≈ Rct·Qdl) ; le plus haut est
+  retenu (les autres sont signalés) ; intégration trapèzes de γ·d(ln τ) entre les minima locaux
+  qui l'encadrent. Validé sur Rs + (Rct ∥ C) synthétique à ±5 % (test avec le moteur réel).
+* **CV** (`core/cv.py`) : maximum de I sur la branche anodique (E croissant) dans
+  `cv.peak_window_V` (défaut [0 ; 0,25] V, calé sur des balayages ±0,2 V), sans correction de ligne
+  de base (option future : soustraire une droite ajustée sur le pied du pic) ;
+  ΔI/I = (I_probe − I)/I_probe, I_probe = moyenne des pics « probe » de la même électrode.
+
+### Étalonnages (`core/calibration.py`)
+
+1. chaque réplicat est normalisé par la moyenne « probe » de **son** électrode :
+   EIS `log10(Rct/Rct_probe)` — Rct par **DRT (pic principal)** ou par le **fit Randles** —,
+   CV `ΔI/I` ;
+2. par concentration : moyenne ± écart-type entre réplicats (`ddof = 1` ; 1 réplicat → pas de
+   barre, signalé) ;
+3. régression linéaire des moyennes sur log10([c]) (≥ 3 concentrations), R².
+
+Vues : **par électrode** et **regroupé par biomarqueur** (une courbe par biomarqueur). Les deux
+modes de canal sont traités de même : chaque point (canal, électrode, étape, réplicat) devient
+(concentration, valeur normalisée), puis tout est regroupé par concentration. Courbes v2
+conservées (`legacy_curves`, spectre moyen, |Rct_probe − Rct_c|/Rct_probe et log10 Rct, mode strict).
+
+## 7. Le circuit, le fit et la DRT
 
 | Méthode | Paramètres | Sortie (`fit_results` de chaque spectre) |
 |---|---|---|
 | Fit Orazem, clé `"orazem"` | circuit utilisateur (`fit.circuit`, par défaut un Randles complet à 8 paramètres) ; valeur initiale et bornes par paramètre ; paramètre cible désigné | `FitResult` : `target_param/target_value/target_std` (intra-fit), χ²ᵣ et son intervalle attendu, `fit_diagnostics` (conditionnement, rang, identifiabilité, bornes actives) |
-| DRT, clé `"drt_bayes"` | réglages constants de `drt/engine.py` (justifiés par `drt/VALIDATION_REGLAGES.md`) ; mode `fit.drt.mode` | `FitResult` : γ(τ), Rct (pic pénultième, ±3 en ln τ), `target_std` a posteriori (HMC), `drt_diagnostics` (R̂, ESS, divergences, alertes) |
+| DRT, clé `"drt_bayes"` | réglages constants de `drt/engine.py` (justifiés par `drt/VALIDATION_REGLAGES.md`) ; mode `fit.drt.mode` | `FitResult` : γ(τ), Rct du moteur (pic pénultième, ±3 en ln τ — **colonne de contrôle** en v3), `target_std` a posteriori (HMC), `drt_diagnostics` ; puis `core/drt_peak.py` : **Rct_DRT = aire du pic principal** |
 
 Le circuit par défaut (`config/default.yaml`) :
 
@@ -242,29 +212,39 @@ dans [MEASUREMENT_MODEL.md](MEASUREMENT_MODEL.md) ; la DRT dans [DRT_BAYESIENNE.
 
 ---
 
-## 7. Onglets de l'analyse EIS (`ui/tabs.py::render_eis_tabs`)
-
-En tête de page : statut explicite de l'analyse (groupes arrêtés, fichiers écartés, moteur DRT
-absent). Les résultats sont présentés en **quatre onglets**, chacun découpé par
-électrode (sous-onglets, comme la page CV) puis par groupe de réplicats :
-
-| Onglet | Contenu |
-|---|---|
-| **1 · Visualisation** | Données mesurées seulement, aucun fit. Nyquist et Bode (\|Z\| et −phase) : réplicats superposés (traits fins) + moyenne (trait épais), une couleur par concentration, légende cliquable par groupe, filtre de groupes, bascule prétraitées / brutes (avant exclusions), référence « électrode nue » en pointillés, et une vue « Normalisé E1 + E2 » |
-| **2 · Measurement model & fit Orazem** | Récapitulatif de l'électrode (verdict KK, éléments de Voigt, fiabilité du fit, nombre d'alertes), puis pour le groupe choisi, **dans l'ordre de lecture** : (1) measurement model et verdict KK — conforme / non conforme / indéterminé —, éléments de Voigt retenus et points hors bande par spectre, résidus, structure d'erreur ; (2) fit Orazem — bandeau **rouge** si κ dépasse `fits.orazem_fit.CONDITION_NUMBER_WARN` (≈ 6,7·10⁷) ou si un paramètre n'est pas identifiable, alertes de fit affichées d'emblée (jamais dans un expander), paramètre cible mis en évidence (★), Nyquist expérimental + circuit ajusté et résidus, tableau des paramètres (intra-fit, inter-réplicats, incertitude de la moyenne, fit du spectre moyen), diagnostics de CHAQUE fit (κ, rang/P, non identifiables, dérivée unilatérale, bornes actives, χ²ᵣ avec son intervalle attendu, départs convergés). Un groupe arrêté (moins de 3 réplicats…) affiche son verdict « indéterminé » et la cause, pas une erreur ni un tableau vide |
-| **3 · DRT** | Par groupe : tableau des diagnostics de CHAQUE spectre, toujours affiché (R̂ max, divergences, ESS bulk/tail avec leurs seuils, E-BFMI, Rct ± σ a posteriori, IC 95 % de Rct, origine de Rct, Rp) ; vue agrégée (γ(τ) moyenne + bande LARGE de variabilité inter-réplicats, min–max) ou vue d'un réplicat / du spectre moyen (γ(τ) + bande FINE de crédibilité HMC, diagnostics en grand, alertes) ; échec de calcul d'un spectre nommé en rouge avec son motif (le pipeline continue sans DRT pour ce spectre) ; rappel permanent sur les intervalles de Rp et de Rct ; une ligne par spectre (mode actuel, durée, « Recalculer en sample », « Revenir en optimize »), « Tout recalculer en sample » avec progression n/N et « Revenir en optimize (tout) » — un échec est signalé avec le label du spectre et n'arrête pas la suite ; avertissement permanent : sample = 2 à 5 min par spectre, parfois instable |
-| **4 · Calibration** | Courbes produites par `core/calibration.py`, les MÊMES fonctions que l'export CSV (`compute_calibration_all`, via `calibration_figure` ; `compute_calibration_loglog_all`, via `calibration_loglog_figure`) : signal normalisé \|Rct_probe − Rct_c\|/Rct_probe vs log10([c]) et log10(Rct) vs log10([c]) avec R², pour le paramètre cible du circuit (`orazem`) et pour le Rct de la DRT (`drt_bayes`) séparément. Valeur d'un groupe = fit du spectre MOYEN. Seuls les groupes dont le fit existe, a convergé, a une valeur cible > 0 et dont le verdict KK n'est pas « non conforme » entrent dans une régression (verdict indéterminé : non exclu) ; le probe, référence du signal normalisé, obéit aux mêmes règles. Un tableau liste CHAQUE point (retenu ou exclu) avec la raison : fit non convergé · KK non conforme · DRT non calculée (avec son motif) · groupe arrêté · valeur ≤ 0. Bouton de téléchargement du CSV d'export |
-
-Il n'y a plus d'onglet de reconstructions : les valeurs reconstruites restent produites par la
-page Export.
-
-La page **Export** (`E_export.py`) produit : paramètres (colonnes par modèle), résultats par
-réplicat et par groupe, DRT, reconstructions, calibration EIS/CV, YAML de session, ZIP complet.
-Il n'y a pas d'export PNG/HTML de figures.
-
 ---
 
-## 8. Lanceur Windows (`launch.bat`)
+## 8. Archive .zip (`exports/archive.py`, schéma v3)
+
+```
+experience_<date>.zip
+├── manifest.json        schema_version (3), app_version, expérience, table d'assignation,
+│                        config (imbriquée et aplatie), fichiers + SHA-256
+├── data/eis|cv/C<c>_E<e>_<étape>_r<k>.csv     données nettoyées
+└── results/  analysis.json · spectra/<clé>.csv (+ Zfit) · drt/<clé>.csv (τ, γ, IC, zone du pic)
+              drt_peaks.csv · fits_randles.csv · cv_features.csv · calibration_eis.csv · calibration_cv.csv
+```
+
+Nombres écrits avec `repr` (aller-retour EXACT). `read_archive` vérifie la version de schéma et
+chaque SHA-256 puis reconstruit expérience, mesures et résultats **sans aucun recalcul** (test :
+fonctions de fit et de DRT interdites pendant le rechargement) ; les étalonnages sont recalculés
+à l'affichage à partir des enregistrements (arithmétique pure, identique). Archive invalide →
+`ArchiveError` (message clair). Les archives **v2** (`experiment.yaml`) sont lues par
+`core/legacy_import.py` : électrode v2 *e* → canal ⌈e/2⌉, électrode 1/2 ; exclusions et points
+supprimés repris ; à nettoyer puis analyser.
+
+## 9. Rapports
+
+* **PDF** (`exports/report_pdf.py`, `matplotlib.backends.backend_pdf.PdfPages`, backend Agg, A4) :
+  `pdf_plan()` liste les pages — garde, CV par canal, Nyquist+Bode par canal, DRT par canal,
+  tableau des Rct (paysage, 28 lignes/page), étalonnage EIS par biomarqueur (sources DRT et fit),
+  étalonnage CV, échecs. Figures : `plotting/mpl_plots.py`.
+* **HTML** (`exports/report_html.py`) : fichier autonome, plotly.js embarqué une seule fois,
+  sommaire, mêmes figures Plotly que l'application et mêmes tableaux.
+* La page Export génère chaque fichier **à la demande** puis propose le téléchargement. L'export
+  PNG n'existe pas (kaleido inutile).
+
+## 10. Lanceur Windows (`launch.bat`)
 
 Seul fichier à distribuer. Le dépôt est public : aucun jeton ; la validation TLS est normale.
 
@@ -294,7 +274,9 @@ Seul fichier à distribuer. Le dépôt est public : aucun jeton ; la validation 
 ```
 
 Fichiers créés à côté du `.bat` : `eis_app\`, `venv\`, `stan_cache\`, `.version`, `.deps_hash`,
-`launcher.log`. Aucune écriture dans le registre (les chemins longs ne sont pas nécessaires :
+`launcher.log`, et `user_data\` (créé par l'application : `biomarkers.json`) — hors de `eis_app\`,
+donc jamais touché par une mise à jour. `core\app_state.py` fait partie des fichiers que le lanceur
+exige dans une mise à jour : il ne doit pas être supprimé (garde-fou : `tests/test_app_state.py`). Aucune écriture dans le registre (les chemins longs ne sont pas nécessaires :
 venv court, CmdStan dans `C:\cmdstan` ; un avertissement s'affiche si le dossier du lanceur est
 très profond).
 
@@ -313,22 +295,26 @@ streamlit run app.py
 
 ---
 
-## 9. Tests et CI
+---
+
+## 11. Tests et CI
 
 ```bash
 python -m pytest tests/ -v                 # tout
 python -m pytest tests/ -m "not slow"      # sans le HMC lent
-python -m compileall app.py setup_drt_bayesien.py core fits drt circuit plotting exports ui pages tests
+python -m compileall app.py setup_drt_bayesien.py core fits drt circuit plotting exports ui tests
 ```
 
-`validate.yml` : job `validate` (Python 3.12, `requirements-dev.txt`, compileall + pytest) et job
-`drt` (cvxopt + CmdStan réels : les tests DRT, sautés sans CmdStan, y sont exécutés). Limite
-connue : deux paramétrisations du test HMC lent peuvent échouer selon la machine (voir
-`drt/VALIDATION_REGLAGES.md` §7).
+Tests v3 : `test_experiment_model` (modèle, persistance des biomarqueurs, mise à jour simulée),
+`test_assignment` (contrôles de cohérence, nettoyage, CV réelle à 2 cycles), `test_drt_peak`
+(aire du pic, fenêtre, moteur réel ±5 %), `test_analysis_background` (processus, échec isolé, rien
+avant la fin, recalcul DRT), `test_calibration_v3` (3 cas de concentrations, ddof = 1, 1 réplicat,
+CV ΔI/I), `test_archive_v3` (aller-retour exact sans fit, archives corrompues), `test_reports_v3`
+(pages du PDF, figures du HTML, archives v2), `test_ui_pages` (pages en AppTest), `test_app_state`.
+`validate.yml` : job `validate` (Linux), job `drt` (CmdStan réel, tests lents inclus),
+`validate-windows`.
 
----
-
-## 10. Erreurs fréquentes
+## 12. Erreurs fréquentes
 
 | Symptôme | Cause | Solution |
 |---|---|---|
@@ -340,5 +326,8 @@ connue : deux paramétrisations du test HMC lent peuvent échouer selon la machi
 | Code 6 : « Erreur de compilation Stan/C++ » | la toolchain fonctionne, la compilation d'un modèle échoue (dernière sortie affichée) | lire la sortie affichée ; chemin trop long ? déplacer `launch.bat` dans `C:\EIS` |
 | Onglet DRT : « CmdStan x.y.z est utilisé, alors que les réglages… 2.36.0 » | une autre version de CmdStan est la seule utilisable (2.36.0 non installable hors ligne) | relancer `launch.bat` avec réseau : la 2.36.0 est installée à côté, l'autre n'est pas touchée |
 | « DRT de « … » non calculée : échec à l'étape … » | exception pendant le calcul DRT | le traceback complet est dans `logs\eis_analyzer.log` (étape, origine, spectre, réglages, version de CmdStan) |
-| Groupe « arrêté » | moins de 3 réplicats : structure d'erreur non caractérisable | fournir au moins 3 réplicats indépendants par groupe |
+| Groupe en « repli » (🟠) | moins de 3 réplicats, ou structure d'erreur non caractérisable : fit pondéré σ = 1 %·|Z|, χ²ᵣ non interprétable | fournir au moins 3 réplicats indépendants par groupe |
+| « Aucun pic de γ(τ) dans la fenêtre » | `fit.drt.tau_window` ne couvre pas l'arc de transfert de charge | élargir/décaler la fenêtre dans `config/default.yaml` (τ_ct ≈ Rct·Qdl) |
+| « aucun point de la branche anodique dans la fenêtre » (CV) | `cv.peak_window_V` hors de la plage balayée | ajuster `cv.peak_window_V` |
+| Archive refusée « Somme de contrôle invalide » | fichier modifié ou corrompu après export | ré-exporter l'archive depuis l'application |
 | Fenêtre `.bat` qui se ferme / variable vide | `%VAR%` lu dans un bloc `( … )` | `!VAR!` + `enabledelayedexpansion` (règle de `launch.bat`) |
