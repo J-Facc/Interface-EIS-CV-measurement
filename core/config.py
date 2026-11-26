@@ -1,6 +1,7 @@
 """Load YAML configuration and validate with Pydantic."""
 
-from typing import Optional
+import os
+from typing import Optional, Union
 
 import yaml
 from pathlib import Path
@@ -71,6 +72,17 @@ class DRTSettings(BaseModel):
     samples: int = 2000         # HMC seulement
     adapt_delta: float = 0.99   # HMC seulement
     max_iter: int = 50000       # L-BFGS ('optimize') seulement
+    # Fenêtre de τ (s) où chercher le pic PRINCIPAL de γ(τ) dont l'aire donne Rct_DRT
+    # (core/drt_peak.py, v3). Post-traitement de γ : n'est PAS transmise au moteur.
+    tau_window: list[float] = Field(default_factory=lambda: [1.0e-5, 1.0e-1])
+
+    @field_validator("tau_window")
+    @classmethod
+    def _tau_window_valid(cls, v: list) -> list:
+        if len(v) != 2 or not (0 < v[0] < v[1]):
+            raise ValueError(f"fit.drt.tau_window doit valoir [tau_min, tau_max] avec 0 < tau_min < tau_max "
+                             f"(reçu {v!r})")
+        return [float(v[0]), float(v[1])]
 
     @field_validator("mode")
     @classmethod
@@ -118,9 +130,52 @@ class AcquisitionSettings(BaseModel):
     f_min_hz: float = 0.1
 
 
+class CVSettings(BaseModel):
+    """Extraction du courant de pic CV (core/cv.py).
+
+    - peak_window_V : fenêtre de potentiel (V) où chercher le maximum de I sur la branche
+      ANODIQUE (E croissant) du cycle retenu ;
+    - cycle : cycle conservé au nettoyage — "last" (défaut), "first" ou un numéro (1, 2…).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    peak_window_V: list[float] = Field(default_factory=lambda: [0.0, 0.25])
+    cycle: Union[int, str] = "last"
+
+    @field_validator("peak_window_V")
+    @classmethod
+    def _window_valid(cls, v: list) -> list:
+        if len(v) != 2 or not v[0] < v[1]:
+            raise ValueError(f"cv.peak_window_V doit valoir [E_min, E_max] avec E_min < E_max (reçu {v!r})")
+        return [float(v[0]), float(v[1])]
+
+    @field_validator("cycle")
+    @classmethod
+    def _cycle_valid(cls, v):
+        if isinstance(v, str) and v not in ("last", "first"):
+            raise ValueError(f"cv.cycle doit valoir 'last', 'first' ou un entier ≥ 1 (reçu {v!r})")
+        if isinstance(v, int) and v < 1:
+            raise ValueError(f"cv.cycle doit être ≥ 1 (reçu {v})")
+        return v
+
+
+class AnalysisSettings(BaseModel):
+    """Calcul en arrière-plan (core/background.py).
+
+    - max_workers : nombre de processus ; None = os.cpu_count() − 1 (minimum 1).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_workers: Optional[int] = None
+
+
 class AppSettings(BaseModel):
     acquisition: AcquisitionSettings = Field(default_factory=AcquisitionSettings)
     fit: FitSettings = Field(default_factory=FitSettings)
+    cv: CVSettings = Field(default_factory=CVSettings)
+    analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
 
 
 _DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config" / "default.yaml"
@@ -152,3 +207,38 @@ def config_to_dict(settings: AppSettings) -> dict:
         Nested dict matching the YAML structure.
     """
     return settings.model_dump()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Données utilisateur persistantes (v3) — HORS du dossier de l'application
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Variable d'environnement qui force le dossier des données utilisateur (tests, usages avancés).
+USER_DATA_ENV = "EIS_USER_DATA_DIR"
+#: Nom du dossier extrait par launch.bat : le code y est REMPLACÉ à chaque mise à jour.
+LAUNCHER_APP_DIRNAME = "eis_app"
+
+
+def app_root() -> Path:
+    """Dossier racine du code de l'application (celui qui contient app.py)."""
+    return Path(__file__).resolve().parent.parent
+
+
+def user_data_dir(root: Optional[Path] = None) -> Path:
+    """Dossier des données utilisateur persistantes (``biomarkers.json``…).
+
+    launch.bat ré-extrait le code dans ``eis_app/`` à chaque mise à jour : rien de
+    persistant ne doit y vivre. Quand l'application tourne depuis ``<lanceur>/eis_app/``,
+    les données vont dans ``<lanceur>/user_data/`` (à côté de launch.bat) ; sinon (clone de
+    développement) dans ``<dépôt>/user_data/`` (ignoré par git).
+
+    Args:
+        root: racine du code (défaut : :func:`app_root`) — paramétrable pour les tests.
+    """
+    forced = os.environ.get(USER_DATA_ENV)
+    if forced:
+        return Path(forced)
+    root = Path(root) if root is not None else app_root()
+    if root.name.lower() == LAUNCHER_APP_DIRNAME:
+        return root.parent / "user_data"
+    return root / "user_data"

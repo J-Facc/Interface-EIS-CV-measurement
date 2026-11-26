@@ -53,3 +53,19 @@ fit:
     samples: 2000
     adapt_delta: 0.99
     max_iter: 50000       # L-BFGS ('optimize') seulement
+    # Fenêtre de τ (s) du pic PRINCIPAL de γ(τ) dont l'aire donne Rct_DRT (core/drt_peak.py).
+    # Post-traitement : n'est pas transmise au moteur. À calibrer sur vos données :
+    # τ_ct ≈ Rct·Qdl (≈ 1500 Ω × 5 µF ≈ 7·10⁻³ s pour le capteur de la thèse).
+    tau_window: [1.0e-5, 1.0e-1]
+
+# Voltammétrie cyclique (core/cv.py)
+cv:
+  # Fenêtre de potentiel (V) où chercher le courant de pic ANODIQUE (maximum de I sur la
+  # branche E croissante). Défaut calé sur les balayages −0,2 → +0,2 V du montage.
+  peak_window_V: [0.0, 0.25]
+  # Cycle conservé au nettoyage : last (défaut), first, ou un numéro de cycle (1, 2…).
+  cycle: last
+
+# Calcul en arrière-plan (core/background.py)
+analysis:
+  max_workers: null       # null = nombre de cœurs − 1 (minimum 1)
