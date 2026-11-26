@@ -139,6 +139,11 @@ def test_viz_page_synthesis_by_default_then_channel_view():
     assert len(at.get("plotly_chart")) == 6                            # 3 CV + 3 EIS (E1, E2, moyennes)
     at.radio(key="viz_eis_mode").set_value("Bode").run()
     assert not at.exception
+    at.toggle(key="viz_norm_1").set_value(False).run()             # moyennes brutes
+    assert not at.exception
+    at.selectbox(key="viz_channel").set_value("synthese").run()
+    assert at.toggle(key="viz_syn_norm").value is True              # normalisé par défaut
+    assert not at.exception
 
 
 def test_viz_page_imports_no_fit_and_no_drt():

@@ -1,6 +1,7 @@
 """Page 3 — Visualisation des données NETTOYÉES : CV, Nyquist, Bode. Aucun fit, aucune DRT.
 
-Menu « Canal » :
+Menu « Canal » (les graphes de MOYENNES sont normalisés, par défaut, par le probe moyen de la
+même électrode — voir ``core/display.py``) :
 
 * **Vue synthétique** (défaut) : toutes les courbes MOYENNES (réplicats des deux électrodes) de
   chaque canal et chaque étape, avec leur zone d'erreur (± écart-type) ;
@@ -47,33 +48,64 @@ def _channel_filters(ms, exp, ch_id: int):
     return steps, reps
 
 
+_SHOW = {"all": "Tout", "bare": "Bare", "probe": "Probe", "conc": "Concentrations"}
+_NORM_HELP = ("Chaque réplicat est normalisé par le probe MOYEN de sa propre électrode, puis moyenné. "
+              "EIS : |Re_probe − Re| / |Re_probe| et |Im_probe − Im| / |Im_probe| point à point "
+              "(Bode : écart relatif de |Z|). CV : I / I_pic,probe (pic anodique du probe, fenêtre "
+              "cv.peak_window_V).")
+
+
+def _cv_window() -> tuple:
+    from core.config import config_to_dict, load_config
+    return tuple(config_to_dict(load_config())["cv"]["peak_window_V"])
+
+
+def _skipped_note(items: list) -> None:
+    sk = sorted({(i["channel_id"], e) for i in items for e in i.get("skipped") or []})
+    if sk:
+        st.caption("⚠️ Sans probe, non normalisables (écartées) : "
+                   + ", ".join(f"canal {c} électrode {e}" for c, e in sk) + ".")
+
+
 def _synthesis(ms, exp, theme: str, eis_mode: str) -> None:
     bios = sorted({c.biomarker for c in exp.channels})
-    pick = st.multiselect("Biomarqueurs", bios, default=bios, key="viz_syn_bios")
+    c1, c2, c3 = st.columns([3, 3, 2])
+    pick = c1.multiselect("Biomarqueurs", bios, default=bios, key="viz_syn_bios")
+    show = c2.segmented_control("Afficher", list(_SHOW), format_func=_SHOW.get, default="all",
+                                key="viz_syn_show") or "all"
+    norm = c3.toggle("Normaliser par le probe", value=True, key="viz_syn_norm", help=_NORM_HELP)
     st.caption("Moyenne des réplicats des deux électrodes, par canal et par étape ; zone = ± écart-type "
-               "(ddof = 1). Couleur = étape, style de trait = canal.")
+               "(ddof = 1). Couleur = étape, style de trait = canal."
+               + (" Courbes normalisées par le probe de chaque électrode." if norm else ""))
+    win = _cv_window()
     tab_cv, tab_eis = st.tabs(["CV", "EIS"])
     with tab_cv:
-        items = synthesis_view(ms, exp, KIND_CV, pick)
+        items = synthesis_view(ms, exp, KIND_CV, pick, norm, show, win)
         if items:
-            st.plotly_chart(cv_means_figure(items, title="CV — vue synthétique", theme_mode=theme),
+            st.plotly_chart(cv_means_figure(items, title="CV — vue synthétique", theme_mode=theme, normalized=norm),
                             width="stretch", key="viz_syn_cv")
+            _skipped_note(items)
         else:
-            st.info("Aucune mesure CV.")
+            st.info("Aucune courbe CV pour cette sélection.")
     with tab_eis:
-        items = synthesis_view(ms, exp, KIND_EIS, pick)
+        items = synthesis_view(ms, exp, KIND_EIS, pick, norm, show, win)
         if not items:
-            st.info("Aucune mesure EIS.")
-        elif eis_mode == "Nyquist":
-            st.plotly_chart(nyquist_means_figure(items, title="Nyquist — vue synthétique", theme_mode=theme),
-                            width="stretch", key="viz_syn_nyq")
+            st.info("Aucun spectre EIS pour cette sélection.")
+            return
+        if eis_mode == "Nyquist":
+            st.plotly_chart(nyquist_means_figure(items, title="Nyquist — vue synthétique", theme_mode=theme,
+                                                 normalized=norm), width="stretch", key="viz_syn_nyq")
         else:
-            st.plotly_chart(bode_means_figure(items, title="|Z| — vue synthétique", theme_mode=theme),
-                            width="stretch", key="viz_syn_bode")
+            st.plotly_chart(bode_means_figure(items, title="|Z| — vue synthétique", theme_mode=theme,
+                                              normalized=norm), width="stretch", key="viz_syn_bode")
+        _skipped_note(items)
 
 
 def _channel(ms, exp, ch_id: int, theme: str, eis_mode: str) -> None:
     steps, reps = _channel_filters(ms, exp, ch_id)
+    norm = st.toggle("Normaliser les moyennes par le probe de chaque électrode", value=True,
+                     key=f"viz_norm_{ch_id}", help=_NORM_HELP)
+    win = _cv_window()
     if not steps or not reps:
         st.info("Sélectionnez au moins une étape et un réplicat.")
         return
@@ -87,9 +119,12 @@ def _channel(ms, exp, ch_id: int, theme: str, eis_mode: str) -> None:
                 if g:
                     st.plotly_chart(cv_figure(g, title=f"CV — canal {ch_id}, électrode {el}", theme_mode=theme),
                                     width="stretch", key=f"viz_cv_{ch_id}_{el}")
-            st.plotly_chart(cv_means_figure(channel_mean_view(ms, exp, KIND_CV, ch_id, steps, reps),
-                                            title=f"CV — canal {ch_id} : moyennes (- - E1 · ··· E2 · — E1+E2)",
-                                            theme_mode=theme), width="stretch", key=f"viz_cv_{ch_id}_mean")
+            items = channel_mean_view(ms, exp, KIND_CV, ch_id, steps, reps, norm, win)
+            st.plotly_chart(cv_means_figure(items, title=f"CV — canal {ch_id} : moyennes"
+                                            f"{' normalisées' if norm else ''} (- - E1 · ··· E2 · — E1+E2)",
+                                            theme_mode=theme, normalized=norm),
+                            width="stretch", key=f"viz_cv_{ch_id}_mean")
+            _skipped_note(items)
     with tab_eis:
         if not any(m.kind == KIND_EIS and m.channel_id == ch_id for m in ms):
             st.info("Aucune mesure EIS pour ce canal.")
@@ -102,11 +137,13 @@ def _channel(ms, exp, ch_id: int, theme: str, eis_mode: str) -> None:
                    if eis_mode == "Nyquist" else
                    bode_figure(g, title=f"Bode — canal {ch_id}, électrode {el}", theme_mode=theme))
             st.plotly_chart(fig, width="stretch", key=f"viz_eis_{ch_id}_{el}")
-        items = channel_mean_view(ms, exp, KIND_EIS, ch_id, steps, reps)
-        title = f"canal {ch_id} : moyennes (- - E1 · ··· E2 · — E1+E2)"
-        fig = (nyquist_means_figure(items, title=f"Nyquist — {title}", theme_mode=theme) if eis_mode == "Nyquist"
-               else bode_means_figure(items, title=f"|Z| — {title}", theme_mode=theme))
+        items = channel_mean_view(ms, exp, KIND_EIS, ch_id, steps, reps, norm, win)
+        title = f"canal {ch_id} : moyennes{' normalisées' if norm else ''} (- - E1 · ··· E2 · — E1+E2)"
+        fig = (nyquist_means_figure(items, title=f"Nyquist — {title}", theme_mode=theme, normalized=norm)
+               if eis_mode == "Nyquist" else
+               bode_means_figure(items, title=f"|Z| — {title}", theme_mode=theme, normalized=norm))
         st.plotly_chart(fig, width="stretch", key=f"viz_eis_{ch_id}_mean")
+        _skipped_note(items)
 
 
 def render() -> None:

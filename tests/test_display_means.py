@@ -77,3 +77,54 @@ def test_cleaning_reuses_the_cache():
     assert "a" in cache and len(ms[0].data["f"]) == len(cache["a"][0]["f"]) - 2
     ms2, _ = clean_files(rows, {"a": b"illisible"}, exp, make_config(), {}, cache)   # lu depuis le cache
     assert len(ms2[0].data["f"]) == len(cache["a"][0]["f"])
+
+
+# ── Normalisation par le probe de la même électrode ──────────────────────────
+
+def _cvpk(ch, el, step, rep, peak, n=60):
+    """CV dont le pic anodique (branche E croissante) vaut ``peak`` A à E = 0,2 V."""
+    E = np.concatenate([np.linspace(0, 0.2, n), np.linspace(0.2, 0, n)])
+    I = np.concatenate([np.linspace(0, peak, n), np.linspace(peak, -peak, n)])
+    return Measurement(ch, el, step, rep, "CV", "x", {"E": E, "I": I, "cycle": np.ones(2 * n)})
+
+
+def test_eis_normalized_by_the_probe_of_the_same_electrode(data):
+    exp, ms = data
+    items = channel_mean_view(ms, exp, "EIS", 1, normalize=True)
+    lab = {i["label"]: i["mean"] for i in items}
+    # E1 : probe moyen Re = 101,5 ; conc_1 r1/r2 : Re = 101, 102 → |101,5 − Re|/101,5 moyenné
+    e1 = lab["conc_1 — 1.00e-09 M — E1"]
+    assert np.allclose(e1["Zre"], np.mean([0.5 / 101.5, 0.5 / 101.5]))
+    e2 = lab["conc_1 — 1.00e-09 M — E2"]                       # référence = probe de E2 (201,5)
+    assert np.allclose(e2["Zre"], 0.5 / 201.5)
+    both = lab["conc_1 — 1.00e-09 M — E1+E2"]                  # chaque réplicat par SON électrode
+    assert np.allclose(both["Zre"], np.mean([0.5 / 101.5] * 2 + [0.5 / 201.5] * 2))
+    assert np.allclose(lab["Probe — E1"]["Zre"], np.mean([0.5 / 101.5] * 2))   # probe → écart à sa moyenne
+
+
+def test_cv_normalized_by_the_probe_peak_of_the_same_electrode():
+    exp = Experiment(["A"], [Channel(1, "A", [1e-9])])
+    ms = [_cvpk(1, 1, "probe", 1, 4e-6), _cvpk(1, 1, "probe", 2, 6e-6), _cvpk(1, 2, "probe", 1, 10e-6),
+          _cvpk(1, 1, "conc_1", 1, 3e-6), _cvpk(1, 2, "conc_1", 1, 8e-6)]
+    g = {x["electrodes"]: x for x in mean_groups(ms, exp, "CV", 1, (1, 2), normalize=True, cv_window=(0, 0.25))
+         if x["step"] == "conc_1"}
+    m = g[(1, 2)]["mean"]
+    assert np.max(m["I"]) == pytest.approx(np.mean([3 / 5, 8 / 10]))     # 3 µA/5 µA et 8 µA/10 µA
+    one = mean_groups(ms, exp, "CV", 1, (1,), steps=["conc_1"], normalize=True, cv_window=(0, 0.25))[0]
+    assert np.max(one["mean"]["I"]) == pytest.approx(0.6)
+
+
+def test_electrode_without_probe_is_skipped_when_normalizing():
+    exp = Experiment(["A"], [Channel(1, "A", [1e-9])])
+    ms = [_eis(1, 1, "probe", 1, 100), _eis(1, 1, "conc_1", 1, 110), _eis(1, 2, "conc_1", 1, 300)]
+    g = mean_groups(ms, exp, "EIS", 1, normalize=True)
+    conc = next(x for x in g if x["step"] == "conc_1")
+    assert conc["mean"]["n"] == 1 and conc["skipped"] == [2]
+
+
+def test_synthesis_step_filter(data):
+    exp, ms = data
+    steps = lambda show: [i["step"] for i in synthesis_view(ms, exp, "EIS", show=show)]  # noqa: E731
+    assert steps("probe") == ["probe", "probe"] and steps("conc") == ["conc_1"] and steps("bare") == []
+    assert steps("all") == ["probe", "conc_1", "probe"]
+    assert all(i["normalized"] for i in synthesis_view(ms, exp, "EIS", normalize=True))

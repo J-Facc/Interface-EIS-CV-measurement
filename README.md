@@ -77,7 +77,9 @@ Cinq pages, dans l'ordre :
    nettoyage. Les réplicats sont conservés individuellement.
 3. **Visualisation** — menu « Canal » : **vue synthétique** par défaut (toutes les courbes moyennes,
    avec zone d'erreur ± écart-type), ou un canal : électrode 1, électrode 2 et les moyennes
-   (E1, E2, E1+E2), en CV, Nyquist ou Bode. Aucun fit ni DRT.
+   (E1, E2, E1+E2), en CV, Nyquist ou Bode. Les courbes moyennes sont **normalisées par défaut par
+   le probe moyen de la même électrode** (EIS : |X_probe − X| / |X_probe| point à point ; CV :
+   I / I_pic,probe) ; la vue synthétique filtre Tout / Bare / Probe / Concentrations. Aucun fit ni DRT.
 4. **Analyse** — « Lancer l'analyse » : fits Randles (Orazem) et DRT de tous les spectres **en
    arrière-plan** (processus parallèles), puis onglets **DRT · Rct (fit Randles) · Étalonnage EIS ·
    CV · Étalonnage CV**.

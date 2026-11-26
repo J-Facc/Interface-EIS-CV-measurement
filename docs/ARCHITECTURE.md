@@ -19,7 +19,7 @@
 |---|---|---|---|
 | 1 | **Configuration** (`page_config.py`) | biomarqueurs, canaux, concentrations ; charger une archive | non |
 | 2 | **Import & nettoyage** (`page_import.py`) | dépôt, assignation manuelle, contrôles, nettoyage | nettoyage seul |
-| 3 | **Visualisation** (`page_viz.py`) | vue synthétique (moyennes ± écart-type) ou, par canal : électrode 1, électrode 2, moyennes (E1, E2, E1+E2) | moyennes d'affichage seulement |
+| 3 | **Visualisation** (`page_viz.py`) | vue synthétique (moyennes ± écart-type, filtre bare/probe/concentrations) ou, par canal : électrode 1, électrode 2, moyennes (E1, E2, E1+E2) ; moyennes normalisées par le probe de la même électrode (EIS : \|X_probe − X\|/\|X_probe\| point à point ; CV : I/I_pic,probe) | moyennes d'affichage seulement |
 | 4 | **Analyse** (`page_analysis.py` + `calibration_tabs.py`) | fit Randles + DRT en arrière-plan, CV, étalonnages | oui |
 | 5 | **Export** (`page_export.py`) | archive .zip, rapport PDF, rapport HTML | non (assemblage) |
 
