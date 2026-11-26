@@ -69,7 +69,8 @@ Cinq pages, dans l'ordre :
 2. **Import & nettoyage** — **un dossier par canal**, tel qu'il sort du poste de mesure
    (`probe/{eis,cv}/electrode_N/probe_eis_eN_rK.txt`,
    `calibration/{eis,cv}/electrode_N/eis_eN_1.00e-08M_rK.txt`, `bare/…` facultatif ; `.txt/.csv/.mpt`
-   et `.mpr` converti). Électrode, étape, concentration et réplicat sont lus dans les noms ; les
+   et `.mpr` converti). Électrode, étape, concentration et réplicat sont lus dans les noms ; les autres fichiers du
+   dossier (réglages, journaux…) sont ignorés ; les
    concentrations trouvées peuvent être adoptées pour le canal. Le tableau d'assignation reste
    corrigeable (et des fichiers isolés peuvent être ajoutés à la main) ; contrôles de cohérence,
    exclusion de points au lasso, puis nettoyage. Les réplicats sont conservés individuellement.

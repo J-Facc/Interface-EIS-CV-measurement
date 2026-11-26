@@ -13,9 +13,13 @@ concentration (mol/L). La concentration est rattachée à l'étape ``conc_i`` du
 VALEUR (tolérance relative 0,5 % : les noms arrondissent à 3 chiffres). Les ``.mpr`` sont
 convertis en texte (``core.mpr_converter``) avant toute lecture.
 
-Contrôles signalés (jamais silencieux) : nom inattendu (ligne ajoutée « exclue », à compléter à
-la main), incohérence dossier/nom (technique, électrode, probe/calibration), plus de deux
-électrodes dans le dossier d'un canal, concentration absente de la configuration du canal.
+Les fichiers dont le nom ne suit pas ces conventions (réglages .mps, journaux, exports annexes…)
+sont IGNORÉS : ni lus, ni convertis, ni importés — seulement comptés (``FolderImport.ignored``).
+Une même mesure présente sous plusieurs extensions (``.mpr`` + ``.txt`` exporté) n'est importée
+qu'une fois, version texte de préférence (``.txt`` > ``.csv`` > ``.mpt`` > ``.mpr``).
+
+Contrôles signalés : incohérence dossier/nom (technique, électrode, probe/calibration), plus de
+deux électrodes dans le dossier d'un canal, concentration absente de la configuration du canal.
 Des électrodes numérotées autrement que 1 et 2 (ex. 3 et 4 : numérotation globale de la puce)
 sont renumérotées 1 et 2 dans l'ordre croissant, avec un avertissement.
 """
@@ -41,6 +45,9 @@ RE_CALIB = re.compile(r"^(?P<tech>cv|eis)_e(?P<electrode>\d+)_(?P<conc>\d+(?:\.\
                       + _EXT, re.IGNORECASE)
 RE_PROBE = re.compile(r"^probe_(?P<tech>cv|eis)_e(?P<electrode>\d+)_r(?P<rep>\d+)" + _EXT, re.IGNORECASE)
 RE_BARE = re.compile(r"^bare_(?P<tech>cv|eis)_e(?P<electrode>\d+)_r(?P<rep>\d+)" + _EXT, re.IGNORECASE)
+
+#: Préférence entre extensions quand une même mesure est présente plusieurs fois.
+_EXT_PREFERENCE = (".txt", ".csv", ".mpt", ".mpr")
 
 #: Tolérance relative du rattachement concentration du nom ↔ concentration configurée.
 CONC_RTOL = 5e-3
@@ -109,6 +116,7 @@ class FolderImport:
     rows: list = field(default_factory=list)          # [AssignmentRow]
     issues: list = field(default_factory=list)        # [Issue]
     concentrations_found: list = field(default_factory=list)   # mol/L, triées, uniques
+    ignored: list = field(default_factory=list)       # [(chemin, raison)] — fichiers non importés
 
     def summary(self) -> dict:
         ok = [r for r in self.rows if not r.exclude]
@@ -142,8 +150,25 @@ def import_channel_folder(uploads: list, experiment: Experiment, channel_id: int
     """
     res = FolderImport(channel_id=channel_id)
     ch = experiment.channel(channel_id)
-    parsed = []
+    # 1. Tri sur les NOMS seulement : un fichier inutile n'est ni lu ni converti.
+    candidates: dict = {}
     for relpath, data in uploads:
+        p = parse_path(relpath)
+        if p is None:
+            res.ignored.append((relpath, "nom hors conventions"))
+            continue
+        key = (p.dataset, p.kind, p.electrode, p.replicate, p.concentration)
+        candidates.setdefault(key, []).append((relpath, data, p))
+    selected = []
+    for group in candidates.values():
+        group.sort(key=lambda it: _EXT_PREFERENCE.index(PurePosixPath(it[0].replace("\\", "/")).suffix.lower()))
+        selected.append(group[0])
+        for relpath, _d, _p in group[1:]:
+            res.ignored.append((relpath, f"même mesure que « {group[0][0]} » (version retenue)"))
+    selected.sort(key=lambda it: it[0])
+
+    parsed = []
+    for relpath, data, p in selected:
         name = PurePosixPath(relpath.replace("\\", "/")).name
         if is_mpr(name):
             try:
@@ -154,10 +179,10 @@ def import_channel_folder(uploads: list, experiment: Experiment, channel_id: int
         fid = f"C{channel_id}/{relpath}#{hashlib.sha256(data).hexdigest()[:8]}"
         detected = detect_kind(data)
         res.raw_files[fid] = {"name": relpath, "content": data, "kind": detected}
-        parsed.append((fid, relpath, detected, parse_path(relpath)))
+        parsed.append((fid, relpath, detected, p))
 
     # Numérotation des électrodes : 1 et 2 dans un canal.
-    numbers = sorted({p.electrode for *_x, p in parsed if p is not None})
+    numbers = sorted({p.electrode for *_x, p in parsed})
     remap = {n: n for n in numbers}
     if len(numbers) > 2:
         res.issues.append(Issue(LEVEL_ERROR, f"Canal {channel_id} : {len(numbers)} électrodes dans le dossier "
@@ -169,18 +194,10 @@ def import_channel_folder(uploads: list, experiment: Experiment, channel_id: int
                                                + ", ".join(f"e{n} → électrode {remap[n]}" for n in numbers)
                                                + " (renumérotées dans le canal)."))
 
-    found = [p.concentration for *_x, p in parsed if p is not None and p.concentration is not None]
+    found = [p.concentration for *_x, p in parsed if p.concentration is not None]
     res.concentrations_found = _unique_sorted(found)
     missing: dict = {}
     for fid, relpath, detected, p in parsed:
-        if p is None:
-            res.rows.append(AssignmentRow(file_id=fid, filename=relpath, kind=detected, channel=channel_id,
-                                          electrode=None, step=None, replicate=None, exclude=True,
-                                          detected_kind=detected))
-            res.issues.append(Issue(LEVEL_WARNING, f"« {relpath} » : nom inattendu (attendu probe_eis_e1_r1, "
-                                                   "eis_e1_1.00e-08M_r1…) — ligne exclue, à compléter à la main "
-                                                   "si besoin.", fid))
-            continue
         for w in p.warnings:
             res.issues.append(Issue(LEVEL_WARNING, f"« {relpath} » : {w}", fid))
         step = STEP_PROBE if p.dataset == "probe" else STEP_BARE if p.dataset == "bare" else None
