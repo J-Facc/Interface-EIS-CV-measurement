@@ -19,7 +19,7 @@
 |---|---|---|---|
 | 1 | **Configuration** (`page_config.py`) | biomarqueurs, canaux, concentrations ; charger une archive | non |
 | 2 | **Import & nettoyage** (`page_import.py`) | dépôt, assignation manuelle, contrôles, nettoyage | nettoyage seul |
-| 3 | **Visualisation** (`page_viz.py`) | CV, Nyquist, Bode des données nettoyées | **aucun** |
+| 3 | **Visualisation** (`page_viz.py`) | vue synthétique (moyennes ± écart-type) ou, par canal : électrode 1, électrode 2, moyennes (E1, E2, E1+E2) | moyennes d'affichage seulement |
 | 4 | **Analyse** (`page_analysis.py` + `calibration_tabs.py`) | fit Randles + DRT en arrière-plan, CV, étalonnages | oui |
 | 5 | **Export** (`page_export.py`) | archive .zip, rapport PDF, rapport HTML | non (assemblage) |
 
@@ -47,7 +47,7 @@ Interface-EIS-CV-measurement/
 │   ├── assignment.py         assignation (pré-remplissage, contrôles) et nettoyage EIS + CV
 │   ├── folder_import.py      import d'un dossier par canal (noms de fichiers → assignation)
 │   ├── loader.py · robust_loader.py · mpr_converter.py · cv_loader.py   lecture EC-Lab
-│   ├── display.py            regroupement des mesures pour l'affichage (aucun calcul)
+│   ├── display.py            regroupement des mesures et moyennes de réplicats pour l'affichage (ni fit ni DRT)
 │   ├── background.py         pool de processus, progression, erreurs isolées, annulation
 │   ├── analysis.py           AnalysisRun (fit par groupe, DRT par spectre, CV) ; DRTRecomputeRun
 │   ├── pipeline.py           orchestration d'UN groupe : measurement model + KK → fit Orazem → DRT
@@ -155,6 +155,10 @@ invalide l'aval ; un rechargement d'archive pose tout d'un coup (`results_source
 * **Nettoyage EIS** : `core.loader.load_spectrum` (séparateur, signe de Zim, 50/100 Hz, tri HF→BF)
   puis retrait des points exclus au lasso. **Nettoyage CV** : `core.cv_loader.load_cv_measurement`
   (colonnes auto, courant en A, cycle `cv.cycle` — dernier par défaut —, ordre chronologique).
+* **Revue des spectres EIS** (page Import, §3) : un graphe à la fois (fragment Streamlit) ; la
+  sélection au lasso est supprimée à la validation, qui passe au spectre suivant ; boutons
+  Précédent/Suivant. Chaque fichier n'est lu qu'une fois (`load_eis_base`, cache réutilisé par le
+  nettoyage final `clean_files(..., eis_cache)`).
 * **Réplicats conservés** : aucun moyennage au nettoyage. `core.loader.average_replicates` reste
   un utilitaire (spectre moyen d'affichage du pipeline).
 

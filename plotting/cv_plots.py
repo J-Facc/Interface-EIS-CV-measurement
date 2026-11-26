@@ -50,3 +50,36 @@ def cv_figure(groups: list, title: str = "Voltammétrie cyclique", theme_mode: s
                       margin=dict(r=120))
     apply_theme_to_figure(fig, theme_mode)
     return fig
+
+
+def _rgba(color: str, alpha: float) -> str:
+    if color.startswith("#"):
+        h = color.lstrip("#")
+        return f"rgba({int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)},{alpha})"
+    if color == "black":
+        return f"rgba(0,0,0,{alpha})"
+    return color.replace("rgb(", "rgba(").replace(")", f",{alpha})")
+
+
+def cv_means_figure(items: list, title: str = "", theme_mode: str = "light") -> go.Figure:
+    """Courbes CV MOYENNES (``core.display``) ; ``item["band"]`` : zone ± écart-type autour de I."""
+    from plotting.theme import apply_theme_to_figure
+
+    fig = go.Figure()
+    concs = [i["concentration"] for i in items if i.get("concentration")]
+    c_min, c_max = (min(concs), max(concs)) if concs else (1.0, 1.0)
+    for it in items:
+        m = it["mean"]
+        color = _step_color(it["step"], it.get("concentration"), c_min, c_max)
+        E, I, sd = np.asarray(m["E"]), np.asarray(m["I"]) * 1e6, np.asarray(m["sd"]) * 1e6
+        if it.get("band") and m["n"] > 1:
+            fig.add_trace(go.Scatter(x=np.concatenate([E, E[::-1]]), y=np.concatenate([I + sd, (I - sd)[::-1]]),
+                                     fill="toself", fillcolor=_rgba(color, 0.18), line=dict(width=0),
+                                     hoverinfo="skip", showlegend=False, legendgroup=it["label"]))
+        fig.add_trace(go.Scatter(x=E, y=I, mode="lines", name=f"{it['label']} (n={m['n']})", legendgroup=it["label"],
+                                 line=dict(color=color, width=2, dash=it.get("dash", "solid")),
+                                 hovertemplate=f"<b>{it['label']}</b><br>E = %{{x:.4f}} V<br>I = %{{y:.4g}} µA<extra></extra>"))
+    fig.update_layout(title=title, xaxis_title="E (V)", yaxis_title="I (µA)", hovermode="closest", height=460,
+                      legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0), margin=dict(r=160))
+    apply_theme_to_figure(fig, theme_mode)
+    return fig

@@ -314,3 +314,72 @@ def drt_peak_figure(items: list, title: str = "DRT — γ(τ)", theme_mode: str 
     apply_theme_to_figure(fig, theme_mode)
     fig.update_xaxes(type="log")
     return fig
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# v3 — Moyennes de réplicats (vue par canal, vue synthétique)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _rgba_any(color: str, alpha: float) -> str:
+    """Couleur (#hex, rgb(…), « black ») → rgba translucide."""
+    if color.startswith("#"):
+        return _hex_to_rgba(color, alpha)
+    if color == "black":
+        return f"rgba(0,0,0,{alpha})"
+    return color.replace("rgb(", "rgba(").replace(")", f",{alpha})")
+
+
+def _mean_color(item: dict, c_min: float, c_max: float) -> str:
+    class _G:
+        concentration = item.get("concentration") or 0.0
+        step = item["step"] if item["step"] in ("bare", "probe") else "hybridization"
+    return _group_color(_G, c_min, c_max)
+
+
+def nyquist_means_figure(items: list, title: str = "", theme_mode: str = "light") -> go.Figure:
+    """Nyquist de spectres MOYENS (``core.display`` : mean_groups / channel_mean_view / synthesis_view).
+
+    Couleur = étape (concentration), style de trait = ``item["dash"]`` ; ``item["band"]`` : barres
+    d'erreur ± écart-type sur Re et −Im."""
+    fig = go.Figure()
+    c_min, c_max = _concentration_range([type("G", (), {"concentration": i.get("concentration") or 0})
+                                         for i in items])
+    for it in items:
+        m, color = it["mean"], _mean_color(it, c_min, c_max)
+        band = it.get("band") and m["n"] > 1
+        fig.add_trace(go.Scatter(
+            x=m["Zre"], y=m["Zim"], mode="lines+markers", name=f"{it['label']} (n={m['n']})",
+            line=dict(color=color, width=2, dash=it.get("dash", "solid")), marker=dict(color=color, size=4),
+            error_x=dict(type="data", array=m["sd_re"], visible=bool(band), color=color, thickness=0.8, width=0),
+            error_y=dict(type="data", array=m["sd_im"], visible=bool(band), color=color, thickness=0.8, width=0),
+            customdata=m["f"], hovertemplate=(f"<b>{it['label']}</b><br>Re(Z) = %{{x:.1f}} Ω<br>−Im(Z) = %{{y:.1f}} Ω"
+                                              "<br>f = %{customdata:.3e} Hz<extra></extra>")))
+    fig.update_layout(title=title, xaxis=dict(title="Re(Z) (Ω)", rangemode="tozero"),
+                      yaxis=dict(title="−Im(Z) (Ω)", rangemode="tozero"), hovermode="closest", height=460,
+                      legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0), margin=dict(r=160))
+    apply_theme_to_figure(fig, theme_mode)
+    return fig
+
+
+def bode_means_figure(items: list, title: str = "", theme_mode: str = "light") -> go.Figure:
+    """|Z| moyen vs f (log-log) avec zone d'erreur ± écart-type (``item["band"]``)."""
+    fig = go.Figure()
+    c_min, c_max = _concentration_range([type("G", (), {"concentration": i.get("concentration") or 0})
+                                         for i in items])
+    for it in items:
+        m, color = it["mean"], _mean_color(it, c_min, c_max)
+        if it.get("band") and m["n"] > 1:
+            lo, hi = np.maximum(m["mod"] - m["sd_mod"], 1e-12), m["mod"] + m["sd_mod"]
+            fig.add_trace(go.Scatter(x=np.concatenate([m["f"], m["f"][::-1]]), y=np.concatenate([hi, lo[::-1]]),
+                                     fill="toself", fillcolor=_rgba_any(color, 0.18),
+                                     line=dict(width=0), hoverinfo="skip", showlegend=False, legendgroup=it["label"]))
+        fig.add_trace(go.Scatter(x=m["f"], y=m["mod"], mode="lines", name=f"{it['label']} (n={m['n']})",
+                                 legendgroup=it["label"], line=dict(color=color, width=2, dash=it.get("dash", "solid")),
+                                 hovertemplate=f"<b>{it['label']}</b><br>f = %{{x:.3e}} Hz<br>|Z| = %{{y:.4g}} Ω<extra></extra>"))
+    fig.update_layout(title=title, xaxis=dict(title="Fréquence (Hz)", type="log"),
+                      yaxis=dict(title="|Z| (Ω)", type="log"), hovermode="closest", height=460,
+                      legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0), margin=dict(r=160))
+    apply_theme_to_figure(fig, theme_mode)
+    fig.update_xaxes(type="log")
+    fig.update_yaxes(type="log")
+    return fig
