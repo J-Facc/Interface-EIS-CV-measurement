@@ -101,7 +101,7 @@ def test_unknown_concentration_is_an_error_until_adopted(exp):
 def test_global_electrode_numbers_are_renumbered_within_the_channel(exp):
     res = import_channel_folder(_tree(electrodes=(3, 4), concs=[1e-12]), exp, 2)
     assert {r.electrode for r in res.rows} == {1, 2}
-    assert any(i.level == LEVEL_WARNING and "e3 → électrode 1" in i.message for i in res.issues)
+    assert any(i.level == LEVEL_WARNING and "n°3 → électrode 1" in i.message for i in res.issues)
     res = import_channel_folder(_tree(electrodes=(1, 2, 3), concs=[1e-12]), exp, 2)
     assert any(i.level == LEVEL_ERROR and "3 électrodes" in i.message for i in res.issues)
 
@@ -149,3 +149,55 @@ def test_mpr_files_are_converted(exp, monkeypatch):
     monkeypatch.setattr(fi, "mpr_to_csv_bytes", broken)
     res = import_channel_folder([("probe_eis_e1_r1.mpr", b"x")], exp, 1)
     assert res.rows == [] and "conversion .mpr impossible" in res.issues[0].message
+
+
+# ── Noms EC-Lab : <partie libre>_<NN>_<CV|PEIS>_C<nn>.<ext> ──────────────────
+
+@pytest.mark.parametrize("name, expected", [
+    ("10-18_w3_01_CV_C01.mpr", ("calibration", "CV", 3, 1, 1e-18, 1)),
+    ("10-18_w3_06_PEIS_C01.mpr", ("calibration", "EIS", 3, 6, 1e-18, 1)),
+    ("w4_bare_07_CV_C01.mpr", ("bare", "CV", 4, 7, None, 1)),
+    ("probe_w2_03_PEIS_C02.mpr", ("probe", "EIS", 2, 3, None, 2)),
+    ("mir30b_W1_Probe_12_PEIS_C02.mpt", ("probe", "EIS", 1, 12, None, 2)),
+    ("w1_5x10-12M_02_CV_C01.mpr", ("calibration", "CV", 1, 2, 5e-12, 1)),
+    ("w1_1E-9M_02_CV_C01.txt", ("calibration", "CV", 1, 2, 1e-9, 1)),
+    ("canal1/sous/dossier/10-16_w2_04_PEIS_C01.mpr", ("calibration", "EIS", 2, 4, 1e-16, 1)),
+])
+def test_eclab_names(name, expected):
+    p, why = fi.classify_path(name)
+    assert why == "" and (p.dataset, p.kind, p.electrode, p.replicate, p.concentration,
+                          p.instrument_channel) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("name, fragment", [
+    ("10-18_w3_02_CA_C01.mpr", "technique CA"),
+    ("10-18_w3_02_OCV_C01.mpr", "technique OCV"),
+    ("10-18_03_CV_C01.mpr", "électrode"),
+    ("w3_04_CV_C01.mpr", "ni bare, ni probe"),
+    ("w3_probe_10-12_01_CV_C01.mpr", "ambiguë"),
+    ("10-18_w3_01_CV_C01.mps", "hors conventions"),
+    ("10-18_w3_01_CV_C01.mpl", "hors conventions"),
+    ("Thumbs.db", "hors conventions"),
+])
+def test_eclab_files_to_ignore(name, fragment):
+    p, why = fi.classify_path(name)
+    assert p is None and fragment in why
+
+
+def test_eclab_folder_is_imported_with_replicates_renumbered(exp, monkeypatch):
+    monkeypatch.setattr(fi, "mpr_to_csv_bytes", lambda raw: CV if b"CV" in raw else randles_file(1500.0))
+    files = []
+    for w in (3, 4):
+        for tag in ("probe", "10-16", "10-14", "10-12"):
+            for rep_cv, rep_eis in ((1, 6), (11, 16), (21, 26)):     # numéros de séquence EC-Lab
+                files.append((f"canal1/{tag}_w{w}_{rep_cv:02d}_CV_C0{w - 2}.mpr", b"CV"))
+                files.append((f"canal1/{tag}_w{w}_{rep_eis:02d}_PEIS_C0{w - 2}.mpr", b"PEIS"))
+                files.append((f"canal1/{tag}_w{w}_{rep_cv + 2:02d}_CA_C0{w - 2}.mpr", b"CA"))
+                files.append((f"canal1/{tag}_w{w}_{rep_cv:02d}_CV_C0{w - 2}.mps", b"settings"))
+    res = import_channel_folder(files, exp, 1)
+    assert len(res.rows) == 2 * 4 * 3 * 2 and len(res.ignored) == 2 * 4 * 3 * 2
+    assert {r.electrode for r in res.rows} == {1, 2}                        # w3, w4 → 1, 2
+    assert {r.replicate for r in res.rows} == {1, 2, 3}                     # 01/11/21 → 1/2/3
+    assert {r.step for r in res.rows} == {"probe", "conc_1", "conc_2", "conc_3"}
+    assert not has_errors(check_assignment(res.rows, exp))
+    assert any("n°3 → électrode 1" in i.message for i in res.issues)

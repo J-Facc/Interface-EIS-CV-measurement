@@ -112,11 +112,11 @@ def _adopt_concentrations(channel_id: int, concs: list) -> None:
 
 
 def _channel_folders(exp) -> None:
-    st.caption("Un dossier par canal, tel qu'il sort du poste de mesure : "
-               "`probe/{eis,cv}/electrode_N/probe_eis_eN_rK.txt`, "
-               "`calibration/{eis,cv}/electrode_N/eis_eN_1.00e-08M_rK.txt` (et `bare/…` facultatif). "
-               "Les fichiers .txt, .csv, .mpt et .mpr (converti automatiquement) sont lus ; seuls les noms font foi. "
-               "Tout autre fichier du dossier est ignoré.")
+    st.caption("Un dossier par canal, tel qu'il sort du poste de mesure (sous-dossiers compris). Fichiers EC-Lab "
+               "nommés `<libre>_<NN>_<CV|PEIS>_C<nn>.mpr` : la partie libre contient l'électrode (`w3`) et "
+               "`bare`, `probe` ou la concentration (`10-18` = 1e-18 M), à n'importe quelle position — ex. "
+               "`10-18_w3_01_CV_C01.mpr`. `.mpr` converti automatiquement ; `.txt/.csv/.mpt` aussi lus. "
+               "Tout autre fichier (autres techniques, réglages, journaux…) est ignoré.")
     for ch in exp.channels:
         with st.container(border=True):
             st.markdown(f"**Canal {ch.id} — {ch.biomarker}** · concentrations configurées : "

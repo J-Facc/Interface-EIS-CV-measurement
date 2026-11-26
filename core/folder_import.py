@@ -1,5 +1,15 @@
 """Import d'un DOSSIER de mesures par canal (v3) — aucun import Streamlit.
 
+**Convention principale : noms EC-Lab** ``<partie libre>_<NN>_<CV|PEIS>_C<nn>.<ext>`` — la fin est
+fixe (``NN`` = n° de réplicat, ``CV``/``PEIS`` = technique, ``Cnn`` = voie de l'instrument) ; la
+partie libre, définie par l'utilisateur, contient TOUJOURS l'électrode (``w3`` → électrode 3) et
+``bare``, ``probe`` ou une concentration (``10-18`` = 1e-18 M ; aussi ``1e-18``, ``5x10-12``…),
+à une position quelconque. Ex. ``10-18_w3_01_CV_C01.mpr``, ``w4_probe_06_PEIS_C02.mpr``. Les
+autres techniques (CA, OCV…) sont ignorées. Les numéros de réplicat du nom sont renumérotés
+1, 2, 3… par (technique, électrode, étape).
+
+Conventions historiques, toujours acceptées :
+
 Arborescence attendue (celle du poste de mesure ; les dossiers intermédiaires sont facultatifs,
 seuls les NOMS de fichiers font foi) ::
 
@@ -46,6 +56,20 @@ RE_CALIB = re.compile(r"^(?P<tech>cv|eis)_e(?P<electrode>\d+)_(?P<conc>\d+(?:\.\
 RE_PROBE = re.compile(r"^probe_(?P<tech>cv|eis)_e(?P<electrode>\d+)_r(?P<rep>\d+)" + _EXT, re.IGNORECASE)
 RE_BARE = re.compile(r"^bare_(?P<tech>cv|eis)_e(?P<electrode>\d+)_r(?P<rep>\d+)" + _EXT, re.IGNORECASE)
 
+#: Nom EC-Lab : <partie libre>_<réplicat>_<CV|PEIS>_C<voie de l'instrument>.<ext>
+#: ex. 10-18_w3_01_CV_C01.mpr, w4_probe_06_PEIS_C02.mpr. Toute autre technique (CA, OCV…) est ignorée.
+RE_ECLAB = re.compile(r"^(?P<free>.+?)_(?P<rep>\d+)_(?P<tech>CV|PEIS)_C(?P<chan>\d+)" + _EXT, re.IGNORECASE)
+RE_ECLAB_ANY = re.compile(r"^.+_\d+_(?P<tech>[A-Za-z]+)_C\d+" + _EXT, re.IGNORECASE)
+#: Électrode dans la partie libre : « w » collé au numéro (w3), délimité.
+_RE_W = re.compile(r"(?:^|[^a-z0-9])w(\d+)(?![0-9])", re.IGNORECASE)
+#: Concentration dans la partie libre : 10-18, 1E-18M, 1e-18, 5x10-12, 2.5e-9 (mol/L).
+_RE_CONC = [
+    re.compile(r"(?:^|[^0-9.])(?:(?P<m>\d+(?:[.,]\d+)?)\s*[x*])?10[-\u2212](?P<e>\d+)(?:\s*M)?(?![0-9])",
+               re.IGNORECASE),
+    re.compile(r"(?:^|[^0-9.])(?P<m>\d+(?:[.,]\d+)?)e[-\u2212](?P<e>\d+)(?:\s*M)?(?![0-9])", re.IGNORECASE),
+]
+_RE_STEP = {"bare": re.compile(r"bare", re.IGNORECASE), "probe": re.compile(r"probe|sonde", re.IGNORECASE)}
+
 #: Préférence entre extensions quand une même mesure est présente plusieurs fois.
 _EXT_PREFERENCE = (".txt", ".csv", ".mpt", ".mpr")
 
@@ -63,6 +87,51 @@ class ParsedName:
     replicate: int
     concentration: Optional[float] = None
     warnings: list = field(default_factory=list)
+    instrument_channel: Optional[int] = None    # C01, C02… (nom EC-Lab), information seulement
+
+
+def _parse_eclab(fname: str) -> tuple:
+    """(ParsedName | None, raison) d'un nom EC-Lab ``<libre>_<rép>_<CV|PEIS>_C<nn>.<ext>``.
+
+    Retourne (None, "") si le nom n'a pas la forme EC-Lab (on essaie alors les autres conventions).
+    """
+    m = RE_ECLAB.match(fname)
+    if m is None:
+        other = RE_ECLAB_ANY.match(fname)
+        if other is not None:
+            return None, f"technique {other['tech'].upper()} (seules CV et PEIS sont importées)"
+        return None, ""
+    free = m["free"]
+    ws = {int(x) for x in _RE_W.findall(free)}
+    if len(ws) != 1:
+        return None, ("électrode « wN » introuvable dans le nom" if not ws
+                      else f"plusieurs électrodes dans le nom ({', '.join(f'w{w}' for w in sorted(ws))})")
+    free_wo_w = _RE_W.sub(" ", free)
+    steps = [k for k, rx in _RE_STEP.items() if rx.search(free_wo_w)]
+    concs = set()
+    for rx in _RE_CONC:
+        for cm in rx.finditer(free_wo_w):
+            mant = float((cm["m"] or "1").replace(",", "."))
+            concs.add(mant * 10.0 ** (-int(cm["e"])))
+    if len(steps) + (1 if concs else 0) != 1 or len(concs) > 1:
+        found = steps + [f"{c:.2e} M" for c in sorted(concs)]
+        return None, ("ni bare, ni probe, ni concentration dans le nom" if not found
+                      else f"étape ambiguë dans le nom ({', '.join(found)})")
+    dataset = steps[0] if steps else "calibration"
+    return ParsedName(dataset=dataset, kind=KIND_EIS if m["tech"].upper() == "PEIS" else KIND_CV,
+                      electrode=ws.pop(), replicate=int(m["rep"]),
+                      concentration=concs.pop() if concs else None,
+                      instrument_channel=int(m["chan"])), ""
+
+
+def classify_path(relpath: str) -> tuple:
+    """(ParsedName | None, raison de l'ignorance). Nom EC-Lab d'abord, puis conventions historiques."""
+    fname = PurePosixPath(relpath.replace("\\", "/")).name
+    parsed, why = _parse_eclab(fname)
+    if parsed is not None or why:
+        return parsed, why
+    parsed = parse_path(relpath)
+    return (parsed, "") if parsed is not None else (None, "nom hors conventions (ni …_NN_CV_Cnn ni …_NN_PEIS_Cnn)")
 
 
 def parse_path(relpath: str) -> Optional[ParsedName]:
@@ -153,9 +222,9 @@ def import_channel_folder(uploads: list, experiment: Experiment, channel_id: int
     # 1. Tri sur les NOMS seulement : un fichier inutile n'est ni lu ni converti.
     candidates: dict = {}
     for relpath, data in uploads:
-        p = parse_path(relpath)
+        p, why = classify_path(relpath)
         if p is None:
-            res.ignored.append((relpath, "nom hors conventions"))
+            res.ignored.append((relpath, why))
             continue
         key = (p.dataset, p.kind, p.electrode, p.replicate, p.concentration)
         candidates.setdefault(key, []).append((relpath, data, p))
@@ -186,13 +255,20 @@ def import_channel_folder(uploads: list, experiment: Experiment, channel_id: int
     remap = {n: n for n in numbers}
     if len(numbers) > 2:
         res.issues.append(Issue(LEVEL_ERROR, f"Canal {channel_id} : {len(numbers)} électrodes dans le dossier "
-                                             f"({', '.join(f'e{n}' for n in numbers)}) — un canal n'en a que 2. "
+                                             f"({', '.join(f'n°{n}' for n in numbers)}) — un canal n'en a que 2. "
                                              "Corrigez l'électrode dans le tableau ou importez un dossier par canal."))
     elif numbers and not set(numbers) <= {1, 2}:
         remap = {n: i for i, n in enumerate(numbers, start=1)}
         res.issues.append(Issue(LEVEL_WARNING, f"Canal {channel_id} : électrodes "
-                                               + ", ".join(f"e{n} → électrode {remap[n]}" for n in numbers)
+                                               + ", ".join(f"n°{n} → électrode {remap[n]}" for n in numbers)
                                                + " (renumérotées dans le canal)."))
+
+    # Réplicats : numéro du nom (01, 06… — numéro de séquence EC-Lab) → 1, 2, 3… dans l'ordre, par
+    # (technique, électrode, étape). Le numéro d'origine reste dans le nom du fichier.
+    order: dict = {}
+    for *_x, p in parsed:
+        order.setdefault((p.kind, p.electrode, p.dataset, p.concentration), []).append(p.replicate)
+    renum = {k: {r: i for i, r in enumerate(sorted(set(v)), start=1)} for k, v in order.items()}
 
     found = [p.concentration for *_x, p in parsed if p.concentration is not None]
     res.concentrations_found = _unique_sorted(found)
@@ -209,7 +285,8 @@ def import_channel_folder(uploads: list, experiment: Experiment, channel_id: int
                 step = conc_step(i)
         res.rows.append(AssignmentRow(file_id=fid, filename=relpath, kind=p.kind, channel=channel_id,
                                       electrode=remap.get(p.electrode, p.electrode), step=step,
-                                      replicate=p.replicate, detected_kind=detected,
+                                      replicate=renum[(p.kind, p.electrode, p.dataset, p.concentration)][p.replicate],
+                                      detected_kind=detected,
                                       file_concentration=p.concentration))
     for c, paths in sorted(missing.items()):
         res.issues.append(Issue(LEVEL_ERROR, f"Canal {channel_id} : concentration {c:.2e} M absente de la "
