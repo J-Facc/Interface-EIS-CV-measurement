@@ -73,6 +73,7 @@ th { background: var(--surface); }
 <tr><th>Je veux changer…</th><th>Fichier(s)</th><th>Attention</th></tr>
 <tr><td>les champs de la configuration (biomarqueurs, canaux, concentrations)</td><td><code>core/experiment.py</code>, <code>ui/page_config.py</code></td><td>sérialisation <code>to_dict/from_dict</code> (archive) ; <code>validate_experiment</code></td></tr>
 <tr><td>le dossier des données persistantes</td><td><code>core/config.py::user_data_dir</code>, <code>core/user_data.py</code></td><td>jamais dans <code>eis_app/</code> (remplacé à chaque mise à jour)</td></tr>
+<tr><td>les noms de fichiers reconnus (import par dossier de canal)</td><td><code>core/folder_import.py</code> (<code>RE_CALIB</code>, <code>RE_PROBE</code>, <code>RE_BARE</code>)</td><td>ajouter un cas dans <code>tests/test_folder_import.py</code></td></tr>
 <tr><td>le pré-remplissage ou les contrôles de l'assignation</td><td><code>core/assignment.py</code></td><td>erreurs = bloquantes, avertissements = non</td></tr>
 <tr><td>le nettoyage EIS</td><td><code>core/loader.py</code> (<code>load_spectrum</code>, <code>_clean_spectrum</code>)</td><td>convention Zim = −Im(Z) &gt; 0, tri HF → BF</td></tr>
 <tr><td>le nettoyage CV (colonnes, cycle)</td><td><code>core/cv_loader.py::load_cv_measurement</code>, <code>core/robust_loader.py</code></td><td>ordre chronologique, jamais trié par E</td></tr>

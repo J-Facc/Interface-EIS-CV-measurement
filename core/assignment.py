@@ -64,6 +64,7 @@ class AssignmentRow:
     replicate: Optional[int] = None
     exclude: bool = False
     detected_kind: Optional[str] = None
+    file_concentration: Optional[float] = None   # concentration lue dans le nom (import par dossier)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -79,7 +80,9 @@ class AssignmentRow:
                    kind=d.get("kind") or None, channel=_int(d.get("channel")),
                    electrode=_int(d.get("electrode")), step=d.get("step") or None,
                    replicate=_int(d.get("replicate")), exclude=bool(d.get("exclude") or False),
-                   detected_kind=d.get("detected_kind") or None)
+                   detected_kind=d.get("detected_kind") or None,
+                   file_concentration=(None if d.get("file_concentration") is None
+                                       else float(d["file_concentration"])))
 
     def key(self) -> tuple:
         return (self.kind, self.channel, self.electrode, self.step, self.replicate)

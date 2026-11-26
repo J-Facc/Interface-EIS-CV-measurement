@@ -66,10 +66,13 @@ Cinq pages, dans l'ordre :
    concentrations de chaque canal. Le mode est **déduit** : 1 concentration → « une concentration
    par canal », plusieurs → « plusieurs concentrations sur un canal ». On peut aussi y **charger une
    archive** `.zip` (v3 : tout est restauré sans recalcul ; v2 : configuration et fichiers bruts).
-2. **Import & nettoyage** — dépôt de tous les fichiers (EIS et CV, `.txt/.csv/.mpt/.mpr`),
-   **assignation manuelle** dans un tableau (type, canal, électrode, étape `bare/probe/conc_i`,
-   réplicat), contrôles de cohérence, exclusion de points au lasso, puis nettoyage. Les réplicats
-   sont conservés individuellement.
+2. **Import & nettoyage** — **un dossier par canal**, tel qu'il sort du poste de mesure
+   (`probe/{eis,cv}/electrode_N/probe_eis_eN_rK.txt`,
+   `calibration/{eis,cv}/electrode_N/eis_eN_1.00e-08M_rK.txt`, `bare/…` facultatif ; `.txt/.csv/.mpt`
+   et `.mpr` converti). Électrode, étape, concentration et réplicat sont lus dans les noms ; les
+   concentrations trouvées peuvent être adoptées pour le canal. Le tableau d'assignation reste
+   corrigeable (et des fichiers isolés peuvent être ajoutés à la main) ; contrôles de cohérence,
+   exclusion de points au lasso, puis nettoyage. Les réplicats sont conservés individuellement.
 3. **Visualisation** — CV, Nyquist et Bode des données nettoyées, sans aucun calcul.
 4. **Analyse** — « Lancer l'analyse » : fits Randles (Orazem) et DRT de tous les spectres **en
    arrière-plan** (processus parallèles), puis onglets **DRT · Rct (fit Randles) · Étalonnage EIS ·

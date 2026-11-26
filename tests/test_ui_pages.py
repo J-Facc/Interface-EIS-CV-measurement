@@ -227,3 +227,31 @@ def test_archive_reload_shows_results_without_recomputing(monkeypatch):
     assert not at.exception
     assert any("archive" in i.value for i in at.info)
     assert [t.label for t in at.tabs][:5] == ["DRT", "Rct (fit Randles)", "Étalonnage EIS", "CV", "Étalonnage CV"]
+
+
+def test_import_page_with_one_folder_per_channel():
+    """Dossier d'un canal (arborescence du poste de mesure) → tableau rempli → nettoyage."""
+    from tests.test_folder_import import _tree
+    import ui.page_import as pi
+    from core import app_state as S
+    from core.experiment import Experiment, Channel
+    state = {}
+    S.init_state(state)
+    state[S.EXPERIMENT] = Experiment(["A"], [Channel(1, "A", [1e-16, 1e-14, 1e-12])])
+    import streamlit as st
+    real = st.session_state
+    try:
+        pi.st.session_state = state
+        pi._ingest_folder(1, [_uploaded(n, b) for n, b in _tree(electrodes=(1,), reps=(1, 2))])
+    finally:
+        pi.st.session_state = real
+    assert len(state[S.ASSIGNMENT]) == 2 * 2 * 4 and state["folder_issues"][1] == []
+    at = _app("import streamlit as st\nfrom core import app_state as S\nfrom ui import page_import\n"
+              "S.init_state(st.session_state)\npage_import.render()\n")
+    for k in (S.EXPERIMENT, S.RAW_FILES, S.ASSIGNMENT, "folder_issues", "folder_concentrations"):
+        at.session_state[k] = state[k]
+    at.run()
+    assert not at.exception and not at.error
+    next(b for b in at.button if "Nettoyer" in b.label).click().run()
+    assert not at.exception
+    assert len(at.session_state[S.MEASUREMENTS]) == 16
