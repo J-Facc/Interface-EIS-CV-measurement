@@ -266,12 +266,24 @@ def has_errors(issues: list) -> bool:
 # Nettoyage
 # ─────────────────────────────────────────────────────────────────────────────
 
-def clean_eis(content: bytes, label: str, config: Optional[dict] = None,
-              excluded_points: Optional[list] = None) -> tuple:
-    """(data {"f","Zre","Zim"}, warnings) d'un fichier EIS nettoyé, points exclus retirés."""
+def load_eis_base(content: bytes, label: str, config: Optional[dict] = None) -> tuple:
+    """(data {"f","Zre","Zim"}, warnings) d'un fichier EIS nettoyé AVANT retrait manuel de points
+    (à mettre en cache : c'est la seule lecture coûteuse)."""
     warnings: list = []
     sp = load_spectrum(content=content, label=label, config=config, warnings_out=warnings)
-    f, zr, zi = np.asarray(sp.f, float), np.asarray(sp.Zre, float), np.asarray(sp.Zim, float)
+    return {"f": np.asarray(sp.f, float), "Zre": np.asarray(sp.Zre, float),
+            "Zim": np.asarray(sp.Zim, float)}, warnings
+
+
+def clean_eis(content: bytes, label: str, config: Optional[dict] = None,
+              excluded_points: Optional[list] = None, base: Optional[tuple] = None) -> tuple:
+    """(data {"f","Zre","Zim"}, warnings) d'un fichier EIS nettoyé, points exclus retirés.
+
+    ``base`` : résultat de :func:`load_eis_base` déjà calculé (cache) — évite de relire le fichier.
+    """
+    data, warnings = base if base is not None else load_eis_base(content, label, config)
+    warnings = list(warnings)
+    f, zr, zi = data["f"], data["Zre"], data["Zim"]
     if excluded_points:
         keep = np.ones(len(f), dtype=bool)
         idx = [int(i) for i in excluded_points if 0 <= int(i) < len(f)]
@@ -284,7 +296,7 @@ def clean_eis(content: bytes, label: str, config: Optional[dict] = None,
 
 
 def clean_files(rows: list, contents: dict, experiment: Experiment, config: Optional[dict] = None,
-                excluded_points: Optional[dict] = None) -> tuple:
+                excluded_points: Optional[dict] = None, eis_cache: Optional[dict] = None) -> tuple:
     """Nettoie les fichiers assignés (non exclus).
 
     Args:
@@ -293,6 +305,7 @@ def clean_files(rows: list, contents: dict, experiment: Experiment, config: Opti
         experiment: configuration validée.
         config: config de l'app (fréquences parasites, cycle CV).
         excluded_points: {file_id: [indices]} de points EIS retirés à la main.
+        eis_cache: {file_id: (data, warnings)} de :func:`load_eis_base` déjà lus (réutilisés).
 
     Returns:
         (measurements triées, issues) — un fichier illisible est signalé, les autres sont gardés.
@@ -313,7 +326,12 @@ def clean_files(rows: list, contents: dict, experiment: Experiment, config: Opti
             continue
         try:
             if r.kind == KIND_EIS:
-                data, warns = clean_eis(content, r.filename, config, excluded_points.get(r.file_id))
+                base = (eis_cache or {}).get(r.file_id)
+                if base is None:
+                    base = load_eis_base(content, r.filename, config)
+                    if eis_cache is not None:
+                        eis_cache[r.file_id] = base
+                data, warns = clean_eis(content, r.filename, config, excluded_points.get(r.file_id), base)
             else:
                 d = load_cv_measurement(content, r.filename, cycle)
                 data = {"E": d["E"], "I": d["I"], "cycle": d["cycle"]}

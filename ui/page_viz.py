@@ -1,36 +1,112 @@
-"""Page 3 — Visualisation des données NETTOYÉES : CV, Nyquist, Bode. Aucun calcul.
+"""Page 3 — Visualisation des données NETTOYÉES : CV, Nyquist, Bode. Aucun fit, aucune DRT.
 
-N'importe ni fit ni DRT (garde-fou : ``tests/test_ui_pages.py``). Fonctionne aussi après le
-chargement d'une archive (les mesures nettoyées y sont).
+Menu « Canal » :
+
+* **Vue synthétique** (défaut) : toutes les courbes MOYENNES (réplicats des deux électrodes) de
+  chaque canal et chaque étape, avec leur zone d'erreur (± écart-type) ;
+* **un canal** : trois graphes — électrode 1 (réplicats), électrode 2 (réplicats), et les moyennes
+  (électrode 1, électrode 2, deux électrodes) par étape.
+
+Les moyennes viennent de ``core/display.py`` (moyennes point à point pour l'affichage). N'importe ni
+fit ni DRT (garde-fou : ``tests/test_ui_pages.py``). Fonctionne aussi après le chargement d'une archive.
 """
 
 from __future__ import annotations
 
 import streamlit as st
 
-from core.display import cv_display_groups, eis_display_groups, selection_options, step_display_label
+from core.display import (
+    VIEW_SYNTHESIS,
+    channel_mean_view,
+    cv_display_groups,
+    eis_display_groups,
+    step_display_label,
+    synthesis_view,
+)
 from core.experiment import KIND_CV, KIND_EIS, step_sort_key
-from plotting.cv_plots import cv_figure
-from plotting.eis_plots import bode_figure, nyquist_replicates_figure
+from plotting.cv_plots import cv_figure, cv_means_figure
+from plotting.eis_plots import bode_figure, bode_means_figure, nyquist_means_figure, nyquist_replicates_figure
 from ui import nav
 from core import app_state as S
 
 
-def _selectors(opts: dict, exp, prefix: str):
-    """Biomarqueur → canal → électrode → étapes → réplicats. Retourne (canal, électrode, étapes, réplicats)."""
-    c1, c2, c3 = st.columns(3)
-    bio = c1.selectbox("Biomarqueur", sorted(opts), key=f"{prefix}_bio")
-    ch = c2.selectbox("Canal", sorted(opts[bio]), key=f"{prefix}_ch")
-    el = c3.selectbox("Électrode", sorted(opts[bio][ch]), key=f"{prefix}_el")
-    steps_avail = sorted(opts[bio][ch][el], key=step_sort_key)
-    channel = exp.channel(ch)
-    c4, c5 = st.columns([3, 2])
-    steps = c4.multiselect("Étapes superposées", steps_avail, default=steps_avail, key=f"{prefix}_steps_{ch}_{el}",
+def _channel_filters(ms, exp, ch_id: int):
+    """Étapes et réplicats affichés pour un canal (tous par défaut)."""
+    avail = {}
+    for m in ms:
+        if m.channel_id == ch_id:
+            avail.setdefault(m.step, set()).add(m.replicate)
+    channel = exp.channel(ch_id)
+    steps_avail = sorted(avail, key=step_sort_key)
+    c1, c2 = st.columns([3, 2])
+    steps = c1.multiselect("Étapes superposées", steps_avail, default=steps_avail, key=f"viz_steps_{ch_id}",
                            format_func=lambda s: step_display_label(s, channel.concentration_of(s)))
-    reps_avail = sorted({r for s in steps for r in opts[bio][ch][el][s]})
-    reps = c5.multiselect("Réplicats", reps_avail, default=reps_avail, key=f"{prefix}_reps_{ch}_{el}",
+    reps_avail = sorted({r for s in steps for r in avail[s]})
+    reps = c2.multiselect("Réplicats", reps_avail, default=reps_avail, key=f"viz_reps_{ch_id}",
                           format_func=lambda r: f"r{r}")
-    return ch, el, steps, reps
+    return steps, reps
+
+
+def _synthesis(ms, exp, theme: str, eis_mode: str) -> None:
+    bios = sorted({c.biomarker for c in exp.channels})
+    pick = st.multiselect("Biomarqueurs", bios, default=bios, key="viz_syn_bios")
+    st.caption("Moyenne des réplicats des deux électrodes, par canal et par étape ; zone = ± écart-type "
+               "(ddof = 1). Couleur = étape, style de trait = canal.")
+    tab_cv, tab_eis = st.tabs(["CV", "EIS"])
+    with tab_cv:
+        items = synthesis_view(ms, exp, KIND_CV, pick)
+        if items:
+            st.plotly_chart(cv_means_figure(items, title="CV — vue synthétique", theme_mode=theme),
+                            width="stretch", key="viz_syn_cv")
+        else:
+            st.info("Aucune mesure CV.")
+    with tab_eis:
+        items = synthesis_view(ms, exp, KIND_EIS, pick)
+        if not items:
+            st.info("Aucune mesure EIS.")
+        elif eis_mode == "Nyquist":
+            st.plotly_chart(nyquist_means_figure(items, title="Nyquist — vue synthétique", theme_mode=theme),
+                            width="stretch", key="viz_syn_nyq")
+        else:
+            st.plotly_chart(bode_means_figure(items, title="|Z| — vue synthétique", theme_mode=theme),
+                            width="stretch", key="viz_syn_bode")
+
+
+def _channel(ms, exp, ch_id: int, theme: str, eis_mode: str) -> None:
+    steps, reps = _channel_filters(ms, exp, ch_id)
+    if not steps or not reps:
+        st.info("Sélectionnez au moins une étape et un réplicat.")
+        return
+    tab_cv, tab_eis = st.tabs(["CV", "EIS"])
+    with tab_cv:
+        if not any(m.kind == KIND_CV and m.channel_id == ch_id for m in ms):
+            st.info("Aucune mesure CV pour ce canal.")
+        else:
+            for el in (1, 2):
+                g = cv_display_groups(ms, exp, ch_id, el, steps, reps)
+                if g:
+                    st.plotly_chart(cv_figure(g, title=f"CV — canal {ch_id}, électrode {el}", theme_mode=theme),
+                                    width="stretch", key=f"viz_cv_{ch_id}_{el}")
+            st.plotly_chart(cv_means_figure(channel_mean_view(ms, exp, KIND_CV, ch_id, steps, reps),
+                                            title=f"CV — canal {ch_id} : moyennes (- - E1 · ··· E2 · — E1+E2)",
+                                            theme_mode=theme), width="stretch", key=f"viz_cv_{ch_id}_mean")
+    with tab_eis:
+        if not any(m.kind == KIND_EIS and m.channel_id == ch_id for m in ms):
+            st.info("Aucune mesure EIS pour ce canal.")
+            return
+        for el in (1, 2):
+            g = eis_display_groups(ms, exp, ch_id, el, steps, reps)
+            if not g:
+                continue
+            fig = (nyquist_replicates_figure(g, title=f"Nyquist — canal {ch_id}, électrode {el}", theme_mode=theme)
+                   if eis_mode == "Nyquist" else
+                   bode_figure(g, title=f"Bode — canal {ch_id}, électrode {el}", theme_mode=theme))
+            st.plotly_chart(fig, width="stretch", key=f"viz_eis_{ch_id}_{el}")
+        items = channel_mean_view(ms, exp, KIND_EIS, ch_id, steps, reps)
+        title = f"canal {ch_id} : moyennes (- - E1 · ··· E2 · — E1+E2)"
+        fig = (nyquist_means_figure(items, title=f"Nyquist — {title}", theme_mode=theme) if eis_mode == "Nyquist"
+               else bode_means_figure(items, title=f"|Z| — {title}", theme_mode=theme))
+        st.plotly_chart(fig, width="stretch", key=f"viz_eis_{ch_id}_mean")
 
 
 def render() -> None:
@@ -45,30 +121,14 @@ def render() -> None:
     if st.session_state.get(S.RESULTS_SOURCE) == "archive":
         st.caption("📦 Données issues d'une archive rechargée.")
     theme = st.session_state[S.THEME]
-    tab_cv, tab_eis = st.tabs(["CV", "EIS — Nyquist et Bode"])
-    with tab_cv:
-        opts = selection_options(ms, exp, KIND_CV)
-        if not opts:
-            st.info("Aucune mesure CV.")
-        else:
-            ch, el, steps, reps = _selectors(opts, exp, "viz_cv")
-            groups = cv_display_groups(ms, exp, ch, el, steps, reps)
-            if groups:
-                st.plotly_chart(cv_figure(groups, title=f"CV — canal {ch}, électrode {el}", theme_mode=theme),
-                                width="stretch", key="viz_cv_fig")
-            else:
-                st.info("Sélectionnez au moins une étape et un réplicat.")
-    with tab_eis:
-        opts = selection_options(ms, exp, KIND_EIS)
-        if not opts:
-            st.info("Aucune mesure EIS.")
-        else:
-            ch, el, steps, reps = _selectors(opts, exp, "viz_eis")
-            groups = eis_display_groups(ms, exp, ch, el, steps, reps)
-            if groups:
-                st.plotly_chart(nyquist_replicates_figure(groups, title=f"Nyquist — canal {ch}, électrode {el}",
-                                                          theme_mode=theme), width="stretch", key="viz_nyq")
-                st.plotly_chart(bode_figure(groups, title=f"Bode — canal {ch}, électrode {el}", theme_mode=theme),
-                                width="stretch", key="viz_bode")
-            else:
-                st.info("Sélectionnez au moins une étape et un réplicat.")
+    channels = sorted({m.channel_id for m in ms})
+    labels = {VIEW_SYNTHESIS: "Vue synthétique (toutes les moyennes)"}
+    labels.update({c: f"Canal {c} — {exp.channel(c).biomarker}" for c in channels if exp.channel(c)})
+    c1, c2 = st.columns([3, 2])
+    choice = c1.selectbox("Canal", list(labels), format_func=labels.get, key="viz_channel")
+    eis_mode = c2.radio("Représentation EIS", ["Nyquist", "Bode"], horizontal=True, key="viz_eis_mode")
+    if choice == VIEW_SYNTHESIS:
+        _synthesis(ms, exp, theme, eis_mode)
+    else:
+        _channel(ms, exp, choice, theme, eis_mode)
+

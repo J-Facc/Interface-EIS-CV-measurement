@@ -21,7 +21,7 @@ from core.assignment import (
     LEVEL_ERROR,
     AssignmentRow,
     check_assignment,
-    clean_eis,
+    load_eis_base,
     clean_files,
     detect_kind,
     guess_rows,
@@ -194,35 +194,89 @@ def _assignment_editor(exp) -> list:
     return new_rows
 
 
-def _point_exclusion_editor(rows: list, config: dict) -> None:
-    eis_rows = [r for r in rows if r.kind == KIND_EIS and not r.exclude]
-    if not eis_rows:
+_CACHE = "_eis_base_cache"   # {(file_id, fréquences parasites): (data, warnings)} — lecture unique
+_WALK = "imp_walk_idx"
+
+
+def _eis_cache(config: dict) -> tuple:
+    """Cache des spectres EIS déjà lus, et clé de configuration (le cache change avec elle)."""
+    cfg_key = (tuple(config["fit"]["n_freqs_parasites"]), float(config["fit"]["tol_parasites"]))
+    cache = st.session_state.setdefault(_CACHE, {})
+    if cache.get("__cfg__") != cfg_key:
+        cache.clear()
+        cache["__cfg__"] = cfg_key
+    return cache, cfg_key
+
+
+def _walk_rows(rows: list) -> list:
+    from core.experiment import step_sort_key
+    eis = [r for r in rows if r.kind == KIND_EIS and not r.exclude and r.step]
+    return sorted(eis, key=lambda r: (r.channel or 0, r.electrode or 0, step_sort_key(r.step), r.replicate or 0))
+
+
+@st.fragment
+def _cleaning_walkthrough(rows: list, config: dict) -> None:
+    """Un spectre à la fois : sélection au lasso → « Valider la suppression » passe au suivant ;
+    « Précédent » / « Suivant » pour naviguer. Fragment : seules ces actions sont recalculées."""
+    walk = _walk_rows(rows)
+    if not walk:
         return
-    with st.expander("✂️ Exclure des points d'un spectre EIS (sélection au lasso sur le Nyquist)"):
-        labels = {r.file_id: r.filename for r in eis_rows}
-        fid = st.selectbox("Spectre", list(labels), format_func=labels.get, key="imp_pts_file")
-        excluded = st.session_state[S.EXCLUDED_POINTS].get(fid, [])
+    cache, _ = _eis_cache(config)
+    n = len(walk)
+    i = min(max(int(st.session_state.get(_WALK, 0)), 0), n - 1)
+    r = walk[i]
+    raw = st.session_state[S.RAW_FILES]
+    if r.file_id not in cache:
         try:
-            data, _ = clean_eis(st.session_state[S.RAW_FILES][fid]["content"], labels[fid], config)
+            cache[r.file_id] = load_eis_base(raw[r.file_id]["content"], r.filename, config)
         except ValueError as exc:
-            st.error(str(exc))
-            return
+            cache[r.file_id] = exc
+    base = cache[r.file_id]
+    excluded = st.session_state[S.EXCLUDED_POINTS].get(r.file_id, [])
+    st.progress((i + 1) / n, text=f"Spectre {i + 1} / {n} — canal {r.channel} · électrode {r.electrode} · "
+                                   f"{r.step} · réplicat {r.replicate} — {r.filename}")
+
+    def go(k):
+        st.session_state[_WALK] = min(max(k, 0), n - 1)
+
+    def validate(fid, points, k):
+        if points:
+            st.session_state[S.EXCLUDED_POINTS][fid] = sorted(set(st.session_state[S.EXCLUDED_POINTS]
+                                                                   .get(fid, [])) | set(points))
+            S.invalidate_measurements(st.session_state)
+            st.session_state["_walk_dirty"] = True
+        go(k)
+
+    def restore(fid):
+        st.session_state[S.EXCLUDED_POINTS].pop(fid, None)
+        S.invalidate_measurements(st.session_state)
+        st.session_state["_walk_dirty"] = True
+
+    if isinstance(base, Exception):
+        st.error(str(base))
+        sel = []
+    else:
+        data = base[0]
         fig = nyquist_points_figure(data["f"], data["Zre"], data["Zim"], excluded,
+                                    title="Sélectionnez au lasso les points à supprimer",
                                     theme_mode=st.session_state[S.THEME])
-        event = st.plotly_chart(fig, key=f"imp_pts_chart_{fid}", on_select="rerun", width="stretch")
+        event = st.plotly_chart(fig, key=f"imp_walk_chart_{r.file_id}", on_select="rerun", width="stretch")
         sel = []
         if event and getattr(event, "selection", None) and event.selection.points:
             sel = sorted({p["point_index"] for p in event.selection.points if p.get("curve_number", 0) == 0})
-        c1, c2, c3 = st.columns(3)
-        if c1.button(f"🗑️ Exclure {len(sel)} point(s)", disabled=not sel, key="imp_pts_excl"):
-            st.session_state[S.EXCLUDED_POINTS][fid] = sorted(set(excluded) | set(sel))
-            S.invalidate_measurements(st.session_state)
-            st.rerun()
-        if c2.button("↩️ Restaurer tous les points", disabled=not excluded, key="imp_pts_restore"):
-            st.session_state[S.EXCLUDED_POINTS].pop(fid, None)
-            S.invalidate_measurements(st.session_state)
-            st.rerun()
-        c3.caption(f"{len(excluded)} point(s) exclu(s) sur {len(data['f'])}.")
+    c1, c2, c3, c4 = st.columns([1, 2, 2, 1])
+    c1.button("⬅️ Précédent", disabled=i == 0, key="imp_walk_prev", width="stretch", on_click=go, args=(i - 1,))
+    label = (f"✅ Supprimer {len(sel)} point(s) et passer au suivant" if sel
+             else "✅ Valider (aucun point supprimé) et passer au suivant")
+    c2.button(label, type="primary", key="imp_walk_ok", width="stretch", on_click=validate,
+              args=(r.file_id, sel, i + 1))
+    c3.button("↩️ Restaurer les points de ce spectre", disabled=not excluded, key="imp_walk_restore",
+              width="stretch", on_click=restore, args=(r.file_id,))
+    c4.button("Suivant ➡️", disabled=i == n - 1, key="imp_walk_next", width="stretch", on_click=go, args=(i + 1,))
+    n_ex = sum(1 for w in walk if st.session_state[S.EXCLUDED_POINTS].get(w.file_id))
+    st.caption(f"{len(excluded)} point(s) supprimé(s) sur ce spectre · {n_ex} spectre(s) modifié(s) sur {n}.")
+    if st.session_state.pop("_walk_dirty", False):
+        st.rerun()      # suppression : le reste de la page (mesures nettoyées) doit se mettre à jour
 
 
 def _render_issues(issues: list) -> None:
@@ -275,16 +329,22 @@ def render() -> None:
     rows = _assignment_editor(exp)
     issues = check_assignment(rows, exp)
     _render_issues(issues)
-    _point_exclusion_editor(rows, config)
 
     st.subheader("3. Nettoyage")
+    st.markdown("**Revue des spectres EIS** — un graphe à la fois ; les points sélectionnés au lasso sont "
+                "supprimés à la validation.")
+    if not has_errors(issues):
+        _cleaning_walkthrough(rows, config)
     st.caption("EIS : séparateur auto, signe de Zim (EC-Lab), suppression des fréquences parasites "
                f"{config['fit']['n_freqs_parasites']} Hz (± {config['fit']['tol_parasites']} Hz), tri HF → BF. "
                f"CV : colonnes auto, courant en A, cycle conservé : {config['cv']['cycle']}, ordre chronologique. "
                "Les réplicats sont conservés individuellement.")
-    if st.button("🧹 Nettoyer les données", type="primary", disabled=has_errors(issues)):
+    if st.button("🧹 Nettoyer toutes les données", type="primary", disabled=has_errors(issues)):
         contents = {fid: v["content"] for fid, v in raw.items()}
-        ms, report = clean_files(rows, contents, exp, config, st.session_state[S.EXCLUDED_POINTS])
+        cache, _ = _eis_cache(config)
+        eis_cache = {k: v for k, v in cache.items() if k != "__cfg__" and not isinstance(v, Exception)}
+        ms, report = clean_files(rows, contents, exp, config, st.session_state[S.EXCLUDED_POINTS], eis_cache)
+        cache.update(eis_cache)
         S.invalidate_measurements(st.session_state)
         st.session_state[S.MEASUREMENTS] = ms or None
         st.session_state[S.CLEANING_REPORT] = [i for i in report if i not in issues]

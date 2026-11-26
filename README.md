@@ -72,9 +72,12 @@ Cinq pages, dans l'ordre :
    1e-18 M), à n'importe quelle position — ex. `10-18_w3_01_CV_C01.mpr`. `.mpr` converti ;
    `.txt/.csv/.mpt` aussi lus. Les autres fichiers (autres techniques, réglages, journaux…) sont
    ignorés. Les concentrations trouvées peuvent être adoptées pour le canal ; le tableau
-   d'assignation reste corrigeable ; contrôles de cohérence, exclusion de points au lasso, puis
+   d'assignation reste corrigeable ; contrôles de cohérence, revue des spectres EIS graphe par graphe
+   (sélection au lasso → suppression et spectre suivant, boutons Précédent/Suivant), puis
    nettoyage. Les réplicats sont conservés individuellement.
-3. **Visualisation** — CV, Nyquist et Bode des données nettoyées, sans aucun calcul.
+3. **Visualisation** — menu « Canal » : **vue synthétique** par défaut (toutes les courbes moyennes,
+   avec zone d'erreur ± écart-type), ou un canal : électrode 1, électrode 2 et les moyennes
+   (E1, E2, E1+E2), en CV, Nyquist ou Bode. Aucun fit ni DRT.
 4. **Analyse** — « Lancer l'analyse » : fits Randles (Orazem) et DRT de tous les spectres **en
    arrière-plan** (processus parallèles), puis onglets **DRT · Rct (fit Randles) · Étalonnage EIS ·
    CV · Étalonnage CV**.

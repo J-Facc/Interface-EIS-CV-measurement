@@ -123,17 +123,22 @@ def _measurements():
     return exp, ms
 
 
-def test_viz_page_renders_cv_nyquist_and_bode():
+def test_viz_page_synthesis_by_default_then_channel_view():
     exp, ms = _measurements()
-    at = _app("import streamlit as st\nfrom core import app_state as S\nfrom ui import page_viz\nS.init_state(st.session_state)\n"
-              "page_viz.render()\n")
+    at = _app("import streamlit as st\nfrom core import app_state as S\nfrom ui import page_viz\n"
+              "S.init_state(st.session_state)\npage_viz.render()\n")
     at.session_state["experiment"] = exp
     at.session_state["measurements"] = ms
     at.run()
     assert not at.exception
-    # Toutes les étapes et tous les réplicats sont sélectionnés par défaut.
-    assert at.multiselect(key="viz_eis_steps_1_1").value == ["probe", "conc_1"]
-    assert at.multiselect(key="viz_cv_reps_1_1").value == [1, 2]
+    assert at.selectbox(key="viz_channel").value == "synthese"        # vue synthétique par défaut
+    assert len(at.get("plotly_chart")) == 2                            # CV + EIS (moyennes, zones d'erreur)
+    at.selectbox(key="viz_channel").set_value(1).run()
+    assert not at.exception
+    assert at.multiselect(key="viz_steps_1").value == ["probe", "conc_1"]
+    assert len(at.get("plotly_chart")) == 6                            # 3 CV + 3 EIS (E1, E2, moyennes)
+    at.radio(key="viz_eis_mode").set_value("Bode").run()
+    assert not at.exception
 
 
 def test_viz_page_imports_no_fit_and_no_drt():
@@ -252,6 +257,13 @@ def test_import_page_with_one_folder_per_channel():
         at.session_state[k] = state[k]
     at.run()
     assert not at.exception and not at.error
+    # Revue graphe par graphe : « Valider » sans sélection passe au suivant, Précédent/Suivant naviguent.
+    at.button(key="imp_walk_ok").click().run()
+    assert at.session_state["imp_walk_idx"] == 1 and not at.exception
+    at.button(key="imp_walk_next").click().run()
+    assert at.session_state["imp_walk_idx"] == 2
+    at.button(key="imp_walk_prev").click().run()
+    assert at.session_state["imp_walk_idx"] == 1 and not at.exception
     next(b for b in at.button if "Nettoyer" in b.label).click().run()
     assert not at.exception
     assert len(at.session_state[S.MEASUREMENTS]) == 16
