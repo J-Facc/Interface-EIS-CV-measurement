@@ -45,6 +45,7 @@ Interface-EIS-CV-measurement/
 │   ├── config.py             YAML + Pydantic ; user_data_dir()
 │   ├── app_state.py          clés de session_state et invalidations (logique pure)
 │   ├── assignment.py         assignation (pré-remplissage, contrôles) et nettoyage EIS + CV
+│   ├── folder_import.py      import d'un dossier par canal (noms de fichiers → assignation)
 │   ├── loader.py · robust_loader.py · mpr_converter.py · cv_loader.py   lecture EC-Lab
 │   ├── display.py            regroupement des mesures pour l'affichage (aucun calcul)
 │   ├── background.py         pool de processus, progression, erreurs isolées, annulation
@@ -131,6 +132,13 @@ invalide l'aval ; un rechargement d'archive pose tout d'un coup (`results_source
 * **Biomarqueurs persistants** : `core.config.user_data_dir()` = `<lanceur>/user_data/` quand
   l'app tourne dans `<lanceur>/eis_app/` (que launch.bat remplace à chaque mise à jour), sinon
   `<dépôt>/user_data/` ; `EIS_USER_DATA_DIR` force le dossier (tests).
+* **Import par dossier de canal** (`core/folder_import.py`, uploader Streamlit en mode
+  `"directory"`) : arborescence `probe|calibration|bare/{eis,cv}/electrode_N/` ; noms
+  `probe_<eis|cv>_eN_rK`, `<eis|cv>_eN_<c>M_rK`, `bare_<eis|cv>_eN_rK` (`.txt/.csv/.mpt/.mpr`, `.mpr`
+  converti). La concentration du nom est rattachée à `conc_i` par sa valeur (tolérance 0,5 %) ;
+  les concentrations lues peuvent être adoptées pour le canal (`reassign_steps`). Signalés : nom
+  inattendu (ligne exclue, à compléter), incohérence dossier/nom, plus de 2 électrodes,
+  concentration absente de la configuration ; électrodes 3/4 renumérotées 1/2 (avertissement).
 * **Assignation** (`core/assignment.py`) : une ligne par fichier
   `fichier | type | canal | électrode | étape | réplicat | exclure`, pré-remplie d'après le contenu
   (EIS/CV) et le nom (`canal2_E1_conc_3_r2…`), toujours corrigeable. Contrôles : fichier non

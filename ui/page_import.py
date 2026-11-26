@@ -1,4 +1,9 @@
-"""Page 2 — Import & nettoyage : dépôt des fichiers, assignation manuelle, nettoyage.
+"""Page 2 — Import & nettoyage : un DOSSIER par canal, assignation (vérifiable), nettoyage.
+
+Chaque canal reçoit le dossier de ses mesures (``probe/``, ``calibration/``, ``bare/`` ;
+noms ``probe_eis_e1_r1.txt``, ``eis_e1_1.00e-08M_r1.txt``… ; ``.mpr`` convertis) : l'assignation
+est lue dans les noms (``core/folder_import.py``) et reste corrigeable dans le tableau. Des
+fichiers isolés peuvent encore être déposés (pré-remplissage indicatif).
 
 Aucune physique ici : détection, contrôles et nettoyage viennent de ``core/assignment.py``.
 Produit ``state.MEASUREMENTS`` (réplicats conservés individuellement), seule entrée des pages
@@ -25,7 +30,8 @@ from core.assignment import (
     step_options,
 )
 from core.config import config_to_dict, load_config
-from core.experiment import KIND_EIS, KINDS
+from core.experiment import KIND_EIS, KINDS, Channel, Experiment, format_concentration
+from core.folder_import import EXTENSIONS, import_channel_folder, reassign_steps, same_concentrations
 from core.mpr_converter import is_mpr, mpr_to_csv_bytes
 from plotting.eis_plots import nyquist_points_figure
 from ui import nav
@@ -63,6 +69,87 @@ def _ingest(uploaded) -> list:
         st.session_state[S.ASSIGNMENT] = [r.to_dict() for r in rows]
         S.invalidate_measurements(st.session_state)
     return errors
+
+
+FOLDER_ISSUES = "folder_issues"        # {canal: [Issue]} du dernier import de dossier
+FOLDER_CONCS = "folder_concentrations"  # {canal: [mol/L]} lues dans les noms
+
+
+def _ingest_folder(channel_id: int, uploaded) -> None:
+    """(Ré)importe le dossier d'un canal : remplace ses fichiers et ses lignes, garde le reste."""
+    files = [(uf.name, uf.getvalue()) for uf in uploaded or []]
+    digest = hashlib.sha256(repr(sorted((n, hashlib.sha256(b).hexdigest()) for n, b in files)).encode()).hexdigest()
+    key = f"_imp_dir_digest_{channel_id}"
+    if not files or st.session_state.get(key) == digest:
+        return
+    res = import_channel_folder(files, st.session_state[S.EXPERIMENT], channel_id)
+    prefix = f"C{channel_id}/"
+    raw = {k: v for k, v in st.session_state[S.RAW_FILES].items() if not k.startswith(prefix)}
+    raw.update(res.raw_files)
+    rows = [d for d in st.session_state[S.ASSIGNMENT] if not str(d["file_id"]).startswith(prefix)]
+    rows += [r.to_dict() for r in res.rows]
+    st.session_state[S.RAW_FILES] = raw
+    st.session_state[S.ASSIGNMENT] = rows
+    st.session_state.setdefault(FOLDER_ISSUES, {})[channel_id] = res.issues
+    st.session_state.setdefault(FOLDER_CONCS, {})[channel_id] = res.concentrations_found
+    st.session_state[key] = digest
+    S.invalidate_measurements(st.session_state)
+
+
+def _adopt_concentrations(channel_id: int, concs: list) -> None:
+    """Remplace les concentrations du canal par celles lues dans les noms, puis réaffecte conc_i."""
+    exp = st.session_state[S.EXPERIMENT]
+    chans = [Channel(c.id, c.biomarker, list(concs) if c.id == channel_id else list(c.concentrations))
+             for c in exp.channels]
+    new = Experiment(biomarkers=list(exp.biomarkers), channels=chans, name=exp.name, created_at=exp.created_at)
+    S.new_experiment(st.session_state, new)
+    rows = reassign_steps([AssignmentRow.from_dict(d) for d in st.session_state[S.ASSIGNMENT]], new)
+    st.session_state[S.ASSIGNMENT] = [r.to_dict() for r in rows]
+    issues = st.session_state.get(FOLDER_ISSUES, {}).get(channel_id, [])
+    st.session_state[FOLDER_ISSUES][channel_id] = [i for i in issues if "absente de la configuration" not in i.message]
+
+
+def _channel_folders(exp) -> None:
+    st.caption("Un dossier par canal, tel qu'il sort du poste de mesure : "
+               "`probe/{eis,cv}/electrode_N/probe_eis_eN_rK.txt`, "
+               "`calibration/{eis,cv}/electrode_N/eis_eN_1.00e-08M_rK.txt` (et `bare/…` facultatif). "
+               "Les fichiers .txt, .csv, .mpt et .mpr (converti automatiquement) sont lus ; seuls les noms font foi.")
+    for ch in exp.channels:
+        with st.container(border=True):
+            st.markdown(f"**Canal {ch.id} — {ch.biomarker}** · concentrations configurées : "
+                        + ", ".join(format_concentration(c) for c in ch.concentrations))
+            gen = st.session_state.get(f"_imp_dir_gen_{ch.id}", 0)      # nouvelle clé = widget vidé
+            up = st.file_uploader(f"Dossier du canal {ch.id}", type=list(EXTENSIONS),
+                                  accept_multiple_files="directory", key=f"imp_dir_{ch.id}_{gen}")
+            _ingest_folder(ch.id, up)
+            mine = [d for d in st.session_state[S.ASSIGNMENT] if str(d["file_id"]).startswith(f"C{ch.id}/")]
+            if not mine:
+                continue
+            kept = [d for d in mine if not d["exclude"]]
+            st.caption(f"{len(mine)} fichier(s) : {sum(d['kind'] == 'EIS' for d in kept)} EIS, "
+                       f"{sum(d['kind'] == 'CV' for d in kept)} CV retenus ; électrode(s) "
+                       + ", ".join(str(e) for e in sorted({d['electrode'] for d in kept if d['electrode']})) + ".")
+            found = st.session_state.get(FOLDER_CONCS, {}).get(ch.id) or []
+            configured = list(ch.concentrations)
+            if found and not same_concentrations(found, configured):
+                st.warning("Concentrations lues dans les noms : " + ", ".join(format_concentration(c) for c in found)
+                           + " — différentes de la configuration du canal.")
+                if st.button(f"Adopter ces concentrations pour le canal {ch.id}", key=f"imp_adopt_{ch.id}"):
+                    _adopt_concentrations(ch.id, found)
+                    st.rerun()
+            for i in st.session_state.get(FOLDER_ISSUES, {}).get(ch.id, []):
+                (st.error if i.level == LEVEL_ERROR else st.warning)(i.message)
+            if st.button(f"🗑️ Retirer le dossier du canal {ch.id}", key=f"imp_rm_{ch.id}"):
+                prefix = f"C{ch.id}/"
+                st.session_state[S.RAW_FILES] = {k: v for k, v in st.session_state[S.RAW_FILES].items()
+                                                 if not k.startswith(prefix)}
+                st.session_state[S.ASSIGNMENT] = [d for d in st.session_state[S.ASSIGNMENT]
+                                                  if not str(d["file_id"]).startswith(prefix)]
+                st.session_state.get(FOLDER_ISSUES, {}).pop(ch.id, None)
+                st.session_state.pop(f"_imp_dir_digest_{ch.id}", None)
+                st.session_state[f"_imp_dir_gen_{ch.id}"] = gen + 1
+                S.invalidate_measurements(st.session_state)
+                st.rerun()
 
 
 def _assignment_editor(exp) -> list:
@@ -139,22 +226,28 @@ def render() -> None:
         st.stop()
     config = _config()
 
-    st.subheader("1. Dépôt des fichiers")
-    uploaded = st.file_uploader("Fichiers EC-Lab (EIS et CV) : .txt, .csv, .mpt, .mpr",
-                                type=["txt", "csv", "mpt", "mpr"], accept_multiple_files=True,
-                                key="imp_uploader")
-    for msg in _ingest(uploaded):
-        st.error(msg)
+    st.subheader("1. Dépôt — un dossier par canal")
+    _channel_folders(exp)
+    with st.expander("Fichiers isolés (hors arborescence, assignation à compléter à la main)"):
+        uploaded = st.file_uploader("Fichiers EC-Lab (EIS et CV) : .txt, .csv, .mpt, .mpr",
+                                    type=list(EXTENSIONS), accept_multiple_files=True, key="imp_uploader")
+        for msg in _ingest(uploaded):
+            st.error(msg)
     raw = st.session_state[S.RAW_FILES]
     if not raw:
-        st.info("Déposez les fichiers de mesure. Chaque fichier sera assigné à un canal, une électrode, "
-                "une étape et un réplicat.")
+        st.info("Déposez le dossier de chaque canal : l'assignation (électrode, étape, réplicat) est lue dans "
+                "les noms de fichiers.")
         return
     c1, c2 = st.columns([3, 1])
     c1.caption(f"{len(raw)} fichier(s) déposé(s) — "
                f"{sum(1 for v in raw.values() if v['kind'] == 'EIS')} EIS, "
                f"{sum(1 for v in raw.values() if v['kind'] == 'CV')} CV.")
     if c2.button("🗑️ Retirer tous les fichiers"):
+        for k in [k for k in st.session_state if str(k).startswith("_imp_dir_digest_")]:
+            del st.session_state[k]
+        for ch in exp.channels:
+            st.session_state[f"_imp_dir_gen_{ch.id}"] = st.session_state.get(f"_imp_dir_gen_{ch.id}", 0) + 1
+        st.session_state[FOLDER_ISSUES] = {}
         st.session_state[S.RAW_FILES] = {}
         st.session_state[S.ASSIGNMENT] = []
         st.session_state[S.EXCLUDED_POINTS] = {}
@@ -162,7 +255,8 @@ def render() -> None:
         st.rerun()
 
     st.subheader("2. Assignation")
-    st.caption("Pré-remplissage indicatif (contenu + nom du fichier) : vérifiez et corrigez chaque ligne. "
+    st.caption("Lue dans les noms pour les dossiers de canal, indicative pour les fichiers isolés : vérifiez et "
+               "corrigez au besoin. "
                "Étapes : bare (électrode nue), probe (sonde), conc_i (i-ème concentration du canal).")
     rows = _assignment_editor(exp)
     issues = check_assignment(rows, exp)
