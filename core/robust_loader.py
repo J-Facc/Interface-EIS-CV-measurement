@@ -113,6 +113,9 @@ def _classify(token: str):
         return "Zim", {"sign": sign}
     if "ewe" in t or t.startswith("e/v") or t == "ecell/v":
         return "Ewe", {}
+    # numero de cycle EC-Lab ("cycle number") — conserve pour choisir le cycle de la CV
+    if t.startswith("cyclenumber") or t == "cycle":
+        return "cycle", {}
     # courant : "<i>/ma", "i/ma", "i/µa"... (apres im(z) pour ne pas capter le "i")
     if t.startswith("<i>") or t.startswith("i/") or "<i>/" in t:
         unit = "a"

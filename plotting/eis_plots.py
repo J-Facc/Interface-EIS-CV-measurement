@@ -975,3 +975,26 @@ def calibration_loglog_figure(session: EISSession, theme_mode: str = "light",
                       legend=dict(orientation="h", y=-0.25), hovermode="closest")
     apply_theme_to_figure(fig, theme_mode)
     return fig
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# v3 — Nyquist d'un spectre avec sélection de points (exclusion manuelle)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def nyquist_points_figure(f, Zre, Zim, excluded=None, title: str = "", theme_mode: str = "light") -> go.Figure:
+    """Nyquist d'UN spectre nettoyé, points sélectionnables (lasso/boîte) ; les points
+    exclus sont dessinés en croix rouges. ``point_index`` de la sélection = indice du point."""
+    f, Zre, Zim = (np.asarray(a, dtype=float) for a in (f, Zre, Zim))
+    excluded = sorted({int(i) for i in (excluded or []) if 0 <= int(i) < len(f)})
+    fig = go.Figure(go.Scatter(
+        x=Zre, y=Zim, mode="lines+markers", name="points", customdata=f,
+        marker=dict(size=7), line=dict(width=1),
+        hovertemplate="Re(Z) = %{x:.1f} Ω<br>−Im(Z) = %{y:.1f} Ω<br>f = %{customdata:.3e} Hz<extra></extra>",
+    ))
+    if excluded:
+        fig.add_trace(go.Scatter(x=Zre[excluded], y=Zim[excluded], mode="markers", name="exclus",
+                                 marker=dict(symbol="x", size=11, color="red"), hoverinfo="skip"))
+    fig.update_layout(title=title, xaxis_title="Re(Z) (Ω)", yaxis_title="−Im(Z) (Ω)", dragmode="lasso",
+                      height=420, hovermode="closest")
+    apply_theme_to_figure(fig, theme_mode)
+    return fig

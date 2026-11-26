@@ -269,3 +269,89 @@ def average_cv_replicates(scans: list) -> CVScan:
         step=ref.step,
         source_files=[s.label for s in scans],
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# v3 — Nettoyage d'une CV pour une Measurement (ordre chronologique, choix du cycle)
+# ═════════════════════════════════════════════════════════════════════════════
+
+_CYCLE_ALIASES = {"cycle", "cycle number", "cyclenumber", "cycle_number"}
+
+
+def _select_cycle(cycle: np.ndarray, which) -> tuple:
+    """Masque du cycle retenu et son numéro. ``which`` : 'last' | 'first' | entier ≥ 1."""
+    cycles = sorted({int(c) for c in cycle[np.isfinite(cycle)]})
+    if not cycles:
+        raise ValueError("colonne de cycle vide")
+    if which in (None, "last"):
+        num = cycles[-1]
+    elif which == "first":
+        num = cycles[0]
+    else:
+        num = int(which)
+        if num not in cycles:
+            raise ValueError(f"cycle {num} absent (cycles présents : {', '.join(map(str, cycles))})")
+    return cycle == num, num, cycles
+
+
+def load_cv_measurement(content, label: str, cycle="last") -> dict:
+    """Nettoie une CV (export EC-Lab texte, ou CSV ``E, I, cycle`` de l'archive).
+
+    * séparateur, décimales et colonnes auto-détectés (``core.robust_loader``) : Ewe/V,
+      I ou <I> (mA, µA… convertis en **A**), numéro de cycle (« cycle number ») ;
+    * le cycle ``cycle`` est conservé ('last' par défaut, 'first', ou un numéro) ;
+    * l'ordre de mesure est conservé (ordre chronologique, JAMAIS trié par potentiel :
+      une CV est une boucle).
+
+    Returns:
+        ``{"E", "I", "cycle" (np.ndarray), "cycle_kept": int, "cycles": [int], "warnings": [str]}``.
+
+    Raises:
+        ValueError: colonnes E/I introuvables, fichier EIS, cycle absent, < 5 points.
+    """
+    warnings: list = []
+    pf = parse_robust(content)
+    if pf is not None and pf.kind == "EIS":
+        raise ValueError(f"Fichier {label} : spectre EIS détecté, pas une courbe CV.")
+    if pf is not None and pf.kind == "CV" and pf.n_rows > 0:
+        warnings.extend(pf.warnings)
+        E = np.asarray(pf.columns["Ewe"], dtype=float)
+        I = np.asarray(pf.columns["I"], dtype=float)
+        cyc = np.asarray(pf.columns["cycle"], dtype=float) if "cycle" in pf.columns else None
+    else:
+        text = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else str(content)
+        sep = _detect_separator(text[:2000])
+        df = pd.read_csv(io.StringIO(text), sep=sep, engine="python")
+        cols = [str(c) for c in df.columns]
+        e_col = _find_column(cols, _E_ALIASES)
+        i_col = _find_column(cols, _I_ALIASES)
+        if e_col is None or i_col is None:
+            raise ValueError(f"Fichier {label} : colonnes potentiel/courant introuvables (colonnes : {cols}).")
+        c_col = next((c for c in cols if c.strip().lower() in _CYCLE_ALIASES), None)
+        E = pd.to_numeric(df[e_col], errors="coerce").to_numpy(dtype=float)
+        I = pd.to_numeric(df[i_col], errors="coerce").to_numpy(dtype=float)
+        low = i_col.lower()
+        if "ma" in low:
+            I = I * 1e-3
+        elif "µa" in low or "ua" in low:
+            I = I * 1e-6
+        cyc = pd.to_numeric(df[c_col], errors="coerce").to_numpy(dtype=float) if c_col else None
+
+    if cyc is None:
+        cyc = np.ones_like(E)
+        if len(split_branches(E)) > 3:
+            warnings.append("Aucune colonne « cycle number » : plusieurs cycles semblent présents, la courbe "
+                            "entière est conservée (cycle 1).")
+    mask = np.isfinite(E) & np.isfinite(I) & np.isfinite(cyc)
+    if (~mask).any():
+        warnings.append(f"{int((~mask).sum())} point(s) non numérique(s) retiré(s).")
+    E, I, cyc = E[mask], I[mask], cyc[mask]
+    try:
+        keep, num, cycles = _select_cycle(cyc, cycle)
+    except ValueError as exc:
+        raise ValueError(f"Fichier {label} : {exc}.") from exc
+    E, I, cyc = E[keep], I[keep], cyc[keep]
+    if len(E) < 5:
+        raise ValueError(f"Fichier {label} : moins de 5 points dans le cycle {num}.")
+    return {"E": E, "I": I, "cycle": cyc.astype(float), "cycle_kept": int(num),
+            "cycles": cycles, "warnings": warnings}

@@ -45,3 +45,58 @@ def test_configuration_page_validates_and_persists_biomarkers(tmp_path):
     exp = at.session_state["experiment"]
     assert exp.biomarkers == ["miR-21"] and exp.channels[0].concentrations == [1e-12]
     assert any("validée" in s.value for s in at.success)
+
+
+def _uploaded(name, data):
+    class _F:
+        def __init__(self):
+            self.name = name
+        def getvalue(self):
+            return data
+    return _F()
+
+
+def test_import_page_assigns_checks_and_cleans():
+    """Page Import : dépôt → assignation pré-remplie → contrôle → nettoyage → mesures."""
+    from tests.synthetic_data import randles_file
+    body = (
+        "import streamlit as st\nfrom ui import state as S, page_import\n"
+        "from core.experiment import Experiment, Channel\n"
+        "S.init_state(st.session_state)\n"
+        "if st.session_state[S.EXPERIMENT] is None:\n"
+        "    st.session_state[S.EXPERIMENT] = Experiment(['A'], [Channel(1, 'A', [1e-9])])\n"
+        "page_import.render()\n"
+    )
+    at = _app(body)
+    at.run()
+    assert not at.exception
+    # Simule le dépôt : on passe par la fonction d'ingestion avec de faux fichiers.
+    import ui.page_import as pi
+    files = [_uploaded("probe_r1.txt", randles_file(1500.0, seed=1)),
+             _uploaded("probe_r2.txt", randles_file(1500.0, seed=2)),
+             _uploaded("conc_1_r1.txt", randles_file(2500.0, seed=3)),
+             _uploaded("cv_probe.txt", (REPO / "tests" / "data" / "cv_bare_2cycles.txt").read_bytes())]
+    state = {}
+    from ui import state as S
+    S.init_state(state)
+    from core.experiment import Experiment, Channel
+    state[S.EXPERIMENT] = Experiment(['A'], [Channel(1, 'A', [1e-9])])
+    import streamlit as st
+    real = st.session_state
+    try:
+        pi.st.session_state = state      # l'ingestion n'utilise que session_state
+        assert pi._ingest(files) == []
+    finally:
+        pi.st.session_state = real
+    rows = state[S.ASSIGNMENT]
+    assert [(r["kind"], r["step"], r["replicate"]) for r in rows] == [
+        ("EIS", "probe", 1), ("EIS", "probe", 2), ("EIS", "conc_1", 1), ("CV", "probe", 1)]
+    for k in (S.RAW_FILES, S.ASSIGNMENT):
+        at.session_state[k] = state[k]
+    at.run()
+    assert not at.exception and not at.error
+    clean = next(b for b in at.button if "Nettoyer" in b.label)
+    clean.click().run()
+    assert not at.exception
+    ms = at.session_state[S.MEASUREMENTS]
+    assert len(ms) == 4 and {m.kind for m in ms} == {"EIS", "CV"}
