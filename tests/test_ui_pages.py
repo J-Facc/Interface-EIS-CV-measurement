@@ -100,3 +100,59 @@ def test_import_page_assigns_checks_and_cleans():
     assert not at.exception
     ms = at.session_state[S.MEASUREMENTS]
     assert len(ms) == 4 and {m.kind for m in ms} == {"EIS", "CV"}
+
+
+def _measurements():
+    """Mesures nettoyées synthétiques : canal 1, 2 électrodes, probe + conc_1, EIS + CV."""
+    from core.assignment import AssignmentRow, clean_files
+    from core.experiment import Channel, Experiment
+    from tests.synthetic_data import make_config, randles_file
+    exp = Experiment(["A"], [Channel(1, "A", [1e-9])])
+    cv = (REPO / "tests" / "data" / "cv_bare_2cycles.txt").read_bytes()
+    rows, contents = [], {}
+    for el in (1, 2):
+        for step, rct in (("probe", 1500.0), ("conc_1", 2500.0)):
+            for rep in (1, 2):
+                fid = f"e{el}{step}{rep}"
+                contents[fid] = randles_file(rct, seed=el * 10 + rep)
+                rows.append(AssignmentRow(fid, fid, "EIS", 1, el, step, rep, detected_kind="EIS"))
+                contents[fid + "cv"] = cv
+                rows.append(AssignmentRow(fid + "cv", fid + "cv", "CV", 1, el, step, rep, detected_kind="CV"))
+    ms, issues = clean_files(rows, contents, exp, make_config())
+    assert ms, issues
+    return exp, ms
+
+
+def test_viz_page_renders_cv_nyquist_and_bode():
+    exp, ms = _measurements()
+    at = _app("import streamlit as st\nfrom ui import state as S, page_viz\nS.init_state(st.session_state)\n"
+              "page_viz.render()\n")
+    at.session_state["experiment"] = exp
+    at.session_state["measurements"] = ms
+    at.run()
+    assert not at.exception
+    # Toutes les étapes et tous les réplicats sont sélectionnés par défaut.
+    assert at.multiselect(key="viz_eis_steps_1_1").value == ["probe", "conc_1"]
+    assert at.multiselect(key="viz_cv_reps_1_1").value == [1, 2]
+
+
+def test_viz_page_imports_no_fit_and_no_drt():
+    """Critère de la phase 3 : la page Visualisation (et sa mise en forme) n'importe aucun fit ni DRT."""
+    import ast
+    for path in (REPO / "ui" / "page_viz.py", REPO / "core" / "display.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        mods = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+        mods |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+        bad = {m for m in mods if m and (m.startswith(("fits", "drt", "core.pipeline", "core.analysis",
+                                                       "core.measurement_model", "core.drt")))}
+        assert not bad, (path.name, bad)
+
+
+def test_display_groups_are_ordered_and_filtered():
+    from core.display import cv_display_groups, eis_display_groups
+    exp, ms = _measurements()
+    g = eis_display_groups(ms, exp, 1, 2, steps=["conc_1", "probe"], replicates=[2])
+    assert [x.label for x in g] == ["Probe", "conc_1 — 1.00e-09 M"]
+    assert [len(x.replicates) for x in g] == [1, 1] and g[0].mean is None
+    c = cv_display_groups(ms, exp, 1, 1)
+    assert [x["step"] for x in c] == ["probe", "conc_1"] and len(c[0]["curves"]) == 2
