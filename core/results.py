@@ -200,6 +200,20 @@ class DRTRecord:
                           "warnings": self.warnings, "has_ci": self.gamma_lo is not None})
 
 
+    @classmethod
+    def from_meta(cls, d: dict, tau, gamma, gamma_lo, gamma_hi, Zfit_re, Zfit_im) -> "DRTRecord":
+        return cls(mode=d["mode"], tau=np.asarray(tau, dtype=float), gamma=np.asarray(gamma, dtype=float),
+                   peak=MainPeak.from_dict(d.get("peak")) or MainPeak(ok=False),
+                   rct_engine=_nan(d.get("rct_engine")), rct_engine_std=_nan(d.get("rct_engine_std")),
+                   rct_engine_source=d.get("rct_engine_source") or "", rp=_nan(d.get("rp")),
+                   converged=bool(d.get("converged")),
+                   Zfit_re=None if Zfit_re is None else np.asarray(Zfit_re, dtype=float),
+                   Zfit_im=None if Zfit_im is None else np.asarray(Zfit_im, dtype=float),
+                   gamma_lo=None if gamma_lo is None else np.asarray(gamma_lo, dtype=float),
+                   gamma_hi=None if gamma_hi is None else np.asarray(gamma_hi, dtype=float),
+                   diagnostics=dict(d.get("diagnostics") or {}), warnings=list(d.get("warnings") or []))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Spectre, groupe, résultats EIS
 # ─────────────────────────────────────────────────────────────────────────────

@@ -183,3 +183,47 @@ def test_analysis_page_runs_in_background_then_shows_tabs(monkeypatch):
     # Les onglets d'étalonnage sont rendus (2 réplicats/étape → moyennes ± écart-type).
     assert len(at.get("plotly_chart")) >= 4      # DRT, Rct, étalonnage EIS, CV, étalonnage CV
     assert len(res.cv) == 8
+
+
+def test_export_page_generates_the_three_files():
+    from tests.v3_data import build_session
+    exp, ms, res = build_session()
+    at = _app("import streamlit as st\nfrom ui import state as S, page_export\nS.init_state(st.session_state)\n"
+              "page_export.render()\n")
+    at.session_state["experiment"] = exp
+    at.session_state["measurements"] = ms
+    at.session_state["results"] = res
+    at.run()
+    assert not at.exception
+    for kind in ("zip", "pdf", "html"):
+        at.button(key=f"gen_{kind}").click().run()
+        assert not at.exception and not at.error, kind
+    cache = at.session_state["_export_cache"]
+    assert set(cache) == {"zip", "pdf", "html"}
+    assert cache["pdf"][1].startswith(b"%PDF") and cache["zip"][1][:2] == b"PK"
+
+
+def test_archive_reload_shows_results_without_recomputing(monkeypatch):
+    """Archive v3 chargée (page Configuration) → page Analyse affichée sans aucun calcul."""
+    from tests.v3_data import build_session
+    from exports.archive import read_archive, write_archive
+    from tests.synthetic_data import make_config
+    exp, ms, res = build_session()
+    exp2, ms2, res2 = read_archive(write_archive(exp, ms, res, make_config()))
+    import core.analysis
+
+    def forbidden(*a, **k):
+        raise AssertionError("recalcul interdit")
+    monkeypatch.setattr(core.analysis.AnalysisRun, "__init__", forbidden)
+    at = _app("import streamlit as st\nfrom ui import state as S, page_analysis\nS.init_state(st.session_state)\n"
+              "page_analysis.render()\n")
+    from ui import state as S
+    state = {}
+    S.init_state(state)
+    S.load_archive_state(state, exp2, ms2, res2)
+    for k, v in state.items():
+        at.session_state[k] = v
+    at.run()
+    assert not at.exception
+    assert any("archive" in i.value for i in at.info)
+    assert [t.label for t in at.tabs][:5] == ["DRT", "Rct (fit Randles)", "Étalonnage EIS", "CV", "Étalonnage CV"]

@@ -11,7 +11,7 @@ import streamlit as st
 from core.app_state import init_shared_state
 from core.version import APP_VERSION
 from ui import nav
-from ui import page_analysis, page_config, page_import, page_viz
+from ui import page_analysis, page_config, page_export, page_import, page_viz
 from ui import state as S
 
 st.set_page_config(
@@ -93,11 +93,12 @@ nav.PAGES.update({
     "import": st.Page(page_import.render, title="Import & nettoyage", icon="📂", url_path="import-nettoyage"),
     "viz": st.Page(page_viz.render, title="Visualisation", icon="👁️", url_path="visualisation"),
     "analysis": st.Page(page_analysis.render, title="Analyse", icon="🧮", url_path="analyse"),
+    "export": st.Page(page_export.render, title="Export", icon="💾", url_path="export-v3"),
     "old_import": st.Page("pages/0_import.py", title="Import (v2)", icon="📂"),
     "pretraitement": st.Page("pages/1_pretraitement.py", title="Prétraitement (v2)", icon="🔬"),
     "eis": st.Page("pages/A_eis.py", title="EIS seule", icon="📡"),
     "cv": st.Page("pages/B_cv.py", title="CV seule", icon="📈"),
-    "export": st.Page("pages/E_export.py", title="Export", icon="💾"),
+    "old_export": st.Page("pages/E_export.py", title="Export (v2)", icon="💾"),
 })
 pg = st.navigation(list(nav.PAGES.values()))
 pg.run()

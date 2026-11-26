@@ -55,6 +55,9 @@ class MainPeak:
         if not d:
             return None
         known = {k: d[k] for k in cls.__dataclass_fields__ if k in d}
+        for k in ("rct", "tau_peak", "gamma_peak", "tau_lo", "tau_hi"):
+            if known.get(k) is None:
+                known[k] = float("nan")        # NaN sérialisé en null (JSON)
         return cls(**known)
 
 
