@@ -180,3 +180,6 @@ def test_analysis_page_runs_in_background_then_shows_tabs(monkeypatch):
     assert res is not None and len(res.eis.groups) == 4
     assert not at.exception
     assert [t.label for t in at.tabs][:5] == ["DRT", "Rct (fit Randles)", "Étalonnage EIS", "CV", "Étalonnage CV"]
+    # Les onglets d'étalonnage sont rendus (2 réplicats/étape → moyennes ± écart-type).
+    assert len(at.get("plotly_chart")) >= 4      # DRT, Rct, étalonnage EIS, CV, étalonnage CV
+    assert len(res.cv) == 8

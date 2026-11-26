@@ -113,3 +113,34 @@ def failure_rows(results: AnalysisResults) -> list:
     stage = {"fit": "fit du circuit", "drt": "DRT", "cv": "CV", "tâche": "tâche"}
     return [{"Élément": f.key, "Étape du calcul": stage.get(f.stage, f.stage), "Cause": f.message}
             for f in results.failures]
+
+
+def calibration_level_rows(curves: list) -> list:
+    """Points moyens des courbes d'étalonnage (affichage et CSV)."""
+    rows = []
+    for c in curves:
+        for lv in c.levels:
+            rows.append({"Courbe": c.label, "Biomarqueur": c.biomarker, "Grandeur": c.quantity, "Source": c.source,
+                         "[c] (mol/L)": lv.concentration, "log10([c])": lv.log_c, "Moyenne": lv.mean,
+                         "Écart-type (ddof=1)": lv.std, "n réplicats": lv.n, "Remarque": lv.note})
+    return rows
+
+
+def calibration_regression_rows(curves: list) -> list:
+    """Paramètres de régression de chaque courbe (y = a·log10([c]) + b)."""
+    return [{"Courbe": c.label, "Biomarqueur": c.biomarker, "Grandeur": c.quantity, "Source": c.source,
+             "Niveaux": len(c.levels), "Pente a": c.slope, "Ordonnée b": c.intercept, "R²": c.r2,
+             "p-value": c.pvalue, "Erreur-type pente": c.stderr, "Remarque": c.message} for c in curves]
+
+
+def calibration_point_rows(curves: list) -> list:
+    """Chaque réplicat (inclus ou exclu, avec la raison)."""
+    rows = []
+    for c in curves:
+        for p in c.points:
+            rows.append({"Courbe": c.label, "Canal": p.channel_id, "Électrode": p.electrode, "Étape": p.step,
+                         "Réplicat": p.replicate, "[c] (mol/L)": p.concentration, "Valeur": p.value,
+                         "Référence probe": p.reference, "Normalisé": p.y,
+                         "Inclus": "oui" if p.included else "non", "Raison": p.reason,
+                         "KK": "⚠️ non conforme" if p.kk_nonconform else ""})
+    return rows
