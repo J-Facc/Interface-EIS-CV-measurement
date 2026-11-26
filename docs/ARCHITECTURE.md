@@ -133,7 +133,13 @@ invalide l'aval ; un rechargement d'archive pose tout d'un coup (`results_source
   l'app tourne dans `<lanceur>/eis_app/` (que launch.bat remplace à chaque mise à jour), sinon
   `<dépôt>/user_data/` ; `EIS_USER_DATA_DIR` force le dossier (tests).
 * **Import par dossier de canal** (`core/folder_import.py`, uploader Streamlit en mode
-  `"directory"`) : arborescence `probe|calibration|bare/{eis,cv}/electrode_N/` ; noms
+  `"directory"`, sans filtre d'extension). Convention principale, noms EC-Lab
+  `<libre>_<NN>_<CV|PEIS>_C<nn>.<ext>` : fin fixe (réplicat NN, technique, voie Cnn de
+  l'instrument) ; la partie libre contient `w<N>` (électrode) et `bare`, `probe` ou une
+  concentration (`10-18`, `1e-18`, `5x10-12`…) à position quelconque (`classify_path`). Les
+  numéros de réplicat (numéros de séquence EC-Lab : 01, 06…) sont renumérotés 1, 2, 3… par
+  (technique, électrode, étape). Autres techniques (CA, OCV…) et noms hors conventions : ignorés,
+  avec leur raison. Conventions historiques toujours acceptées : arborescence `probe|calibration|bare/{eis,cv}/electrode_N/` ; noms
   `probe_<eis|cv>_eN_rK`, `<eis|cv>_eN_<c>M_rK`, `bare_<eis|cv>_eN_rK` (`.txt/.csv/.mpt/.mpr`, `.mpr`
   converti). La concentration du nom est rattachée à `conc_i` par sa valeur (tolérance 0,5 %) ;
   les concentrations lues peuvent être adoptées pour le canal (`reassign_steps`). Tout fichier au

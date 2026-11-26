@@ -66,14 +66,14 @@ Cinq pages, dans l'ordre :
    concentrations de chaque canal. Le mode est **déduit** : 1 concentration → « une concentration
    par canal », plusieurs → « plusieurs concentrations sur un canal ». On peut aussi y **charger une
    archive** `.zip` (v3 : tout est restauré sans recalcul ; v2 : configuration et fichiers bruts).
-2. **Import & nettoyage** — **un dossier par canal**, tel qu'il sort du poste de mesure
-   (`probe/{eis,cv}/electrode_N/probe_eis_eN_rK.txt`,
-   `calibration/{eis,cv}/electrode_N/eis_eN_1.00e-08M_rK.txt`, `bare/…` facultatif ; `.txt/.csv/.mpt`
-   et `.mpr` converti). Électrode, étape, concentration et réplicat sont lus dans les noms ; les autres fichiers du
-   dossier (réglages, journaux…) sont ignorés ; les
-   concentrations trouvées peuvent être adoptées pour le canal. Le tableau d'assignation reste
-   corrigeable (et des fichiers isolés peuvent être ajoutés à la main) ; contrôles de cohérence,
-   exclusion de points au lasso, puis nettoyage. Les réplicats sont conservés individuellement.
+2. **Import & nettoyage** — **un dossier par canal**, tel qu'il sort du poste de mesure. Fichiers
+   EC-Lab `<libre>_<NN>_<CV|PEIS>_C<nn>.mpr` (fin fixe : réplicat, technique, voie de l'instrument) ;
+   la partie libre contient l'électrode (`w3`) et `bare`, `probe` ou la concentration (`10-18` =
+   1e-18 M), à n'importe quelle position — ex. `10-18_w3_01_CV_C01.mpr`. `.mpr` converti ;
+   `.txt/.csv/.mpt` aussi lus. Les autres fichiers (autres techniques, réglages, journaux…) sont
+   ignorés. Les concentrations trouvées peuvent être adoptées pour le canal ; le tableau
+   d'assignation reste corrigeable ; contrôles de cohérence, exclusion de points au lasso, puis
+   nettoyage. Les réplicats sont conservés individuellement.
 3. **Visualisation** — CV, Nyquist et Bode des données nettoyées, sans aucun calcul.
 4. **Analyse** — « Lancer l'analyse » : fits Randles (Orazem) et DRT de tous les spectres **en
    arrière-plan** (processus parallèles), puis onglets **DRT · Rct (fit Randles) · Étalonnage EIS ·
