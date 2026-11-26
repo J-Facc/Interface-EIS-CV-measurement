@@ -21,6 +21,7 @@ from core.experiment import (
 )
 from core.user_data import add_biomarkers, load_biomarkers
 from ui import nav
+from ui.archive_loader import render_archive_loader
 from ui import state as S
 
 ADD_NEW = "+ Ajouter un nouveau biomarqueur…"
@@ -48,15 +49,24 @@ def _seed_from(exp: Experiment) -> None:
     st.session_state[_k("name")] = exp.name
     st.session_state[_k("n_bio")] = max(1, len(exp.biomarkers))
     for i, b in enumerate(exp.biomarkers):
-        st.session_state[_k("bio", i)] = b
+        st.session_state[_k("bio_sel", i)] = b
     st.session_state[_k("n_ch")] = max(1, len(exp.channels))
     for k, ch in enumerate(exp.channels):
-        st.session_state[_k("ch_bio", k)] = ch.biomarker
+        st.session_state[_k("ch_bio_sel", k)] = ch.biomarker
         st.session_state[_k("ch_nc", k)] = max(1, len(ch.concentrations))
         for j, c in enumerate(ch.concentrations):
             m, e = concentration_parts(c)
             st.session_state[_k("m", k, j)] = float(m)
             st.session_state[_k("e", k, j)] = int(e)
+
+
+def _commit_new_biomarker(i: int) -> None:
+    """Rappel du champ « Nom du biomarqueur » : persiste le nom et le sélectionne aussitôt."""
+    name = (st.session_state.get(_k("bio_new", i)) or "").strip()
+    if name:
+        add_biomarkers([name])
+        st.session_state[_k("bio_sel", i)] = name
+        st.session_state[_k("bio_new", i)] = ""
 
 
 def _biomarker_inputs(saved: list) -> list:
@@ -67,27 +77,21 @@ def _biomarker_inputs(saved: list) -> list:
     cols = st.columns(min(int(n_bio), 3))
     for i in range(int(n_bio)):
         with cols[i % len(cols)]:
-            current = st.session_state.get(_k("bio", i))
+            sel_key = _k("bio_sel", i)
+            current = st.session_state.get(sel_key)
             options = list(saved)
-            if current and current not in options:
+            if current and current != ADD_NEW and current not in options:
                 options.append(current)
             options.append(ADD_NEW)
-            choice = st.selectbox(f"Biomarqueur {i + 1}", options,
-                                  index=options.index(current) if current in options else len(options) - 1,
-                                  key=_k("bio_sel", i))
+            if current not in options:    # premier affichage : i-ème nom enregistré, sinon « + Ajouter »
+                st.session_state[sel_key] = saved[i] if i < len(saved) else ADD_NEW
+            choice = st.selectbox(f"Biomarqueur {i + 1}", options, key=sel_key)
             if choice == ADD_NEW:
-                new = st.text_input(f"Nom du biomarqueur {i + 1}", key=_k("bio_new", i),
-                                    placeholder="ex. miR-21")
-                new = (new or "").strip()
-                if new:
-                    # Persisté dès la saisie : le nom alimente aussitôt tous les menus.
-                    add_biomarkers([new])
-                    st.session_state[_k("bio", i)] = new
-                    st.session_state.pop(_k("bio_sel", i), None)
-                    st.rerun()
+                # Persisté dès la saisie (Entrée) : le nom alimente aussitôt tous les menus.
+                st.text_input(f"Nom du biomarqueur {i + 1}", key=_k("bio_new", i), placeholder="ex. miR-21",
+                              on_change=_commit_new_biomarker, args=(i,))
                 names.append("")
             else:
-                st.session_state[_k("bio", i)] = choice
                 names.append(choice)
     return names
 
@@ -119,14 +123,11 @@ def _channel_inputs(biomarkers: list) -> list:
     for k in range(int(n_ch)):
         with st.container(border=True):
             st.markdown(f"**Canal {k + 1}**")
-            default = default_biomarker_for_channel(k, valid_bio, int(n_ch))
-            current = st.session_state.get(_k("ch_bio", k))
-            if current not in valid_bio:
-                current = default
+            sel_key = _k("ch_bio_sel", k)
+            if valid_bio and st.session_state.get(sel_key) not in valid_bio:
+                st.session_state[sel_key] = default_biomarker_for_channel(k, valid_bio, int(n_ch))
             if valid_bio:
-                bio = st.selectbox("Biomarqueur", valid_bio, index=valid_bio.index(current),
-                                   key=_k("ch_bio_sel", k))
-                st.session_state[_k("ch_bio", k)] = bio
+                bio = st.selectbox("Biomarqueur", valid_bio, key=sel_key)
             else:
                 st.info("Déclarez d'abord les biomarqueurs.")
                 bio = ""
@@ -139,11 +140,6 @@ def _channel_inputs(biomarkers: list) -> list:
 
 def _render_archive_loader() -> None:
     with st.expander("📦 Charger une archive (.zip) — affichage sans recalcul", expanded=False):
-        try:
-            from ui.archive_loader import render_archive_loader
-        except ImportError:        # phase 6
-            st.info("Le chargement d'archive n'est pas encore disponible.")
-            return
         render_archive_loader()
 
 
