@@ -34,3 +34,6 @@ launcher.log
 # Configuration locale / secrets (aucun jeton n'est requis : dépôt public)
 .env.*
 *.local.yaml
+
+# Données utilisateur persistantes (biomarqueurs…) — v3, à côté de launch.bat :
+user_data/

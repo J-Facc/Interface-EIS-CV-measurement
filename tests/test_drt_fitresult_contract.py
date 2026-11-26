@@ -20,8 +20,9 @@ from dataclasses import fields
 import numpy as np
 import pytest
 
-from core.calibration import compute_calibration_loglog
-from core.models import ConcentrationGroup, EISSession, EISSpectrum, FitResult
+from core.drt_peak import main_peak
+from core.results import DRTRecord
+from core.models import EISSpectrum, FitResult
 from drt import engine
 from tests.synthetic_data import N_POINTS_AUDIT, noisy_arrays
 
@@ -138,17 +139,15 @@ def test_engine_produces_the_new_fitresult_fields(fake_engine):
     assert fr.fit_diagnostics is None and fr.chi2_reduced_ci is None     # champs propres au fit Orazem
 
 
-def test_the_calibration_reads_the_drt_target_value(fake_engine):
-    """Consommateur principal du champ : la calibration lit ``target_value``."""
-    session = EISSession()
-    for conc, scale in ((1e-9, 1.0), (1e-8, 1.2), (1e-7, 1.5)):
-        sp = _spectrum()
-        fr = engine.fit_drt(sp, mode="optimize")
-        fr.target_value *= scale
-        session.groups.append(ConcentrationGroup(concentration=conc, spectrum=sp,
-                                                 fit_results={engine.MODEL_NAME: fr}))
-    cal = compute_calibration_loglog(session, engine.MODEL_NAME)
-    np.testing.assert_allclose(cal.rcts, [_R1, 1.2 * _R1, 1.5 * _R1], rtol=1e-3)
+def test_the_v3_record_reads_the_drt_fields(fake_engine):
+    """Consommateur principal (v3) : ``core.results.DRTRecord`` lit target_value (Rct du moteur,
+    colonne de contrôle), γ(τ) et ses bornes ; le pic principal est calculé sur ce γ(τ)."""
+    fr = engine.fit_drt(_spectrum(), mode="optimize")
+    rec = DRTRecord.from_fit_result(fr, main_peak(fr.drt_tau, fr.drt_gamma, [1e-5, 1e-1]))
+    assert rec.rct_engine == fr.target_value and rec.mode == fr.drt_mode
+    np.testing.assert_array_equal(rec.tau, fr.drt_tau)
+    np.testing.assert_array_equal(rec.gamma, fr.drt_gamma)
+    assert rec.converged == fr.converged and rec.rp == fr.params["Rp"]
 
 
 # ═════════════════════════════════════════════════════════════════════════════

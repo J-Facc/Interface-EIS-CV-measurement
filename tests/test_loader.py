@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from core.loader import load_spectrum, average_replicates
-from core.cv_loader import load_cv_file
+from core.cv_loader import load_cv_measurement
 from core.models import EISSpectrum
 from core.robust_loader import parse_eclab_file
 
@@ -224,19 +224,19 @@ def test_load_spectrum_rejects_cv_file_clearly(tmp_path):
         load_spectrum(text.encode(), "cv_misrouted.txt")
 
 
-def test_load_cv_file_fr_returns_amperes(tmp_path):
-    """load_cv_file lit un export CV FR : E en volts, I converti en ampères."""
+def test_load_cv_measurement_fr_returns_amperes(tmp_path):
+    """load_cv_measurement lit un export CV FR : E en volts, I converti en ampères."""
     text = (
         "Ewe/V\t<I>/mA\n"
         + "\n".join(
             f"{-0.5 + i * 0.05:.4f}\t{1.0}".replace(".", ",") for i in range(6)
         )
     )
-    scan = load_cv_file(text.encode(), "cv_fr.txt", concentration=1e-9, step="probe")
-    assert scan.E.size == 6
+    d = load_cv_measurement(text.encode(), "cv_fr.txt")
+    assert d["E"].size == 6
     # 1 mA → 1e-3 A
-    assert np.allclose(scan.I, 1e-3)
-    assert np.all(np.diff(scan.E) >= 0), "tri par potentiel croissant"
+    assert np.allclose(d["I"], 1e-3)
+    assert np.all(np.diff(d["E"]) > 0), "ordre de mesure conservé"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -58,7 +58,6 @@ from core.pipeline import (
     recompute_drt,
     run_pipeline,
 )
-from core.results_table import drt_hmc_summary, group_rows, replicate_rows
 from core.validator import ValidationResult
 from fits.orazem_fit import ORAZEM_MODEL_NAME
 from tests.synthetic_data import (
@@ -757,47 +756,6 @@ def test_recompute_drt_propagates_engine_failures_to_the_caller(with_fake_drt, f
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# F. Tables de résultats (UI + export) : intra-fit et inter-réplicats côte à côte
-# ═════════════════════════════════════════════════════════════════════════════
-
-def test_group_rows_put_intra_fit_and_inter_replicate_side_by_side(with_fake_drt):
-    rows = group_rows({1: with_fake_drt.session})
-    assert [r["group"] for r in rows] == ["Probe", "1.00e-09 M"]
-    for r, (_l, _m, _reps, an) in zip(rows, _groups(with_fake_drt.session)):
-        t = an.orazem.target
-        assert r["status"] == GROUP_OK and r["kk_conform"] is True
-        assert (r["fit_mean"], r["fit_std_between"], r["fit_std_within"], r["fit_sem"]) == (
-            t.mean, t.std_between, t.std_within, t.sem)
-        assert r["fit_mean_spectrum"] == an.orazem.mean_fit.target_value
-        assert r["drt_mode"] == "optimize" and r["drt_n_used"] == 3
-        assert math.isnan(r["drt_std_within"]) and r["drt_std_between"] > 0
-
-
-def test_replicate_rows_carry_hmc_diagnostics_only_in_sample_mode(with_fake_drt, fake_drt):
-    s = with_fake_drt.session
-    for r in s.probe_replicate_spectra:
-        recompute_drt(s, r, with_fake_drt.cfg, mode="sample")
-    rows = [r for r in replicate_rows({1: s}) if r["group"] == "Probe"]
-    assert [r["kind"] for r in rows] == ["réplicat"] * 3 + ["moyenne"]
-    for r in rows[:3]:
-        assert (r["drt_mode"], r["drt_rhat_max"], r["drt_divergences"]) == ("sample", 1.002, 0)
-        assert r["drt_ess_bulk_min"] == 900.0 and r["drt_Rct_std_intra"] == 5.0
-        assert r["fit_value"] > 0 and r["fit_std_intra"] > 0
-        assert r["fit_chi2_ci_low"] < r["fit_chi2_ci_high"]
-    mean_row = rows[3]
-    assert mean_row["drt_mode"] == "optimize" and mean_row["drt_rhat_max"] is None   # MAP : n/a
-    assert drt_hmc_summary(s.probe.fit_results[DRT_MODEL_NAME])["divergences"] is None
-
-
-def test_group_rows_of_a_stopped_group_carry_the_status_and_message():
-    session, _ = run_pipeline(_single_file_assignments(), make_config(**_NO_DRT))
-    rows = group_rows({1: session})
-    assert {r["status"] for r in rows} == {GROUP_ERROR_STRUCTURE_UNAVAILABLE}
-    assert all("structure d'erreur non caractérisable" in r["message"] for r in rows)
-    assert all("fit_mean" not in r for r in rows)
-
-
-# ═════════════════════════════════════════════════════════════════════════════
 # G. DRT réelle de bout en bout — sautée sans CmdStan, exécutée par le job CI « drt »
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -846,96 +804,14 @@ def test_real_recompute_drt_optimize_is_deterministic(drt_run):
 @pytest.mark.slow
 def test_real_recompute_drt_sample_on_a_replicate_exposes_hmc_diagnostics(drt_run):
     """HMC (2 à 5 min) sur UN réplicat : intervalles, R-hat/divergences lus et visibles
-    dans les tables, agrégat du groupe recalculé (et signalé : modes mélangés)."""
+    dans les enregistrements v3 (core.results), agrégat du groupe recalculé (et signalé : modes mélangés)."""
     s, cfg = drt_run.session, drt_run.cfg
     rep = s.probe_replicate_spectra[0]
     fr = recompute_drt(s, rep, cfg, mode="sample")
     assert fr.drt_mode == "sample" and fr.drt_gamma_lo is not None
-    h = drt_hmc_summary(fr)
-    assert h["rhat_max"] is not None and h["divergences"] is not None
+    from core.drt_peak import main_peak
+    from core.results import DRTRecord
+    rec = DRTRecord.from_fit_result(fr, main_peak(fr.drt_tau, fr.drt_gamma, [1e-5, 1e-1]))
+    assert rec.diagnostics["rhat_max"] is not None and rec.diagnostics["divergences"] is not None
     assert np.isfinite(fr.target_std) and fr.target_std > 0
-    row = next(r for r in replicate_rows({1: s}) if r["spectrum"] == rep.label)
-    assert row["drt_rhat_max"] == h["rhat_max"] and row["drt_divergences"] == h["divergences"]
     assert any("modes DRT différents" in w for w in s.probe_analysis.warnings)
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# H. Propagation jusqu'à l'UI (Streamlit AppTest, page EIS réelle)
-# ═════════════════════════════════════════════════════════════════════════════
-
-def _experiment_clean(n_rep):
-    import io
-    probe = [io.BytesIO(randles_file(_RCT_PROBE, seed=k)) for k in range(n_rep)]
-    c1 = [io.BytesIO(randles_file(_RCT_C1, seed=10 + k)) for k in range(n_rep)]
-    return {"mode": "eis_only", "n_electrodes": 1, "concentrations": [_C1],
-            "probe": {"eis": {"electrode_1": probe}}, "calibration": {"eis": {"electrode_1": [c1]}}}
-
-
-def _run_eis_page(monkeypatch, experiment):
-    import streamlit
-    from streamlit.testing.v1 import AppTest
-
-    # Une page lancée seule (sans st.navigation) ne peut pas résoudre st.page_link.
-    monkeypatch.setattr(streamlit, "page_link", lambda *a, **k: None)
-    at = AppTest.from_file(str(REPO / "pages" / "A_eis.py"), default_timeout=300)
-    at.session_state["preprocessing_done"] = True
-    at.session_state["experiment_clean"] = experiment
-    at.session_state["eis_drt_enabled"] = False                # DRT décochée : test rapide
-    at.run()
-    return at
-
-
-def test_ui_err1_fixed_the_eis_page_shows_the_stopped_groups_and_no_success(monkeypatch):
-    """CORRIGÉ (ERR-1, côté UI) : l'ancienne page affichait « ✅ Analyse terminée — 2
-    groupe(s) » sur des fits vides. Elle affiche maintenant le message de CHAQUE groupe
-    arrêté et un bilan en erreur, jamais le succès."""
-    at = _run_eis_page(monkeypatch, _experiment_clean(n_rep=1))
-    assert not at.exception, [e.value for e in at.exception]
-    errors = [e.value for e in at.error]
-    assert sum("structure d'erreur non caractérisable" in e for e in errors) >= 2
-    assert any("2 groupe(s) ARRÊTÉ(S)" in e for e in errors)
-    assert not any("Analyse terminée —" in s.value for s in at.success)
-
-
-def test_ui_a_complete_analysis_reports_success(monkeypatch):
-    at = _run_eis_page(monkeypatch, _experiment_clean(n_rep=3))
-    assert not at.exception, [e.value for e in at.exception]
-    assert any("Analyse terminée — 2 groupe(s) analysé(s)" in s.value for s in at.success)
-    sessions = at.session_state["eis_sessions"]
-    assert sessions[1].probe_analysis.ok and ORAZEM_MODEL_NAME in sessions[1].probe.fit_results
-
-
-def test_ui_a_software_bug_is_shown_as_such_not_as_a_data_problem(monkeypatch):
-    def boom(*args, **kwargs):
-        raise RuntimeError("bug simulé")
-
-    monkeypatch.setattr(pipeline, "fit_replicate_group", boom)
-    at = _run_eis_page(monkeypatch, _experiment_clean(n_rep=3))
-    assert any("Électrode 1 non analysée" in w.value and "erreur LOGICIELLE" in w.value
-               for w in at.warning)
-    assert any("bug simulé" in str(e.value) for e in at.exception)     # trace affichée (st.exception)
-    assert "eis_sessions" not in at.session_state                       # rien de faux n'est stocké
-
-
-def test_ui_a_failing_electrode_does_not_lose_the_others(monkeypatch):
-    """Isolation par électrode : un bug sur l'électrode 2 laisse l'électrode 1 intacte,
-    et l'avertissement porte le numéro de l'électrode fautive."""
-    experiment = _experiment_clean(n_rep=3)
-    experiment["n_electrodes"] = 2
-    experiment["probe"]["eis"]["electrode_2"] = experiment["probe"]["eis"]["electrode_1"]
-    experiment["calibration"]["eis"]["electrode_2"] = experiment["calibration"]["eis"]["electrode_1"]
-    real = pipeline.run_pipeline
-    calls = []
-
-    def flaky(*args, **kwargs):
-        calls.append(1)
-        if len(calls) == 2:                       # 2ᵉ électrode analysée
-            raise RuntimeError("bug simulé électrode 2")
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(pipeline, "run_pipeline", flaky)
-    at = _run_eis_page(monkeypatch, experiment)
-    assert any("Électrode 2 non analysée" in w.value for w in at.warning)
-    assert not any("Électrode 1 non analysée" in w.value for w in at.warning)
-    sessions = at.session_state["eis_sessions"]
-    assert set(sessions) == {1}

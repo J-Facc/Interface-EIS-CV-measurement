@@ -57,27 +57,35 @@ Sans l'extra DRT, l'application fonctionne : l'analyse par circuit reste complè
 l'onglet DRT l'indique. L'application elle-même n'installe jamais rien ; l'installation est
 l'affaire de `launch.bat` ou de `setup_drt_bayesien.py`.
 
-## Utilisation
+## Utilisation (v3)
 
-1. **Importer** l'expérience (probe, concentrations, réplicats par électrode).
-2. **Prétraiter** (exclusions de réplicats/points) et valider : le verdict
-   Kramers-Kronig de chaque groupe est calculé à ce stade.
-3. Page **EIS seule** : définir le circuit équivalent (expression, guess/bornes,
-   paramètre cible) et le mode DRT, puis lancer l'analyse.
-4. Explorer les quatre onglets : **Visualisation** (Nyquist et Bode mesurés) · **Measurement model
-   & fit Orazem** (verdict Kramers-Kronig, puis fit et diagnostics) · **DRT** (γ(τ), diagnostics
-   HMC, Rct) · **Calibration** (Orazem et DRT, points exclus et leur raison), puis la page Export.
+Cinq pages, dans l'ordre :
+
+1. **Configuration** — biomarqueurs (noms mémorisés dans `user_data/biomarkers.json`, à côté de
+   `launch.bat` : ils survivent aux mises à jour), canaux (1 canal = 2 électrodes), biomarqueur et
+   concentrations de chaque canal. Le mode est **déduit** : 1 concentration → « une concentration
+   par canal », plusieurs → « plusieurs concentrations sur un canal ». On peut aussi y **charger une
+   archive** `.zip` (v3 : tout est restauré sans recalcul ; v2 : configuration et fichiers bruts).
+2. **Import & nettoyage** — dépôt de tous les fichiers (EIS et CV, `.txt/.csv/.mpt/.mpr`),
+   **assignation manuelle** dans un tableau (type, canal, électrode, étape `bare/probe/conc_i`,
+   réplicat), contrôles de cohérence, exclusion de points au lasso, puis nettoyage. Les réplicats
+   sont conservés individuellement.
+3. **Visualisation** — CV, Nyquist et Bode des données nettoyées, sans aucun calcul.
+4. **Analyse** — « Lancer l'analyse » : fits Randles (Orazem) et DRT de tous les spectres **en
+   arrière-plan** (processus parallèles), puis onglets **DRT · Rct (fit Randles) · Étalonnage EIS ·
+   CV · Étalonnage CV**.
+5. **Export** — archive `.zip` rechargeable, rapport **PDF** (A4) et rapport **HTML** interactif.
 
 ## Format des fichiers d'entrée
 
-- CSV ou TXT exporté depuis EC-Lab (ou `.mpr` BioLogic, converti à l'import)
-- Colonnes attendues : `frequency_hz`, `zreal_ohm`, `zimag_ohm`
-- Séparateur auto-détecté : virgule, tabulation, point-virgule ou espace
-- Correction automatique du signe de Zim (convention EC-Lab)
+- EIS : export EC-Lab texte (`freq/Hz`, `Re(Z)/Ohm`, `-Im(Z)/Ohm`) ou `.mpr` ; séparateur et
+  décimale auto-détectés ; signe de Zim corrigé ; fréquences parasites 50/100 Hz retirées ; tri HF → BF.
+- CV : `Ewe/V`, `<I>/mA` (ou `I/…`, converti en A), `cycle number` ; le **dernier cycle** est gardé
+  par défaut (`cv.cycle`), dans l'ordre de mesure.
 
-## Analyse EIS (`core/pipeline.py`)
+## Analyse EIS (`core/analysis.py` → `core/pipeline.py`)
 
-Pour CHAQUE groupe de réplicats (probe, chaque concentration), dans cet ordre :
+Pour CHAQUE groupe de réplicats (canal, électrode, étape), dans cet ordre :
 
 | Étape | Module | Ce qui est produit |
 |-------|--------|--------------------|
@@ -85,17 +93,27 @@ Pour CHAQUE groupe de réplicats (probe, chaque concentration), dans cet ordre :
 | 2. Fit Orazem du circuit utilisateur | `fits/orazem_fit.py`, `circuit/` | CNLS pondéré 1/σ² de **chaque réplicat** et de la **moyenne** (σ/√n) ; paramètre cible agrégé : incertitude intra-fit vs variabilité inter-réplicats ([docs/CIRCUIT_UTILISATEUR.md](docs/CIRCUIT_UTILISATEUR.md)) |
 | 3. DRT bayésienne | `drt/engine.py` (clone identifié de [bayes-drt2](https://github.com/jdhuang-csm/bayes-drt2), `drt/PROVENANCE.md`) | γ(τ) de **chaque réplicat** et de la **moyenne** ; Rct = arc de transfert (pic pénultième, convention Bissessur) ; mode `optimize` (MAP, ~1 s) ou `sample` (HMC, R̂/divergences/ESS + intervalles, 2 à 5 min par spectre) |
 
-Un groupe dont la structure d'erreur n'est pas caractérisable (moins de 3
-réplicats…) est **arrêté** avec un message explicite : aucun fit, aucune pondération
-arbitraire.
+Un groupe dont la structure d'erreur n'est pas caractérisable (moins de 3 réplicats…) est
+quand même ajusté, en **repli** signalé : pondération proportionnelle σ = 1 %·|Z|, verdict KK
+« indéterminé ». Un verdict KK « non conforme » est **signalé**, jamais excluant.
+
+**Rct par DRT** = aire du pic **principal** de γ(τ) (le plus haut dans la fenêtre
+`fit.drt.tau_window`, défaut [1e-5 ; 1e-1] s), intégrée entre les minima qui l'encadrent
+(`core/drt_peak.py`) ; le Rct « pic pénultième » du moteur reste affiché en contrôle.
+
+**Étalonnages** (`core/calibration.py`) : chaque réplicat est normalisé par la moyenne « probe »
+de **son** électrode — EIS : log10(Rct/Rct_probe) (Rct par DRT ou par le fit), CV :
+ΔI/I = (I_probe − I)/I_probe au pic anodique (`cv.peak_window_V`) — puis moyenne ± écart-type
+(ddof = 1) par concentration, régression sur log10([c]) ; vues « par électrode » et « regroupé
+par biomarqueur ». Les anciennes courbes (spectre moyen, |Rct_probe − Rct_c|/Rct_probe et
+log-log) restent disponibles.
 
 Le calcul DRT compile des modèles Stan via CmdStan : la toolchain C++ (RTools 4.0, mingw-w64)
 est installée par `launch.bat` au premier lancement (`install_cmdstan(compiler=True)`, sans
 exiger d'installer RTools soi-même) et **vérifiée** — `mingw32-make` et `g++` répondent — avant
 toute compilation, puis les modèles sont mis en cache — voir [docs/DRT_BAYESIENNE.md](docs/DRT_BAYESIENNE.md) pour lire les intervalles de
-crédibilité et les diagnostics. La figure DRT trace `ln(γ/γ₀)` en fonction
-de `ln(τ/τ₀)` (logarithme népérien, γ₀ = 1 Ω, τ₀ = 1 s), avec un badge indiquant le
-mode (`optimize`/`sample`). Référence DRT : Bissessur, Man, Gamby, *Use of an
+crédibilité et les diagnostics. La figure DRT trace γ(τ) (Ω) en fonction de τ (s, échelle log), le pic principal (★) et la
+zone intégrée, avec le mode (`optimize`/`sample`) dans la légende. Référence DRT : Bissessur, Man, Gamby, *Use of an
 approach with a distribution of relaxation times for impedance analysis of a
 channel electrode in microfluidics*, Phys. Rev. E **113**, 025502 (2026), DOI:
 10.1103/fn2s-z364.
@@ -110,7 +128,8 @@ python -m pytest tests/ -v                # ajouter -m "not slow" pour exclure l
 
 | Document | Contenu |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | arborescence, flux de données, règles de modularité, lanceur |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | architecture v3 : arborescence, modèle de données, flux, archive, lanceur |
+| [docs/REFERENCE_MAINTENANCE.html](docs/REFERENCE_MAINTENANCE.html) | aide-mémoire de maintenance : où modifier quoi, réglages, tests, pannes fréquentes |
 | [docs/MEASUREMENT_MODEL.md](docs/MEASUREMENT_MODEL.md) | measurement model, structure d'erreur d'Orazem, Kramers-Kronig, fit |
 | [docs/CIRCUIT_UTILISATEUR.md](docs/CIRCUIT_UTILISATEUR.md) | écrire son propre circuit équivalent |
 | [docs/DRT_BAYESIENNE.md](docs/DRT_BAYESIENNE.md) | DRT, HMC/NUTS, lecture des intervalles de crédibilité |
