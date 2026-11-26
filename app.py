@@ -11,7 +11,7 @@ import streamlit as st
 from core.app_state import init_shared_state
 from core.version import APP_VERSION
 from ui import nav
-from ui import page_config, page_import, page_viz
+from ui import page_analysis, page_config, page_import, page_viz
 from ui import state as S
 
 st.set_page_config(
@@ -92,6 +92,7 @@ nav.PAGES.update({
                       default=True),
     "import": st.Page(page_import.render, title="Import & nettoyage", icon="📂", url_path="import-nettoyage"),
     "viz": st.Page(page_viz.render, title="Visualisation", icon="👁️", url_path="visualisation"),
+    "analysis": st.Page(page_analysis.render, title="Analyse", icon="🧮", url_path="analyse"),
     "old_import": st.Page("pages/0_import.py", title="Import (v2)", icon="📂"),
     "pretraitement": st.Page("pages/1_pretraitement.py", title="Prétraitement (v2)", icon="🔬"),
     "eis": st.Page("pages/A_eis.py", title="EIS seule", icon="📡"),

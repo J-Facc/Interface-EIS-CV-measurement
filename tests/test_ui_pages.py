@@ -156,3 +156,27 @@ def test_display_groups_are_ordered_and_filtered():
     assert [len(x.replicates) for x in g] == [1, 1] and g[0].mean is None
     c = cv_display_groups(ms, exp, 1, 1)
     assert [x["step"] for x in c] == ["probe", "conc_1"] and len(c[0]["curves"]) == 2
+
+
+def test_analysis_page_runs_in_background_then_shows_tabs(monkeypatch):
+    """Lancer l'analyse → progression → onglets DRT / Rct (exécuteur synchrone, sans DRT)."""
+    monkeypatch.setenv("EIS_EXECUTOR", "sync")
+    exp, ms = _measurements()
+    at = _app("import streamlit as st\nfrom ui import state as S, page_analysis\nS.init_state(st.session_state)\n"
+              "page_analysis.render()\n")
+    at.session_state["experiment"] = exp
+    at.session_state["measurements"] = ms
+    at.run()
+    assert not at.exception
+    at.checkbox(key="an_drt_on").uncheck().run()
+    launch = next(b for b in at.button if "Lancer" in b.label)
+    launch.click().run()
+    assert not at.exception
+    for _ in range(5):                       # le fragment de progression récolte puis relance l'app
+        if at.session_state["results"] is not None:
+            break
+        at.run()
+    res = at.session_state["results"]
+    assert res is not None and len(res.eis.groups) == 4
+    assert not at.exception
+    assert [t.label for t in at.tabs][:5] == ["DRT", "Rct (fit Randles)", "Étalonnage EIS", "CV", "Étalonnage CV"]

@@ -998,3 +998,56 @@ def nyquist_points_figure(f, Zre, Zim, excluded=None, title: str = "", theme_mod
                       height=420, hovermode="closest")
     apply_theme_to_figure(fig, theme_mode)
     return fig
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# v3 — DRT : γ(τ) vs τ (log), pic principal et zone intégrée (Rct_DRT)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def drt_peak_figure(items: list, title: str = "DRT — γ(τ)", theme_mode: str = "light") -> go.Figure:
+    """γ(τ) (Ω, échelle linéaire) vs τ (s, échelle log) ; pic principal marqué (★) et zone
+    intégrée (aire = Rct_DRT) ombrée ; bande de crédibilité 95 % en mode 'sample'.
+
+    Args:
+        items: ``[(label, DRTRecord)]`` (``core.results``) — rien n'est recalculé ici.
+    """
+    theme = get_theme(theme_mode)
+    fig = go.Figure()
+    for k, (label, d) in enumerate(items):
+        if d is None or d.tau is None or d.gamma is None:
+            continue
+        color = theme["colors"][k % len(theme["colors"])]
+        tau, g = np.asarray(d.tau, float), np.asarray(d.gamma, float)
+        order = np.argsort(tau)
+        tau, g = tau[order], g[order]
+        if d.gamma_lo is not None and d.gamma_hi is not None:
+            lo, hi = np.asarray(d.gamma_lo, float)[order], np.asarray(d.gamma_hi, float)[order]
+            fig.add_trace(go.Scatter(x=np.concatenate([tau, tau[::-1]]), y=np.concatenate([hi, lo[::-1]]),
+                                     fill="toself", line=dict(width=0), fillcolor=_hex_to_rgba(color, 0.15),
+                                     name=f"{label} — IC 95 %", hoverinfo="skip", legendgroup=label))
+        pk = d.peak
+        if pk is not None and pk.ok:
+            m = (tau >= pk.tau_lo) & (tau <= pk.tau_hi)
+            fig.add_trace(go.Scatter(x=tau[m], y=g[m], fill="tozeroy", mode="none",
+                                     fillcolor=_hex_to_rgba(color, 0.30), legendgroup=label, showlegend=False,
+                                     hoverinfo="skip"))
+            fig.add_trace(go.Scatter(x=[pk.tau_peak], y=[pk.gamma_peak], mode="markers", legendgroup=label,
+                                     marker=dict(symbol="star", size=13, color=color,
+                                                 line=dict(color=theme["text"], width=1)),
+                                     name=f"{label} — pic : Rct_DRT = {pk.rct:.4g} Ω",
+                                     hovertemplate=(f"<b>{label}</b><br>τ = %{{x:.3e}} s<br>"
+                                                    f"Rct_DRT = {pk.rct:.4g} Ω<extra></extra>")))
+        fig.add_trace(go.Scatter(x=tau, y=g, mode="lines", name=f"{label} ({d.mode})", legendgroup=label,
+                                 line=dict(color=color, width=2),
+                                 hovertemplate=f"<b>{label}</b><br>τ = %{{x:.3e}} s<br>γ = %{{y:.4g}} Ω<extra></extra>"))
+    for k, (label, d) in enumerate(items[:1]):
+        if d is not None and d.peak is not None and d.peak.tau_window:
+            lo, hi = d.peak.tau_window
+            fig.add_vrect(x0=lo, x1=hi, fillcolor="gray", opacity=0.06, line_width=0,
+                          annotation_text="fenêtre de recherche du pic", annotation_position="top left")
+    fig.update_layout(title=title, xaxis=dict(title="τ (s)", type="log"), yaxis=dict(title="γ(τ) (Ω)"),
+                      hovermode="closest", height=460, legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0),
+                      margin=dict(r=160))
+    apply_theme_to_figure(fig, theme_mode)
+    fig.update_xaxes(type="log")
+    return fig
