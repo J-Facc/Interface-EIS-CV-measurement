@@ -106,12 +106,29 @@ def test_global_electrode_numbers_are_renumbered_within_the_channel(exp):
     assert any(i.level == LEVEL_ERROR and "3 électrodes" in i.message for i in res.issues)
 
 
-def test_unexpected_file_is_added_excluded_and_reported(exp):
-    files = _tree(electrodes=(1,), concs=[], reps=(1,)) + [("canal1/notes/mesure.txt", randles_file(1000.0))]
+def test_useless_files_are_ignored_not_imported(exp, monkeypatch):
+    """Fichiers annexes du dossier de mesure : ni lus, ni convertis, ni importés — seulement comptés."""
+    converted = []
+    monkeypatch.setattr(fi, "mpr_to_csv_bytes", lambda raw: converted.append(raw) or randles_file(1500.0))
+    junk = [("canal1/notes/mesure.txt", randles_file(1000.0)),
+            ("canal1/probe/eis/electrode_1/probe_eis_e1_r1_02_PEIS_C01.mpr", b"binaire"),
+            ("canal1/probe/eis/electrode_1/probe_eis_e1_r1.mps", b"reglages"),
+            ("canal1/calibration/eis/electrode_1/eis_e1_1.00e-12M_r1_LOG.txt", b"journal"),
+            ("canal1/Thumbs.db", b"\x00")]
+    good = _tree(electrodes=(1,), concs=[1e-12], reps=(1,))
+    res = import_channel_folder(good + junk, exp, 1)
+    assert len(res.rows) == len(good) and len(res.raw_files) == len(good)
+    assert {p for p, _ in res.ignored} == {p for p, _ in junk}
+    assert converted == [] and res.issues == []
+
+
+def test_same_measurement_in_two_formats_is_imported_once(exp, monkeypatch):
+    monkeypatch.setattr(fi, "mpr_to_csv_bytes", lambda raw: (_ for _ in ()).throw(AssertionError("converti")))
+    files = [("canal1/probe/eis/electrode_1/probe_eis_e1_r1.mpr", b"binaire"),
+             ("canal1/probe/eis/electrode_1/probe_eis_e1_r1.txt", randles_file(1500.0))]
     res = import_channel_folder(files, exp, 1)
-    odd = next(r for r in res.rows if r.filename.endswith("mesure.txt"))
-    assert odd.exclude and odd.step is None
-    assert any("nom inattendu" in i.message for i in res.issues)
+    assert [r.filename for r in res.rows] == ["canal1/probe/eis/electrode_1/probe_eis_e1_r1.txt"]
+    assert res.ignored[0][0].endswith(".mpr") and "même mesure" in res.ignored[0][1]
 
 
 def test_mpr_files_are_converted(exp, monkeypatch):

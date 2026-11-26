@@ -136,8 +136,10 @@ invalide l'aval ; un rechargement d'archive pose tout d'un coup (`results_source
   `"directory"`) : arborescence `probe|calibration|bare/{eis,cv}/electrode_N/` ; noms
   `probe_<eis|cv>_eN_rK`, `<eis|cv>_eN_<c>M_rK`, `bare_<eis|cv>_eN_rK` (`.txt/.csv/.mpt/.mpr`, `.mpr`
   converti). La concentration du nom est rattachée à `conc_i` par sa valeur (tolérance 0,5 %) ;
-  les concentrations lues peuvent être adoptées pour le canal (`reassign_steps`). Signalés : nom
-  inattendu (ligne exclue, à compléter), incohérence dossier/nom, plus de 2 électrodes,
+  les concentrations lues peuvent être adoptées pour le canal (`reassign_steps`). Tout fichier au
+  nom hors conventions (réglages `.mps`, journaux, notes…) est IGNORÉ sans être lu ni converti
+  (seulement listé) ; une mesure présente en `.mpr` et en `.txt` n'est importée qu'une fois (texte
+  de préférence). Signalés : incohérence dossier/nom, plus de 2 électrodes,
   concentration absente de la configuration ; électrodes 3/4 renumérotées 1/2 (avertissement).
 * **Assignation** (`core/assignment.py`) : une ligne par fichier
   `fichier | type | canal | électrode | étape | réplicat | exclure`, pré-remplie d'après le contenu

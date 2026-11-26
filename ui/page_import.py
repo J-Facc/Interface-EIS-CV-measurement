@@ -73,6 +73,7 @@ def _ingest(uploaded) -> list:
 
 FOLDER_ISSUES = "folder_issues"        # {canal: [Issue]} du dernier import de dossier
 FOLDER_CONCS = "folder_concentrations"  # {canal: [mol/L]} lues dans les noms
+FOLDER_IGNORED = "folder_ignored"       # {canal: [(chemin, raison)]} fichiers non importés
 
 
 def _ingest_folder(channel_id: int, uploaded) -> None:
@@ -92,6 +93,7 @@ def _ingest_folder(channel_id: int, uploaded) -> None:
     st.session_state[S.ASSIGNMENT] = rows
     st.session_state.setdefault(FOLDER_ISSUES, {})[channel_id] = res.issues
     st.session_state.setdefault(FOLDER_CONCS, {})[channel_id] = res.concentrations_found
+    st.session_state.setdefault(FOLDER_IGNORED, {})[channel_id] = res.ignored
     st.session_state[key] = digest
     S.invalidate_measurements(st.session_state)
 
@@ -113,17 +115,27 @@ def _channel_folders(exp) -> None:
     st.caption("Un dossier par canal, tel qu'il sort du poste de mesure : "
                "`probe/{eis,cv}/electrode_N/probe_eis_eN_rK.txt`, "
                "`calibration/{eis,cv}/electrode_N/eis_eN_1.00e-08M_rK.txt` (et `bare/…` facultatif). "
-               "Les fichiers .txt, .csv, .mpt et .mpr (converti automatiquement) sont lus ; seuls les noms font foi.")
+               "Les fichiers .txt, .csv, .mpt et .mpr (converti automatiquement) sont lus ; seuls les noms font foi. "
+               "Tout autre fichier du dossier est ignoré.")
     for ch in exp.channels:
         with st.container(border=True):
             st.markdown(f"**Canal {ch.id} — {ch.biomarker}** · concentrations configurées : "
                         + ", ".join(format_concentration(c) for c in ch.concentrations))
             gen = st.session_state.get(f"_imp_dir_gen_{ch.id}", 0)      # nouvelle clé = widget vidé
-            up = st.file_uploader(f"Dossier du canal {ch.id}", type=list(EXTENSIONS),
-                                  accept_multiple_files="directory", key=f"imp_dir_{ch.id}_{gen}")
+            # Pas de filtre ``type`` : Streamlit marquerait en erreur chaque fichier annexe du dossier
+            # (.mps, .mpl…). Tout est reçu, le tri se fait sur les noms (core/folder_import.py).
+            up = st.file_uploader(f"Dossier du canal {ch.id}", accept_multiple_files="directory",
+                                  key=f"imp_dir_{ch.id}_{gen}")
             _ingest_folder(ch.id, up)
             mine = [d for d in st.session_state[S.ASSIGNMENT] if str(d["file_id"]).startswith(f"C{ch.id}/")]
+            ignored = st.session_state.get(FOLDER_IGNORED, {}).get(ch.id) or []
+            if ignored:
+                with st.expander(f"{len(ignored)} fichier(s) ignoré(s) (noms hors conventions, doublons)"):
+                    st.dataframe(pd.DataFrame(ignored, columns=["Fichier", "Raison"]), hide_index=True,
+                                 width="stretch")
             if not mine:
+                if ignored:
+                    st.warning("Aucun fichier de mesure reconnu dans ce dossier.")
                 continue
             kept = [d for d in mine if not d["exclude"]]
             st.caption(f"{len(mine)} fichier(s) : {sum(d['kind'] == 'EIS' for d in kept)} EIS, "
@@ -146,6 +158,7 @@ def _channel_folders(exp) -> None:
                 st.session_state[S.ASSIGNMENT] = [d for d in st.session_state[S.ASSIGNMENT]
                                                   if not str(d["file_id"]).startswith(prefix)]
                 st.session_state.get(FOLDER_ISSUES, {}).pop(ch.id, None)
+                st.session_state.get(FOLDER_IGNORED, {}).pop(ch.id, None)
                 st.session_state.pop(f"_imp_dir_digest_{ch.id}", None)
                 st.session_state[f"_imp_dir_gen_{ch.id}"] = gen + 1
                 S.invalidate_measurements(st.session_state)
@@ -248,6 +261,7 @@ def render() -> None:
         for ch in exp.channels:
             st.session_state[f"_imp_dir_gen_{ch.id}"] = st.session_state.get(f"_imp_dir_gen_{ch.id}", 0) + 1
         st.session_state[FOLDER_ISSUES] = {}
+        st.session_state[FOLDER_IGNORED] = {}
         st.session_state[S.RAW_FILES] = {}
         st.session_state[S.ASSIGNMENT] = []
         st.session_state[S.EXCLUDED_POINTS] = {}
