@@ -25,7 +25,6 @@ from core.drt_peak import MainPeak
 from core.experiment import Channel, Experiment, Measurement
 from core.results import (
     AnalysisResults,
-    CVFeature,
     DRTRecord,
     EISResults,
     FitRecord,

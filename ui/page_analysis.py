@@ -21,7 +21,7 @@ from core.report_tables import drt_rows, failure_rows, group_rows, rct_rows
 from core.results import WEIGHTING_LABELS
 from plotting.eis_plots import drt_peak_figure, fit_nyquist_figure
 from ui import nav
-from ui import state as S
+from core import app_state as S
 from ui.circuit_editor import circuit_editor
 
 RECOMPUTE = "drt_recompute_run"
@@ -39,6 +39,9 @@ def _settings(config: dict) -> dict:
     with st.expander("⚙️ Circuit et réglages de l'analyse", expanded=False):
         circuit = circuit_editor(config)
         st.markdown("**DRT** (chaque réplicat et le spectre moyen de chaque groupe)")
+        if st.session_state.get("drt_ready") is False:
+            st.warning(f"Moteur DRT indisponible : {st.session_state.get('drt_ready_msg')} — relancez launch.bat "
+                       "(ou python setup_drt_bayesien.py --ensure). L'analyse se fera sans DRT.")
         dcfg = config["fit"]["drt"]
         c1, c2, c3 = st.columns(3)
         run_drt = c1.checkbox("Calculer la DRT", value=bool(dcfg.get("enabled", True)), key="an_drt_on")
@@ -111,6 +114,8 @@ def _group_label(g) -> str:
 
 def _render_drt_tab(results, config: dict, theme: str) -> None:
     eis = results.eis
+    if st.session_state.get("drt_version_warning"):
+        st.warning(f"⚠️ {st.session_state['drt_version_warning']}")
     if eis.drt_messages:
         for m in eis.drt_messages:
             st.warning(m)

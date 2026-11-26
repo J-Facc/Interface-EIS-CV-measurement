@@ -13,7 +13,7 @@ from core.experiment import KIND_CV, KIND_EIS, step_sort_key
 from plotting.cv_plots import cv_figure
 from plotting.eis_plots import bode_figure, nyquist_replicates_figure
 from ui import nav
-from ui import state as S
+from core import app_state as S
 
 
 def _selectors(opts: dict, exp, prefix: str):

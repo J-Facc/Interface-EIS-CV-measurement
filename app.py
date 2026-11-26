@@ -2,20 +2,18 @@
 
 Configure la navigation multipage (Configuration → Import & nettoyage → Visualisation →
 Analyse → Export), le toggle jour/nuit des figures et les clés de session_state partagées
-(``ui/state.py``). ``st.set_page_config`` est appelé une seule fois ici ; les pages ne
+(``core/app_state.py``). ``st.set_page_config`` est appelé une seule fois ici ; les pages ne
 doivent pas le rappeler.
 """
 
 import streamlit as st
 
-from core.app_state import init_shared_state
+from core import app_state as S
 from core.version import APP_VERSION
-from ui import nav
-from ui import page_analysis, page_config, page_export, page_import, page_viz
-from ui import state as S
+from ui import nav, page_analysis, page_config, page_export, page_import, page_viz
 
 st.set_page_config(
-    page_title="EIS CV Analyzer",
+    page_title="EIS Analyzer",
     page_icon="⚗️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -25,8 +23,7 @@ st.set_page_config(
 # Initialisation des clés de session partagées
 # ---------------------------------------------------------------------------
 
-init_shared_state(st.session_state)   # crée les clés absentes, n'écrase rien
-S.init_state(st.session_state)
+S.init_state(st.session_state)   # crée les clés absentes, n'écrase rien
 
 # ---------------------------------------------------------------------------
 # État de la DRT (CmdStan + modèles Stan) — constaté, JAMAIS installé ici
@@ -61,7 +58,7 @@ st.session_state["drt_ready"], st.session_state["drt_ready_msg"] = _drt_status()
 def _drt_version_warning(_ready: bool):
     """Avertissement si le CmdStan actif n'est pas la version sur laquelle les réglages de la
     DRT ont été validés (``None`` sinon). Lu APRÈS ``_drt_status()`` : c'est lui qui enregistre
-    le chemin de CmdStan dans ce process. L'onglet DRT l'affiche (``ui/tabs.py``)."""
+    le chemin de CmdStan dans ce process. L'onglet DRT l'affiche (``ui/page_analysis.py``)."""
     try:
         from drt import engine as drt_engine
 
@@ -90,15 +87,10 @@ nav.PAGES.clear()
 nav.PAGES.update({
     "config": st.Page(page_config.render, title="Configuration", icon="⚙️", url_path="configuration",
                       default=True),
-    "import": st.Page(page_import.render, title="Import & nettoyage", icon="📂", url_path="import-nettoyage"),
+    "import": st.Page(page_import.render, title="Import & nettoyage", icon="📂", url_path="import"),
     "viz": st.Page(page_viz.render, title="Visualisation", icon="👁️", url_path="visualisation"),
     "analysis": st.Page(page_analysis.render, title="Analyse", icon="🧮", url_path="analyse"),
-    "export": st.Page(page_export.render, title="Export", icon="💾", url_path="export-v3"),
-    "old_import": st.Page("pages/0_import.py", title="Import (v2)", icon="📂"),
-    "pretraitement": st.Page("pages/1_pretraitement.py", title="Prétraitement (v2)", icon="🔬"),
-    "eis": st.Page("pages/A_eis.py", title="EIS seule", icon="📡"),
-    "cv": st.Page("pages/B_cv.py", title="CV seule", icon="📈"),
-    "old_export": st.Page("pages/E_export.py", title="Export (v2)", icon="💾"),
+    "export": st.Page(page_export.render, title="Export", icon="💾", url_path="export"),
 })
 pg = st.navigation(list(nav.PAGES.values()))
 pg.run()

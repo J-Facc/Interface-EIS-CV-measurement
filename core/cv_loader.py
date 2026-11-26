@@ -1,12 +1,11 @@
-"""CV file loader: auto-detect separator, find E/I columns, return CVScan."""
+"""Chargeur CV (v3) : séparateur et colonnes auto-détectés, courant en A, cycle retenu,
+ordre chronologique (``load_cv_measurement``) ; détection des branches (``split_branches``)."""
 
 import io
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-from core.cv_models import CVScan
 from core.loader import parse_robust
 
 _E_ALIASES = {"ewe", "e", "potential", "voltage"}
@@ -28,9 +27,9 @@ _I_ALIASES = {"i", "current", "<i>"}
 #      _BRANCH_MIN_POINTS points. Un rebroussement isolé à 1-2 points est du
 #      bruit ou un fichier désordonné, pas une branche.
 #
-# Cycle détecté  -> points gardés dans leur ordre de mesure naturel, SANS tri.
-# Pas de cycle   -> balayage simple : tri par E croissant (comportement
-#                   historique, inoffensif puisque I y est déjà fonction de E).
+# En v3, les points sont TOUJOURS gardés dans leur ordre de mesure (chronologique) ;
+# ``split_branches`` sert à repérer plusieurs cycles quand le fichier n'a pas de colonne
+# « cycle number ».
 #
 # Le point de rebroussement appartient à la branche qu'il termine. Un fichier à
 # plusieurs cycles donne plus de deux branches (aller, retour, aller, ...).
@@ -91,44 +90,6 @@ def split_branches(E: np.ndarray) -> list[slice]:
     return branches
 
 
-def _order_points(E: np.ndarray, I: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Cycle complet : ordre de mesure conservé. Balayage simple : tri par E."""
-    if len(split_branches(E)) > 1:
-        return E, I
-    order = np.argsort(E, kind="stable")
-    return E[order], I[order]
-
-
-def interp_on_reference(E_target: np.ndarray, E_ref: np.ndarray, I_ref: np.ndarray) -> np.ndarray:
-    """Interpole la courbe de référence (E_ref, I_ref) aux potentiels E_target.
-
-    Balayage simple des deux côtés : `np.interp`. Boucle : chaque branche de la
-    cible est interpolée sur la branche de même rang de la référence (l'aller
-    sur l'aller, le retour sur le retour) — un `np.interp` global sur un E non
-    monotone n'a aucun sens (CV-1).
-
-    Raises:
-        ValueError: si cible et référence n'ont pas le même nombre de branches.
-    """
-    E_target = np.asarray(E_target, dtype=float)
-    E_ref = np.asarray(E_ref, dtype=float)
-    I_ref = np.asarray(I_ref, dtype=float)
-    tb, rb = split_branches(E_target), split_branches(E_ref)
-    if len(tb) == 1 and len(rb) == 1:
-        order = np.argsort(E_ref, kind="stable")
-        return np.interp(E_target, E_ref[order], I_ref[order])
-    if len(tb) != len(rb):
-        raise ValueError(
-            f"Nombre de branches CV différent ({len(tb)} contre {len(rb)}) : "
-            f"les courbes ne sont pas comparables point à point."
-        )
-    out = np.empty_like(E_target)
-    for t, r in zip(tb, rb):
-        order = np.argsort(E_ref[r], kind="stable")
-        out[t] = np.interp(E_target[t], E_ref[r][order], I_ref[r][order])
-    return out
-
-
 def _detect_separator(sample: str) -> str:
     for sep in (",", ";", "\t"):
         if sep in sample:
@@ -146,129 +107,6 @@ def _find_column(columns: list[str], aliases: set[str]) -> str | None:
         if col.strip().lower().split("/")[0].strip() in aliases:
             return col
     return None
-
-
-def load_cv_file(
-    content: bytes,
-    label: str,
-    concentration: float,
-    step: str,
-    warnings_out: Optional[list] = None,
-) -> CVScan:
-    """Parse a CV file and return a CVScan.
-
-    Reads real EC-Lab ASCII exports via core.robust_loader.parse_eclab_file
-    (FR decimal comma, tab/;/space delimiters, Windows encodings, name-based
-    column mapping, mA→A unit conversion) and falls back to a generic pandas
-    reader for other layouts.
-
-    Args:
-        content: Raw file bytes.
-        label: Display label (typically the filename).
-        concentration: Analyte concentration in mol/L.
-        step: Measurement step ('probe', 'hybridization', 'bare').
-        warnings_out: Optional list; parser warnings are appended to it when the
-            robust parser is used, so callers can relay them to the UI.
-
-    Returns:
-        A CVScan with E in volts and I in amperes. A complete cycle (forward
-        + return branch) keeps its measurement order; a simple sweep is sorted
-        by ascending E (see « Détection de branches » above).
-
-    Raises:
-        ValueError: If E/I columns cannot be found, or if an EIS file was
-            supplied to the CV loader.
-    """
-    # ── Parseur EC-Lab robuste en priorité ──────────────────────────────────
-    pf = parse_robust(content)
-    if pf is not None and pf.kind == "CV" and pf.n_rows > 0:
-        if warnings_out is not None:
-            warnings_out.extend(pf.warnings)
-        E = np.asarray(pf.columns["Ewe"], dtype=float)
-        I = np.asarray(pf.columns["I"], dtype=float)  # déjà converti en ampères
-        mask = np.isfinite(E) & np.isfinite(I)
-        E, I = E[mask], I[mask]
-        E, I = _order_points(E, I)
-        return CVScan(
-            label=label,
-            E=E,
-            I=I,
-            concentration=concentration,
-            step=step,
-            source_files=[label],
-        )
-    if pf is not None and pf.kind == "EIS":
-        raise ValueError(
-            f"Fichier {label} : spectre EIS détecté (colonnes {sorted(pf.columns)}), "
-            f"pas une courbe CV. Utilisez le canal EIS."
-        )
-
-    # ── Repli : lecture pandas générique ────────────────────────────────────
-    text = content.decode("utf-8", errors="replace")
-    sep = _detect_separator(text[:2000])
-    df = pd.read_csv(io.StringIO(text), sep=sep, engine="python")
-    df.columns = [str(c) for c in df.columns]
-
-    e_col = _find_column(list(df.columns), _E_ALIASES)
-    i_col = _find_column(list(df.columns), _I_ALIASES)
-
-    if e_col is None:
-        raise ValueError(f"Colonne potentiel introuvable dans {label}. Colonnes : {list(df.columns)}")
-    if i_col is None:
-        raise ValueError(f"Colonne courant introuvable dans {label}. Colonnes : {list(df.columns)}")
-
-    E = pd.to_numeric(df[e_col], errors="coerce").to_numpy(dtype=float)
-    I = pd.to_numeric(df[i_col], errors="coerce").to_numpy(dtype=float)
-
-    # Unit conversion based on column name
-    col_lower = i_col.lower()
-    if "ma" in col_lower:
-        I = I * 1e-3
-    elif "µa" in col_lower or "ua" in col_lower:
-        I = I * 1e-6
-
-    # Drop NaN rows
-    mask = np.isfinite(E) & np.isfinite(I)
-    E, I = E[mask], I[mask]
-
-    # Cycle complet : ordre de mesure ; balayage simple : tri par E (CV-1)
-    E, I = _order_points(E, I)
-
-    return CVScan(
-        label=label,
-        E=E,
-        I=I,
-        concentration=concentration,
-        step=step,
-        source_files=[label],
-    )
-
-
-def average_cv_replicates(scans: list) -> CVScan:
-    """Interpolate all scans onto the first scan's E grid and average point-by-point.
-
-    Branch-aware for cycles (see interp_on_reference)."""
-    if not scans:
-        raise ValueError("Liste de scans vide.")
-    if len(scans) == 1:
-        return scans[0]
-
-    ref = scans[0]
-    E_grid = ref.E
-    I_matrix = np.stack(
-        [interp_on_reference(E_grid, s.E, s.I) for s in scans],
-        axis=0,
-    )
-    I_mean = I_matrix.mean(axis=0)
-
-    return CVScan(
-        label="moyenne",
-        E=E_grid,
-        I=I_mean,
-        concentration=ref.concentration,
-        step=ref.step,
-        source_files=[s.label for s in scans],
-    )
 
 
 # ═════════════════════════════════════════════════════════════════════════════

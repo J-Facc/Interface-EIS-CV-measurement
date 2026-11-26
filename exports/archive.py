@@ -43,7 +43,7 @@ from core.calibration import (
     cv_calibration,
     eis_calibration,
 )
-from core.experiment import KIND_CV, KIND_EIS, Experiment, Measurement, sort_measurements
+from core.experiment import KIND_EIS, Experiment, Measurement, sort_measurements
 from core.report_tables import (
     calibration_level_rows,
     calibration_regression_rows,

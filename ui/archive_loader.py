@@ -15,7 +15,7 @@ import streamlit as st
 from core.legacy_import import import_v2
 from exports.archive import ArchiveError, is_v3_archive, read_archive
 from ui import nav
-from ui import state as S
+from core import app_state as S
 
 
 def render_archive_loader() -> None:

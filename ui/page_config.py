@@ -22,7 +22,7 @@ from core.experiment import (
 from core.user_data import add_biomarkers, load_biomarkers
 from ui import nav
 from ui.archive_loader import render_archive_loader
-from ui import state as S
+from core import app_state as S
 
 ADD_NEW = "+ Ajouter un nouveau biomarqueur…"
 _P = "cfg_"

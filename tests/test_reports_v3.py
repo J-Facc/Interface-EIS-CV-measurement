@@ -33,7 +33,6 @@ def test_pdf_opens_and_has_the_planned_pages(session):
     assert kinds == ["cover", "cv", "eis", "eis", "drt", "drt", "rct", "rct", "cal_eis", "cal_eis", "cal_cv",
                      "failures"]
     assert _pages(pdf) == len(plan)
-    from matplotlib.backends.backend_pdf import PdfPages  # noqa: F401  (le PDF vient de matplotlib)
 
 
 def test_pdf_without_results_has_only_data_pages(session):

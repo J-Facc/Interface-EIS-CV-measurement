@@ -1,77 +1,107 @@
-"""Clés partagées de ``st.session_state`` et leur réinitialisation (AUDIT.md §2.5, B-STATE).
+"""Clés partagées de ``st.session_state`` (v3) et leurs invalidations.
 
-Logique pure : les fonctions reçoivent l'état (``st.session_state`` ou tout mapping
-mutable) en argument — aucun import Streamlit dans ``core/``.
+Logique pure : les fonctions reçoivent l'état (``st.session_state`` ou tout mapping mutable),
+aucun import Streamlit — testable sans navigateur.
 
-Bug corrigé (B-STATE)
----------------------
-Les pages remettaient à ``None`` des clés MORTES (``eis_session``, ``eis_validation``),
-jamais lues, tandis que les clés réellement produites par l'analyse n'étaient jamais
-effacées : après un rechargement de ZIP, un nouvel import ou une re-validation du
-prétraitement, les pages d'analyse et d'export réaffichaient l'ANCIENNE analyse, sans
-avertissement. Variante plantante (B-STATE-b) : un nouvel import ne remettait pas
-``preprocessing_done`` à False — la page EIS passait sa garde puis levait ``KeyError``
-sur ``experiment_clean``.
+Flux (une page n'écrit que ses propres clés) ::
 
-Règle : toute modification des DONNÉES (import, prétraitement) invalide TOUS les
-résultats d'analyse qui en dérivent, systématiquement, via les fonctions ci-dessous.
+    Configuration   → experiment (Experiment validée)
+    Import          → raw_files, assignment, excluded_points → measurements (nettoyées)
+    Analyse         → analysis_run (calcul en cours) → results (AnalysisResults)
+    Export          ← experiment, measurements, results
+
+Règle : toute modification en amont invalide TOUT ce qui en dérive (jamais de résultat
+périmé affiché). Un rechargement d'archive pose experiment + measurements + results d'un
+coup (``results_source = "archive"``).
 """
 
 from __future__ import annotations
 
 from typing import MutableMapping
 
-#: Résultats d'analyse dérivés de ``experiment_clean`` — produits par les pages
-#: EIS (``eis_sessions``, ``eis_validations``, ``eis_normalized``) et CV (``cv_sessions``),
-#: lus par ces pages et par l'export.
-#: ``eis_drt_store`` = registre des DRT par spectre (``core.drt_recompute.STORE_KEY`` ; recopié
-#: ici car ce module ne doit rien importer). Il référence des ``FitResult`` des sessions :
-#: le garder après un nouvel import les rattacherait à des spectres qui n'existent plus.
-ANALYSIS_RESULT_KEYS = ("eis_sessions", "eis_validations", "eis_normalized", "cv_sessions",
-                        "eis_drt_store")
+EXPERIMENT = "experiment"
+RAW_FILES = "raw_files"              # {file_id: {"name", "content" (bytes), "kind"}}
+ASSIGNMENT = "assignment"            # [dict] — lignes de la table d'assignation
+EXCLUDED_POINTS = "excluded_points"  # {file_id: [indices de points EIS retirés]}
+MEASUREMENTS = "measurements"        # [Measurement] nettoyées, ou None
+CLEANING_REPORT = "cleaning_report"  # [Issue] du dernier nettoyage
+ANALYSIS_RUN = "analysis_run"        # core.analysis.AnalysisRun en cours, ou None
+RESULTS = "results"                  # core.results.AnalysisResults, ou None
+RESULTS_SOURCE = "results_source"    # "computed" | "archive" | None
+THEME = "theme_mode"                 # "light" | "dark"
 
-#: Valeurs initiales des clés partagées (``app.py``). Les résultats d'analyse valent
-#: None : « pas encore calculé », testé par ``not state.get(key)`` dans les pages.
-SHARED_DEFAULTS = {
-    "experiment": None,
-    "experiment_clean": None,
-    "import_validated": False,
-    "preprocessing_done": False,
-    "exclusions": {},
-    "validation_results": None,
-    "eis_config": None,
-    **{k: None for k in ANALYSIS_RESULT_KEYS},
+DEFAULTS = {
+    EXPERIMENT: None,
+    RAW_FILES: {},
+    ASSIGNMENT: [],
+    EXCLUDED_POINTS: {},
+    MEASUREMENTS: None,
+    CLEANING_REPORT: [],
+    ANALYSIS_RUN: None,
+    RESULTS: None,
+    RESULTS_SOURCE: None,
+    THEME: "light",
 }
 
 
-def init_shared_state(state: MutableMapping) -> None:
-    """Crée les clés partagées absentes (n'écrase jamais une valeur existante)."""
-    for key, default in SHARED_DEFAULTS.items():
+def init_state(state: MutableMapping) -> None:
+    """Crée les clés absentes (n'écrase jamais une valeur existante)."""
+    for key, default in DEFAULTS.items():
         if key not in state:
-            state[key] = dict(default) if isinstance(default, dict) else default
+            state[key] = type(default)() if isinstance(default, (dict, list)) else default
 
 
-def reset_analysis_results(state: MutableMapping) -> None:
-    """Invalide TOUS les résultats d'analyse (EIS et CV) — à appeler dès que
-    ``experiment_clean`` change (re-validation du prétraitement)."""
-    for key in ANALYSIS_RESULT_KEYS:
-        state[key] = None
+def cancel_run(state: MutableMapping) -> None:
+    """Arrête proprement un calcul en cours (tâches non démarrées annulées)."""
+    run = state.get(ANALYSIS_RUN)
+    if run is not None:
+        try:
+            run.cancel()
+        finally:
+            state[ANALYSIS_RUN] = None
 
 
-def reset_for_new_experiment(state: MutableMapping) -> None:
-    """Nouvelle expérience (nouvel import validé ou ZIP rechargé) : invalide les
-    résultats d'analyse, le verdict KK du prétraitement et le prétraitement lui-même
-    (``preprocessing_done`` = False, ``experiment_clean`` retiré — corrige B-STATE-b).
-
-    L'appelant qui reconstruit immédiatement un prétraitement (ZIP sauvegardé APRÈS
-    prétraitement) repose ``experiment_clean``/``preprocessing_done`` ensuite.
-    """
-    reset_analysis_results(state)
-    state["validation_results"] = None
-    state["preprocessing_done"] = False
-    state.pop("experiment_clean", None)
+def invalidate_results(state: MutableMapping) -> None:
+    """Les DONNÉES nettoyées ont changé : résultats d'analyse périmés."""
+    cancel_run(state)
+    state[RESULTS] = None
+    state[RESULTS_SOURCE] = None
 
 
-def preprocessing_ready(state: MutableMapping) -> bool:
-    """True si une page d'analyse peut lire ``experiment_clean`` sans KeyError."""
-    return bool(state.get("preprocessing_done")) and state.get("experiment_clean") is not None
+def invalidate_measurements(state: MutableMapping) -> None:
+    """Fichiers, assignation ou configuration modifiés : le nettoyage est à refaire."""
+    state[MEASUREMENTS] = None
+    state[CLEANING_REPORT] = []
+    invalidate_results(state)
+
+
+def new_experiment(state: MutableMapping, experiment) -> None:
+    """Nouvelle configuration validée : tout ce qui en dérive est invalidé (les fichiers
+    déposés et leur assignation sont CONSERVÉS — l'utilisateur les corrige à la page Import)."""
+    state[EXPERIMENT] = experiment
+    invalidate_measurements(state)
+
+
+def load_archive_state(state: MutableMapping, experiment, measurements, results) -> None:
+    """Chargement d'une archive : remplace TOUT l'état d'un coup, sans recalcul."""
+    cancel_run(state)
+    state[EXPERIMENT] = experiment
+    state[RAW_FILES] = {}
+    state[ASSIGNMENT] = []
+    state[EXCLUDED_POINTS] = {}
+    state[MEASUREMENTS] = measurements
+    state[CLEANING_REPORT] = []
+    state[RESULTS] = results
+    state[RESULTS_SOURCE] = "archive" if results is not None else None
+
+
+def has_experiment(state: MutableMapping) -> bool:
+    return state.get(EXPERIMENT) is not None
+
+
+def has_measurements(state: MutableMapping) -> bool:
+    return bool(state.get(MEASUREMENTS))
+
+
+def has_results(state: MutableMapping) -> bool:
+    return state.get(RESULTS) is not None

@@ -17,7 +17,7 @@ from exports.archive import archive_filename, write_archive
 from exports.report_html import build_html
 from exports.report_pdf import build_pdf
 from ui import nav
-from ui import state as S
+from core import app_state as S
 
 _CACHE = "_export_cache"
 

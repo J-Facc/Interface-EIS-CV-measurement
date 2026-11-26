@@ -29,7 +29,7 @@ from core.experiment import KIND_EIS, KINDS
 from core.mpr_converter import is_mpr, mpr_to_csv_bytes
 from plotting.eis_plots import nyquist_points_figure
 from ui import nav
-from ui import state as S
+from core import app_state as S
 
 _COLS = {"filename": "Fichier", "detected_kind": "Détecté", "kind": "Type", "channel": "Canal",
          "electrode": "Électrode", "step": "Étape", "replicate": "Réplicat", "exclude": "Exclure"}

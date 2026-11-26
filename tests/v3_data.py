@@ -30,7 +30,6 @@ def _fake_drt(sp, mode="sample"):
     tau = np.logspace(-6, 1, 80)
     rct = float(sp.fit.target_value) if sp.fit else 1000.0
     gamma = rct / (0.5 * np.sqrt(2 * np.pi)) * np.exp(-0.5 * ((np.log(tau) - np.log(3e-3)) / 0.5) ** 2)
-    from core.drt_peak import MainPeak  # noqa: F401
     return DRTRecord(mode, tau, gamma, main_peak(tau, gamma, [1e-5, 1e-1]), rct * 1.02, 12.5, "peak_penultimate",
                      rct * 1.3, True, sp.Zre * 1.001, sp.Zim * 0.999, gamma * 0.9, gamma * 1.1,
                      {"rhat_max": 1.003, "divergences": 0, "alerts": []}, ["note"])

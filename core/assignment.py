@@ -18,7 +18,7 @@ Les réplicats sont conservés individuellement (aucun moyennage ici).
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 import numpy as np

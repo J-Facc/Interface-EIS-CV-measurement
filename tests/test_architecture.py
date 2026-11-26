@@ -2,10 +2,10 @@
 
 Règle (documentée dans core/pipeline.py) :
 
-    pages / ui / plotting / exports ──► core ──► {fits, drt, circuit}
+    ui / plotting / exports ──► core ──► {fits, drt, circuit}
     drt ──► fits.result ;  fits ──► circuit ;  circuit ──► (rien)
 
-* ``fits/``, ``drt/`` et ``circuit/`` n'importent JAMAIS ``core`` (ni ui, pages,
+* ``fits/``, ``drt/`` et ``circuit/`` n'importent JAMAIS ``core`` (ni ui,
   plotting, exports, streamlit) : l'ancienne dépendance circulaire core ↔ fits, masquée
   par des imports locaux, n'existe plus.
 * ``core/`` n'importe ``fits``/``drt``/``circuit`` qu'au niveau MODULE : plus aucun
@@ -20,7 +20,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 _LIB_PACKAGES = ("fits", "drt", "circuit")
-_UPPER = ("core", "ui", "pages", "plotting", "exports", "streamlit", "app")
+_UPPER = ("core", "ui", "plotting", "exports", "streamlit", "app")
 _REMOVED = ("fits.randles_full", "fits.drt_fit", "fits.registry", "fits.base", "fits.error_structure",
             "fits.weighting", "vendor", "core.regression_stats")
 
@@ -74,7 +74,7 @@ def test_core_imports_the_numeric_libraries_at_module_level_only(path):
 
 def test_removed_modules_are_imported_nowhere():
     offenders = []
-    for path in _py_files("core", "fits", "drt", "circuit", "plotting", "exports", "ui", "pages", "tests"):
+    for path in _py_files("core", "fits", "drt", "circuit", "plotting", "exports", "ui", "tests"):
         for m, line, _top in _imports(path):
             if any(m == r or m.startswith(r + ".") for r in _REMOVED):
                 offenders.append((str(path.relative_to(REPO)), line, m))

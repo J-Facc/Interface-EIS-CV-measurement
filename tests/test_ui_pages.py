@@ -30,7 +30,7 @@ def test_full_app_starts_on_configuration_page():
 
 
 def test_configuration_page_validates_and_persists_biomarkers(tmp_path):
-    at = _app("from ui import state as S, page_config\nimport streamlit as st\n"
+    at = _app("from core import app_state as S\nfrom ui import page_config\nimport streamlit as st\n"
               "S.init_state(st.session_state)\npage_config.render()\n")
     at.run()
     assert not at.exception
@@ -60,7 +60,7 @@ def test_import_page_assigns_checks_and_cleans():
     """Page Import : dépôt → assignation pré-remplie → contrôle → nettoyage → mesures."""
     from tests.synthetic_data import randles_file
     body = (
-        "import streamlit as st\nfrom ui import state as S, page_import\n"
+        "import streamlit as st\nfrom core import app_state as S\nfrom ui import page_import\n"
         "from core.experiment import Experiment, Channel\n"
         "S.init_state(st.session_state)\n"
         "if st.session_state[S.EXPERIMENT] is None:\n"
@@ -77,7 +77,7 @@ def test_import_page_assigns_checks_and_cleans():
              _uploaded("conc_1_r1.txt", randles_file(2500.0, seed=3)),
              _uploaded("cv_probe.txt", (REPO / "tests" / "data" / "cv_bare_2cycles.txt").read_bytes())]
     state = {}
-    from ui import state as S
+    from core import app_state as S
     S.init_state(state)
     from core.experiment import Experiment, Channel
     state[S.EXPERIMENT] = Experiment(['A'], [Channel(1, 'A', [1e-9])])
@@ -125,7 +125,7 @@ def _measurements():
 
 def test_viz_page_renders_cv_nyquist_and_bode():
     exp, ms = _measurements()
-    at = _app("import streamlit as st\nfrom ui import state as S, page_viz\nS.init_state(st.session_state)\n"
+    at = _app("import streamlit as st\nfrom core import app_state as S\nfrom ui import page_viz\nS.init_state(st.session_state)\n"
               "page_viz.render()\n")
     at.session_state["experiment"] = exp
     at.session_state["measurements"] = ms
@@ -162,7 +162,7 @@ def test_analysis_page_runs_in_background_then_shows_tabs(monkeypatch):
     """Lancer l'analyse → progression → onglets DRT / Rct (exécuteur synchrone, sans DRT)."""
     monkeypatch.setenv("EIS_EXECUTOR", "sync")
     exp, ms = _measurements()
-    at = _app("import streamlit as st\nfrom ui import state as S, page_analysis\nS.init_state(st.session_state)\n"
+    at = _app("import streamlit as st\nfrom core import app_state as S\nfrom ui import page_analysis\nS.init_state(st.session_state)\n"
               "page_analysis.render()\n")
     at.session_state["experiment"] = exp
     at.session_state["measurements"] = ms
@@ -188,7 +188,7 @@ def test_analysis_page_runs_in_background_then_shows_tabs(monkeypatch):
 def test_export_page_generates_the_three_files():
     from tests.v3_data import build_session
     exp, ms, res = build_session()
-    at = _app("import streamlit as st\nfrom ui import state as S, page_export\nS.init_state(st.session_state)\n"
+    at = _app("import streamlit as st\nfrom core import app_state as S\nfrom ui import page_export\nS.init_state(st.session_state)\n"
               "page_export.render()\n")
     at.session_state["experiment"] = exp
     at.session_state["measurements"] = ms
@@ -215,9 +215,9 @@ def test_archive_reload_shows_results_without_recomputing(monkeypatch):
     def forbidden(*a, **k):
         raise AssertionError("recalcul interdit")
     monkeypatch.setattr(core.analysis.AnalysisRun, "__init__", forbidden)
-    at = _app("import streamlit as st\nfrom ui import state as S, page_analysis\nS.init_state(st.session_state)\n"
+    at = _app("import streamlit as st\nfrom core import app_state as S\nfrom ui import page_analysis\nS.init_state(st.session_state)\n"
               "page_analysis.render()\n")
-    from ui import state as S
+    from core import app_state as S
     state = {}
     S.init_state(state)
     S.load_archive_state(state, exp2, ms2, res2)

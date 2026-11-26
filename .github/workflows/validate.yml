@@ -16,7 +16,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Compile all sources
-        run: python -m compileall app.py setup_drt_bayesien.py core fits drt circuit plotting exports ui pages tests
+        run: python -m compileall app.py setup_drt_bayesien.py core fits drt circuit plotting exports ui tests
       - name: Run tests
         run: python -m pytest tests/ -v
 
@@ -81,6 +81,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Compile all sources
-        run: python -m compileall app.py setup_drt_bayesien.py core fits drt circuit plotting exports ui pages tests
+        run: python -m compileall app.py setup_drt_bayesien.py core fits drt circuit plotting exports ui tests
       - name: Run fast tests
         run: python -m pytest tests/ -v -m "not slow" -rs
