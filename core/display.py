@@ -143,95 +143,12 @@ def mean_cv(curves: list) -> dict:
             "sd": is_.std(axis=0, ddof=1) if n > 1 else np.zeros(m), "n": n}
 
 
-# ── Normalisation par le probe de la MÊME électrode ───────────────────────────
-# EIS (convention historique de l'app) : point à point, Re_n = |Re_probe − Re| / |Re_probe|,
-#   Im_n = |Im_probe − Im| / |Im_probe|, |Z|_n = | |Z|_probe − |Z| | / |Z|_probe — le probe moyen de
-#   l'électrode est interpolé en log f sur la grille du réplicat.
-# CV : I / I_pic,probe, où I_pic,probe = pic anodique (cv.peak_window_V) du probe moyen de
-#   l'électrode (même référence que l'étalonnage CV) ; un rapport point à point divergerait là
-#   où le courant du probe passe par zéro.
-# Chaque RÉPLICAT est normalisé par le probe de son électrode, puis moyenné.
-
-DEFAULT_CV_WINDOW = (0.0, 0.25)
-
-
-def _probe_refs(measurements, kind, channel_id, cv_window) -> dict:
-    """{électrode: référence probe} — EIS : spectre moyen ; CV : courant de pic anodique (A)."""
-    from core.cv import anodic_peak
-    refs = {}
-    for el in (1, 2):
-        ms = [m for m in measurements or [] if m.kind == kind and m.channel_id == channel_id
-              and m.electrode == el and m.step == STEP_PROBE]
-        if not ms:
-            continue
-        mean = _mean_of(kind, ms)
-        if kind == KIND_EIS:
-            refs[el] = mean
-        else:
-            i_pk, _e, ok, _msg = anodic_peak(mean["E"], mean["I"], cv_window)
-            if ok and i_pk != 0:
-                refs[el] = i_pk
-    return refs
-
-
-def _normalized_eis(m, ref) -> tuple:
-    f = np.asarray(m.data["f"], dtype=float)
-    o = np.argsort(ref["f"])
-    lf, lr = np.log(f), np.log(np.asarray(ref["f"])[o])
-    pr = np.interp(lf, lr, np.asarray(ref["Zre"])[o])
-    pi = np.interp(lf, lr, np.asarray(ref["Zim"])[o])
-    pm = np.interp(lf, lr, np.asarray(ref["mod"])[o])
-    zr, zi = np.asarray(m.data["Zre"], float), np.asarray(m.data["Zim"], float)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return (f, np.abs((pr - zr) / pr), np.abs((pi - zi) / pi), np.abs((pm - np.hypot(zr, zi)) / pm))
-
-
-def _mean_of(kind, ms, refs=None):
-    """Moyenne (± écart-type) des réplicats ``ms`` ; normalisés par ``refs[électrode]`` si fourni."""
+def _mean_of(kind, ms):
+    """Moyenne (± écart-type) des réplicats ``ms`` — données brutes, AUCUNE normalisation
+    (la normalisation par le probe ne sert qu'à l'extraction des concentrations : core/calibration.py)."""
     if kind == KIND_EIS:
-        if refs is None:
-            return mean_eis([(m.data["f"], m.data["Zre"], m.data["Zim"]) for m in ms])
-        norm = [_normalized_eis(m, refs[m.electrode]) for m in ms]
-        out = mean_eis([(f, a, b) for f, a, b, _c in norm])
-        out["mod"] = mean_eis([(f, c, c) for f, _a, _b, c in norm])["Zre"]
-        out["sd_mod"] = mean_eis([(f, c, c) for f, _a, _b, c in norm])["sd_re"]
-        return out
-    if refs is None:
-        return mean_cv([(m.data["E"], m.data["I"]) for m in ms])
-    return mean_cv([(m.data["E"], np.asarray(m.data["I"], float) / refs[m.electrode]) for m in ms])
-
-
-def mean_groups(measurements: list, experiment: Experiment, kind: str, channel_id: int,
-                electrodes=(1, 2), steps=None, replicates=None, normalize: bool = False,
-                cv_window=DEFAULT_CV_WINDOW) -> list:
-    """Une moyenne par étape, réplicats des ``electrodes`` données regroupés.
-
-    ``normalize`` : chaque réplicat est normalisé par le probe moyen de SON électrode (voir plus
-    haut) ; les réplicats d'une électrode sans probe sont écartés (``skipped`` le dit).
-
-    Returns:
-        ``[{"label", "step", "concentration", "channel_id", "electrodes", "mean", "normalized",
-        "skipped"}]`` (ordre naturel).
-    """
-    ch = experiment.channel(channel_id)
-    refs = _probe_refs(measurements, kind, channel_id, cv_window) if normalize else None
-    by_step: dict = {}
-    skipped: set = set()
-    for m in measurements or []:
-        if (m.kind == kind and m.channel_id == channel_id and m.electrode in electrodes
-                and (steps is None or m.step in steps) and (replicates is None or m.replicate in replicates)):
-            if normalize and m.electrode not in refs:
-                skipped.add(m.electrode)
-                continue
-            by_step.setdefault(m.step, []).append(m)
-    out = []
-    for step in sorted(by_step, key=step_sort_key):
-        conc = ch.concentration_of(step) if ch else None
-        out.append({"label": step_display_label(step, conc), "step": step, "concentration": conc,
-                    "channel_id": channel_id, "electrodes": tuple(electrodes),
-                    "mean": _mean_of(kind, by_step[step], refs), "normalized": bool(normalize),
-                    "skipped": sorted(skipped)})
-    return out
+        return mean_eis([(m.data["f"], m.data["Zre"], m.data["Zim"]) for m in ms])
+    return mean_cv([(m.data["E"], m.data["I"]) for m in ms])
 
 
 def _step_filter(step: str, show: str) -> bool:
@@ -243,35 +160,47 @@ def _step_filter(step: str, show: str) -> bool:
     return step == show
 
 
-def channel_mean_view(measurements: list, experiment: Experiment, kind: str, channel_id: int,
-                      steps=None, replicates=None, normalize: bool = False,
-                      cv_window=DEFAULT_CV_WINDOW) -> list:
-    """3ᵉ graphe d'un canal : moyenne électrode 1, moyenne électrode 2, moyenne des deux, par étape."""
+def electrode_means(measurements: list, experiment: Experiment, kind: str, channel_id: int, electrode: int,
+                    steps=None, replicates=None, show: str = "all") -> list:
+    """Une moyenne (± écart-type) par étape pour UNE électrode.
+
+    Returns:
+        ``[{"label", "step", "concentration", "channel_id", "electrode", "mean", "band"}]`` (ordre naturel).
+    """
+    ch = experiment.channel(channel_id)
+    by_step: dict = {}
+    for m in measurements or []:
+        if (m.kind == kind and m.channel_id == channel_id and m.electrode == electrode
+                and (steps is None or m.step in steps) and (replicates is None or m.replicate in replicates)
+                and _step_filter(m.step, show)):
+            by_step.setdefault(m.step, []).append(m)
     out = []
-    for els, suffix, style in (((1,), "E1", "dash"), ((2,), "E2", "dot"), ((1, 2), "E1+E2", "solid")):
-        for g in mean_groups(measurements, experiment, kind, channel_id, els, steps, replicates,
-                             normalize, cv_window):
-            g["label"] = f"{g['label']} — {suffix}"
-            g["dash"] = style
-            g["band"] = False
-            out.append(g)
+    for step in sorted(by_step, key=step_sort_key):
+        conc = ch.concentration_of(step) if ch else None
+        out.append({"label": step_display_label(step, conc), "step": step, "concentration": conc,
+                    "channel_id": channel_id, "electrode": electrode, "mean": _mean_of(kind, by_step[step]),
+                    "dash": "solid", "band": True})
     return out
 
 
+def electrodes_of(measurements: list) -> list:
+    """[(canal, électrode)] présents dans les mesures, triés."""
+    return sorted({(m.channel_id, m.electrode) for m in measurements or []})
+
+
 def synthesis_view(measurements: list, experiment: Experiment, kind: str, biomarkers=None,
-                   normalize: bool = False, show: str = "all", cv_window=DEFAULT_CV_WINDOW) -> list:
-    """Vue synthétique : pour chaque canal et chaque étape, moyenne des réplicats des DEUX électrodes
-    (normalisés, si demandé, par le probe de leur électrode), avec sa zone d'erreur (± écart-type).
-    ``show`` filtre les étapes : 'all', 'bare', 'probe' ou 'conc'."""
+                   show: str = "all") -> list:
+    """Vue synthétique : pour chaque ÉLECTRODE et chaque étape, moyenne de ses réplicats avec sa zone
+    d'erreur (± écart-type). ``show`` filtre les étapes : 'all', 'bare', 'probe' ou 'conc'.
+    Couleur = étape ; style de trait = électrode."""
+    styles = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
     out = []
-    for ch in experiment.channels:
-        if biomarkers is not None and ch.biomarker not in biomarkers:
+    for k, (ch_id, el) in enumerate(electrodes_of([m for m in measurements or [] if m.kind == kind])):
+        ch = experiment.channel(ch_id)
+        if ch is None or (biomarkers is not None and ch.biomarker not in biomarkers):
             continue
-        for g in mean_groups(measurements, experiment, kind, ch.id, normalize=normalize, cv_window=cv_window):
-            if not _step_filter(g["step"], show):
-                continue
-            g["label"] = f"C{ch.id} {ch.biomarker} · {g['label']}"
-            g["dash"] = ["solid", "dash", "dot", "dashdot"][(ch.id - 1) % 4]
-            g["band"] = True
+        for g in electrode_means(measurements, experiment, kind, ch_id, el, show=show):
+            g["label"] = f"C{ch_id}·E{el} {ch.biomarker} · {g['label']}"
+            g["dash"] = styles[k % len(styles)]
             out.append(g)
     return out

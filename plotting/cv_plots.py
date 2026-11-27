@@ -61,7 +61,7 @@ def _rgba(color: str, alpha: float) -> str:
     return color.replace("rgb(", "rgba(").replace(")", f",{alpha})")
 
 
-def cv_means_figure(items: list, title: str = "", theme_mode: str = "light", normalized: bool = False) -> go.Figure:
+def cv_means_figure(items: list, title: str = "", theme_mode: str = "light") -> go.Figure:
     """Courbes CV MOYENNES (``core.display``) ; ``item["band"]`` : zone ± écart-type autour de I."""
     from plotting.theme import apply_theme_to_figure
 
@@ -71,7 +71,7 @@ def cv_means_figure(items: list, title: str = "", theme_mode: str = "light", nor
     for it in items:
         m = it["mean"]
         color = _step_color(it["step"], it.get("concentration"), c_min, c_max)
-        k = 1.0 if normalized else 1e6          # normalisé : sans unité ; sinon µA
+        k = 1e6                                   # A → µA
         E, I, sd = np.asarray(m["E"]), np.asarray(m["I"]) * k, np.asarray(m["sd"]) * k
         if it.get("band") and m["n"] > 1:
             fig.add_trace(go.Scatter(x=np.concatenate([E, E[::-1]]), y=np.concatenate([I + sd, (I - sd)[::-1]]),
@@ -80,7 +80,7 @@ def cv_means_figure(items: list, title: str = "", theme_mode: str = "light", nor
         fig.add_trace(go.Scatter(x=E, y=I, mode="lines", name=f"{it['label']} (n={m['n']})", legendgroup=it["label"],
                                  line=dict(color=color, width=2, dash=it.get("dash", "solid")),
                                  hovertemplate=f"<b>{it['label']}</b><br>E = %{{x:.4f}} V<br>y = %{{y:.4g}}<extra></extra>"))
-    fig.update_layout(title=title, xaxis_title="E (V)", yaxis_title="I / I_pic,probe" if normalized else "I (µA)",
+    fig.update_layout(title=title, xaxis_title="E (V)", yaxis_title="I (µA)",
                       hovermode="closest", height=460,
                       legend=dict(orientation="v", x=1.02, xanchor="left", y=1.0), margin=dict(r=160))
     apply_theme_to_figure(fig, theme_mode)
