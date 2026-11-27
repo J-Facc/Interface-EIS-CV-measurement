@@ -75,11 +75,11 @@ Cinq pages, dans l'ordre :
    d'assignation reste corrigeable ; contrôles de cohérence, revue des spectres EIS graphe par graphe
    (sélection au lasso → suppression et spectre suivant, boutons Précédent/Suivant), puis
    nettoyage. Les réplicats sont conservés individuellement.
-3. **Visualisation** — menu « Canal » : **vue synthétique** par défaut (toutes les courbes moyennes,
-   avec zone d'erreur ± écart-type), ou un canal : électrode 1, électrode 2 et les moyennes
-   (E1, E2, E1+E2), en CV, Nyquist ou Bode. Les courbes moyennes sont **normalisées par défaut par
-   le probe moyen de la même électrode** (EIS : |X_probe − X| / |X_probe| point à point ; CV :
-   I / I_pic,probe) ; la vue synthétique filtre Tout / Bare / Probe / Concentrations. Aucun fit ni DRT.
+3. **Visualisation** — **par électrode**. Menu « Électrode » : **vue synthétique** par défaut
+   (courbes moyennes de chaque électrode et de chaque étape, zone d'erreur ± écart-type, filtre
+   Tout / Bare / Probe / Concentrations), ou une électrode : ses réplicats puis ses moyennes, en CV,
+   Nyquist ou Bode. Données brutes : la normalisation par le probe ne sert qu'à l'extraction des
+   concentrations (page Analyse). Aucun fit ni DRT.
 4. **Analyse** — « Lancer l'analyse » : fits Randles (Orazem) et DRT de tous les spectres **en
    arrière-plan** (processus parallèles), puis onglets **DRT · Rct (fit Randles) · Étalonnage EIS ·
    CV · Étalonnage CV**.

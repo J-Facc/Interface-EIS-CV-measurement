@@ -123,7 +123,7 @@ def _measurements():
     return exp, ms
 
 
-def test_viz_page_synthesis_by_default_then_channel_view():
+def test_viz_page_synthesis_by_default_then_electrode_view():
     exp, ms = _measurements()
     at = _app("import streamlit as st\nfrom core import app_state as S\nfrom ui import page_viz\n"
               "S.init_state(st.session_state)\npage_viz.render()\n")
@@ -131,19 +131,16 @@ def test_viz_page_synthesis_by_default_then_channel_view():
     at.session_state["measurements"] = ms
     at.run()
     assert not at.exception
-    assert at.selectbox(key="viz_channel").value == "synthese"        # vue synthétique par défaut
-    assert len(at.get("plotly_chart")) == 2                            # CV + EIS (moyennes, zones d'erreur)
-    at.selectbox(key="viz_channel").set_value(1).run()
+    sel = at.selectbox(key="viz_electrode")
+    assert sel.value == "synthese" and sel.options[1:] == ["Canal 1 · électrode 1 — A", "Canal 1 · électrode 2 — A"]
+    assert len(at.get("plotly_chart")) == 2                            # CV + EIS (moyennes par électrode)
+    sel.set_value("1:2").run()
     assert not at.exception
-    assert at.multiselect(key="viz_steps_1").value == ["probe", "conc_1"]
-    assert len(at.get("plotly_chart")) == 6                            # 3 CV + 3 EIS (E1, E2, moyennes)
+    assert at.multiselect(key="viz_steps_1_2").value == ["probe", "conc_1"]
+    assert len(at.get("plotly_chart")) == 4                            # CV + EIS : réplicats, puis moyennes
     at.radio(key="viz_eis_mode").set_value("Bode").run()
     assert not at.exception
-    at.toggle(key="viz_norm_1").set_value(False).run()             # moyennes brutes
-    assert not at.exception
-    at.selectbox(key="viz_channel").set_value("synthese").run()
-    assert at.toggle(key="viz_syn_norm").value is True              # normalisé par défaut
-    assert not at.exception
+    assert not any("normalis" in (t.label or "").lower() for t in at.toggle)
 
 
 def test_viz_page_imports_no_fit_and_no_drt():
