@@ -132,12 +132,12 @@ def test_viz_page_synthesis_by_default_then_electrode_view():
     at.run()
     assert not at.exception
     sel = at.selectbox(key="viz_electrode")
-    assert sel.value == "synthese" and sel.options[1:] == ["Canal 1 · électrode 1 — A", "Canal 1 · électrode 2 — A"]
+    assert sel.value == "synthese" and sel.options[1:] == ["Canal 1 — A"]
     assert len(at.get("plotly_chart")) == 2                            # CV + EIS (moyennes par électrode)
-    sel.set_value("1:2").run()
+    sel.set_value("1").run()
     assert not at.exception
-    assert at.multiselect(key="viz_steps_1_2").value == ["probe", "conc_1"]
-    assert len(at.get("plotly_chart")) == 4                            # CV + EIS : réplicats, puis moyennes
+    assert at.multiselect(key="viz_steps_1").value == ["probe", "conc_1"]
+    assert len(at.get("plotly_chart")) == 6                            # (E1, E2, les deux) × (CV, EIS)
     at.radio(key="viz_eis_mode").set_value("Bode").run()
     assert not at.exception
     assert not any("normalis" in (t.label or "").lower() for t in at.toggle)
