@@ -1,11 +1,12 @@
-"""Page 3 — Visualisation des données NETTOYÉES, PAR ÉLECTRODE : CV, Nyquist, Bode.
+"""Page 3 — Visualisation des données NETTOYÉES, PAR CANAL : CV, Nyquist, Bode.
 
 Aucun fit, aucune DRT, aucune normalisation (la normalisation par le probe ne sert qu'à
-l'extraction des concentrations, page Analyse). Menu « Électrode » :
+l'extraction des concentrations, page Analyse). Menu « Vue » :
 
 * **Vue synthétique** (défaut) : courbes MOYENNES de chaque électrode et de chaque étape, avec leur
   zone d'erreur (± écart-type) ; filtre Tout / Bare / Probe / Concentrations ;
-* **une électrode** : ses réplicats superposés, puis ses moyennes par étape (± écart-type).
+* **un canal** : moyennes des réplicats par étape (± écart-type), en trois graphes — électrode 1,
+  électrode 2, puis les deux superposées (style de trait = électrode).
 
 Moyennes : ``core/display.py``. Garde-fou : la page n'importe ni fit ni DRT
 (``tests/test_ui_pages.py``). Fonctionne aussi après le chargement d'une archive.
@@ -18,16 +19,14 @@ import streamlit as st
 from core import app_state as S
 from core.display import (
     VIEW_SYNTHESIS,
-    cv_display_groups,
-    eis_display_groups,
-    electrode_means,
-    electrodes_of,
+    channel_electrode_views,
+    channels_of,
     step_display_label,
     synthesis_view,
 )
 from core.experiment import KIND_CV, KIND_EIS, step_sort_key
-from plotting.cv_plots import cv_figure, cv_means_figure
-from plotting.eis_plots import bode_figure, bode_means_figure, nyquist_means_figure, nyquist_replicates_figure
+from plotting.cv_plots import cv_means_figure
+from plotting.eis_plots import bode_means_figure, nyquist_means_figure
 from ui import nav
 
 _SHOW = {"all": "Tout", "bare": "Bare", "probe": "Probe", "conc": "Concentrations"}
@@ -63,44 +62,31 @@ def _synthesis(ms, exp, theme: str, eis_mode: str) -> None:
             st.info("Aucun spectre EIS pour cette sélection.")
 
 
-def _electrode(ms, exp, ch_id: int, el: int, theme: str, eis_mode: str) -> None:
-    avail = {}
-    for m in ms:
-        if (m.channel_id, m.electrode) == (ch_id, el):
-            avail.setdefault(m.step, set()).add(m.replicate)
+def _channel(ms, exp, ch_id: int, theme: str, eis_mode: str) -> None:
+    """Un canal : moyennes des réplicats, 3 graphes — électrode 1, électrode 2, les deux superposées."""
     channel = exp.channel(ch_id)
-    steps_avail = sorted(avail, key=step_sort_key)
-    c1, c2 = st.columns([3, 2])
-    steps = c1.multiselect("Étapes superposées", steps_avail, default=steps_avail, key=f"viz_steps_{ch_id}_{el}",
+    steps_avail = sorted({m.step for m in ms if m.channel_id == ch_id}, key=step_sort_key)
+    steps = st.multiselect("Étapes", steps_avail, default=steps_avail, key=f"viz_steps_{ch_id}",
                            format_func=lambda s: step_display_label(s, channel.concentration_of(s)))
-    reps_avail = sorted({r for s in steps for r in avail[s]})
-    reps = c2.multiselect("Réplicats", reps_avail, default=reps_avail, key=f"viz_reps_{ch_id}_{el}",
-                          format_func=lambda r: f"r{r}")
-    if not steps or not reps:
-        st.info("Sélectionnez au moins une étape et un réplicat.")
+    if not steps:
+        st.info("Sélectionnez au moins une étape.")
         return
-    name = f"canal {ch_id}, électrode {el}"
+    st.caption("Moyenne des réplicats par étape ; zone / barres = ± écart-type (ddof = 1). Données brutes.")
     tab_cv, tab_eis = st.tabs(["CV", "EIS"])
-    with tab_cv:
-        g = cv_display_groups(ms, exp, ch_id, el, steps, reps)
-        if not g:
-            st.info("Aucune mesure CV pour cette électrode.")
-        else:
-            st.plotly_chart(cv_figure(g, title=f"CV — {name} : réplicats", theme_mode=theme),
-                            width="stretch", key=f"viz_cv_{ch_id}_{el}")
-            st.plotly_chart(cv_means_figure(electrode_means(ms, exp, KIND_CV, ch_id, el, steps, reps),
-                                            title=f"CV — {name} : moyennes ± écart-type", theme_mode=theme),
-                            width="stretch", key=f"viz_cv_{ch_id}_{el}_mean")
-    with tab_eis:
-        g = eis_display_groups(ms, exp, ch_id, el, steps, reps)
-        if not g:
-            st.info("Aucune mesure EIS pour cette électrode.")
-            return
-        fig = (nyquist_replicates_figure(g, title=f"Nyquist — {name} : réplicats", theme_mode=theme)
-               if eis_mode == "Nyquist" else bode_figure(g, title=f"Bode — {name} : réplicats", theme_mode=theme))
-        st.plotly_chart(fig, width="stretch", key=f"viz_eis_{ch_id}_{el}")
-        _eis_means(electrode_means(ms, exp, KIND_EIS, ch_id, el, steps, reps), f"{name} : moyennes ± écart-type",
-                   theme, eis_mode, f"viz_eis_{ch_id}_{el}_mean")
+    for tab, kind in ((tab_cv, KIND_CV), (tab_eis, KIND_EIS)):
+        with tab:
+            views = channel_electrode_views(ms, exp, kind, ch_id, steps)
+            if not views:
+                st.info(f"Aucune mesure {kind} pour ce canal.")
+                continue
+            for key, items in views.items():
+                name = "les deux électrodes" if key == "both" else f"électrode {key}"
+                title = f"{kind} — canal {ch_id}, {name}"
+                if kind == KIND_CV:
+                    st.plotly_chart(cv_means_figure(items, title=title, theme_mode=theme), width="stretch",
+                                    key=f"viz_cv_{ch_id}_{key}")
+                else:
+                    _eis_means(items, f"canal {ch_id}, {name}", theme, eis_mode, f"viz_eis_{ch_id}_{key}")
 
 
 def render() -> None:
@@ -116,14 +102,13 @@ def render() -> None:
         st.caption("📦 Données issues d'une archive rechargée.")
     theme = st.session_state[S.THEME]
     labels = {VIEW_SYNTHESIS: "Vue synthétique (toutes les moyennes)"}
-    for ch, el in electrodes_of(ms):
+    for ch in channels_of(ms):
         if exp.channel(ch):
-            labels[f"{ch}:{el}"] = f"Canal {ch} · électrode {el} — {exp.channel(ch).biomarker}"
+            labels[str(ch)] = f"Canal {ch} — {exp.channel(ch).biomarker}"
     c1, c2 = st.columns([3, 2])
-    choice = c1.selectbox("Électrode", list(labels), format_func=labels.get, key="viz_electrode")
+    choice = c1.selectbox("Vue", list(labels), format_func=labels.get, key="viz_electrode")
     eis_mode = c2.radio("Représentation EIS", ["Nyquist", "Bode"], horizontal=True, key="viz_eis_mode")
     if choice == VIEW_SYNTHESIS:
         _synthesis(ms, exp, theme, eis_mode)
     else:
-        ch, el = (int(x) for x in choice.split(":"))
-        _electrode(ms, exp, ch, el, theme, eis_mode)
+        _channel(ms, exp, int(choice), theme, eis_mode)

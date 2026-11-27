@@ -204,3 +204,31 @@ def synthesis_view(measurements: list, experiment: Experiment, kind: str, biomar
             g["dash"] = styles[k % len(styles)]
             out.append(g)
     return out
+
+
+def channels_of(measurements: list) -> list:
+    """Canaux présents dans les mesures, triés."""
+    return sorted({m.channel_id for m in measurements or []})
+
+
+def channel_electrode_views(measurements: list, experiment: Experiment, kind: str, channel_id: int,
+                            steps=None) -> dict:
+    """Moyennes (± écart-type) d'UN canal : ``{électrode: items}`` + ``"both"`` (les deux superposées).
+
+    ``"both"`` n'existe que si le canal a au moins deux électrodes ; couleur = étape, style de trait =
+    électrode (E1 plein, E2 tireté…), libellés préfixés « E{n} ».
+    """
+    styles = ["solid", "dash", "dot", "dashdot"]
+    els = sorted({m.electrode for m in measurements or [] if m.kind == kind and m.channel_id == channel_id})
+    out: dict = {}
+    for k, el in enumerate(els):
+        items = electrode_means(measurements, experiment, kind, channel_id, el, steps)
+        if items:
+            out[el] = items
+    both = []
+    for k, (el, items) in enumerate(out.items()):
+        for g in items:
+            both.append({**g, "label": f"E{el} · {g['label']}", "dash": styles[k % len(styles)]})
+    if len(out) >= 2:
+        out["both"] = both
+    return out
